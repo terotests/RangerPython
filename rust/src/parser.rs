@@ -3,6 +3,8 @@
 
 use crate::ast::*;
 use crate::lexer::{tokenize, Tok, Token};
+use crate::value::PyStr;
+use crate::wtf8::Wtf8Buf;
 use std::rc::Rc;
 
 pub struct SyntaxError {
@@ -1731,11 +1733,11 @@ impl Parser {
         }
         let pos = self.span(start);
         if bytes == Some(true) {
-            let v: Vec<u8> = lit.text.chars().map(|c| c as u32 as u8).collect();
+            let v: Vec<u8> = lit.text.code_points().map(|c| c as u8).collect();
             return Ok(Expr::new(ExprKind::Const(Const::Bytes(Rc::from(v))), pos));
         }
         if !any_f {
-            return Ok(Expr::new(ExprKind::Const(Const::Str(Rc::from(lit.text.as_str()))), pos));
+            return Ok(Expr::new(ExprKind::Const(Const::Str(Rc::new(lit.text.to_pystr()))), pos));
         }
         lit.flush(&mut parts);
         Ok(Expr::new(ExprKind::JoinedStr(parts), pos))
@@ -1757,7 +1759,7 @@ impl Parser {
                 Tok::Op("{") => {
                     self.advance();
                     let (debug, field) = self.replacement_field(at)?;
-                    lit.push(&debug, debug_pos(&debug, &field));
+                    lit.push_str(&debug, debug_pos(&debug, &field));
                     lit.flush(parts);
                     parts.push(field);
                 }
@@ -1828,13 +1830,13 @@ impl Parser {
                 match self.peek().clone() {
                     Tok::FMiddle(s) => {
                         self.advance();
-                        sp.push(self.node(at, ExprKind::Const(Const::Str(Rc::from(s.as_str())))));
+                        sp.push(self.node(at, ExprKind::Const(Const::Str(Rc::new(s.to_pystr())))));
                     }
                     Tok::Op("{") => {
                         self.advance();
                         let (d, f) = self.replacement_field(at)?;
                         if !d.is_empty() {
-                            sp.push(Expr::new(ExprKind::Const(Const::Str(Rc::from(d.as_str()))), debug_pos(&d, &f)));
+                            sp.push(Expr::new(ExprKind::Const(Const::Str(Rc::new(PyStr::new(d.clone())))), debug_pos(&d, &f)));
                         }
                         sp.push(f);
                     }
@@ -1865,23 +1867,28 @@ impl Parser {
 /// the literal text of a JoinedStr being gathered, and its span
 #[derive(Default)]
 struct Lit {
-    text: String,
+    text: Wtf8Buf,
     pos: Option<Pos>,
 }
 
 impl Lit {
-    fn push(&mut self, s: &str, pos: Pos) {
+    fn push(&mut self, s: &Wtf8Buf, pos: Pos) {
         if s.is_empty() {
             return;
         }
-        self.text.push_str(s);
+        self.text.push_buf(s);
         self.pos = Some(self.pos.map_or(pos, |p| p.to(pos)));
+    }
+
+    fn push_str(&mut self, s: &str, pos: Pos) {
+        self.push(&Wtf8Buf::from(s.to_string()), pos);
     }
 
     /// ends the text gathered so far as a Constant part
     fn flush(&mut self, parts: &mut Vec<Expr>) {
         if let Some(pos) = self.pos.take() {
-            parts.push(Expr::new(ExprKind::Const(Const::Str(Rc::from(std::mem::take(&mut self.text).as_str()))), pos));
+            let text = std::mem::take(&mut self.text);
+            parts.push(Expr::new(ExprKind::Const(Const::Str(Rc::new(text.to_pystr()))), pos));
         }
     }
 }

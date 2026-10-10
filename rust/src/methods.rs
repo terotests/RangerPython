@@ -139,7 +139,7 @@ fn d_format(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     if spec.s.is_empty() {
         return Ok(Value::string(vm.str_of(&a[0])?));
     }
-    Ok(Value::string(crate::format::format_spec(vm, &x, &spec.s)?))
+    vm.format_to_str(&x, &spec.s)
 }
 fn d_len(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = this(vm, a);
@@ -1172,6 +1172,8 @@ fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     if name.s.contains('\0') {
         return Err(vm.value_error("type name must not contain null characters"));
     }
+    // CPython keeps the name and the docstring as UTF-8
+    crate::strmethods::check_utf8(vm, &name)?;
     if !matches!(vm.base_of(&a[2]), Value::Tuple(_)) {
         let tn = vm.type_name(&a[2]);
         return Err(vm.type_error(format!("type.__new__() argument 2 must be tuple, not {}", tn)));
@@ -1230,6 +1232,9 @@ fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             }
         },
     };
+    if let Some(Value::Str(doc)) = ns.borrow().get_s("__doc__") {
+        crate::strmethods::check_utf8(vm, &doc)?;
+    }
     if let Some(q) = ns.borrow().get_s("__qualname__") {
         if !matches!(q, Value::Str(_)) {
             let tn = vm.type_name(&q);
@@ -1406,7 +1411,7 @@ pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
         Value::Str(s) => match { crate::format::check_str_digits(vm, &s.s, 10)?; parse_int_vm(vm, &s.s, 10)? } {
             Some(b) => Value::from_big(b),
             None => {
-                let r = crate::format::str_repr(&s.s);
+                let r = crate::format::pystr_repr(&s);
                 return Err(vm.value_error(format!("invalid literal for int() with base 10: {}", r)));
             }
         },
@@ -1526,7 +1531,10 @@ fn int_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             match parse_int_vm(vm, &s, b as u32)? {
                 Some(v) => Value::from_big(v),
                 None => {
-                    let r = if matches!(vm.base_of(&x), Value::Str(_)) { crate::format::str_repr(&s) } else { crate::format::bytes_repr(&s.chars().map(|c| c as u8).collect::<Vec<u8>>()) };
+                    let r = match vm.base_of(&x) {
+                        Value::Str(p) => crate::format::pystr_repr(&p),
+                        _ => crate::format::bytes_repr(&s.chars().map(|c| c as u8).collect::<Vec<u8>>()),
+                    };
                     return Err(vm.value_error(format!("invalid literal for int() with base {}: {}", b, r)));
                 }
             }
@@ -1768,7 +1776,7 @@ pub fn float_of(vm: &mut Vm, x: &Value) -> PyResult<f64> {
         Value::Float(f) => Ok(*f),
         Value::Int(_) | Value::Bool(_) | Value::Big(_) => vm.to_f64(x),
         Value::Str(s) => {
-            let r = crate::format::str_repr(&s.s);
+            let r = crate::format::pystr_repr(&s);
             float_text(vm, &s.s, r)
         }
         Value::Bytes(_) | Value::ByteArray(_) => {

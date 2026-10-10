@@ -3,6 +3,7 @@
 //! are tokenized as in PEP 701: FStart, literal FMiddle pieces and the
 //! tokens of each replacement field, then FEnd.
 
+use crate::wtf8::Wtf8Buf;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -15,12 +16,12 @@ pub enum Tok {
     Float(f64),
     Imag(f64),
     /// a string or bytes literal, escapes decoded (bytes as chars < 256)
-    Str { s: String, bytes: bool },
+    Str { s: Wtf8Buf, bytes: bool },
     /// the start and end of an f-string
     FStart,
     FEnd,
     /// literal text of an f-string or of a format spec, escapes decoded
-    FMiddle(String),
+    FMiddle(Wtf8Buf),
     /// the `:` that starts a replacement field's format spec
     FSpec,
     /// a self-documenting `=`, holding the field's source up to and after it
@@ -583,13 +584,13 @@ impl Lexer {
                 return Err(LexError { msg: "bytes can only contain ASCII literal characters".into(), line, col, end_col });
             }
         }
-        let s = if raw { body } else { self.decode(&body, bytes, line, col)? };
+        let s = if raw { Wtf8Buf::from(body) } else { self.decode(&body, bytes, line, col)? };
         self.push(Tok::Str { s, bytes }, line, col);
         Ok(())
     }
 
     /// decodes a literal's escapes, recording an invalid escape's warning
-    fn decode(&self, body: &str, bytes: bool, line: u32, col: u32) -> Result<String, LexError> {
+    fn decode(&self, body: &str, bytes: bool, line: u32, col: u32) -> Result<Wtf8Buf, LexError> {
         let (s, warn) = unescape(body, bytes).map_err(|msg| LexError { msg, line, col, end_col: 0 })?;
         if let Some(w) = warn {
             push_warning(w, line, col);
@@ -607,13 +608,13 @@ impl Lexer {
         let nfields = fs.fields.len();
         let (line, col) = (self.line, self.col());
         // decoded text, and the text still to decode
-        let mut out = String::new();
+        let mut out = Wtf8Buf::default();
         let mut pending = String::new();
-        let flush = |lx: &Lexer, out: &mut String, pending: &mut String| -> Result<(), LexError> {
+        let flush = |lx: &Lexer, out: &mut Wtf8Buf, pending: &mut String| -> Result<(), LexError> {
             if raw {
                 out.push_str(pending);
             } else if !pending.is_empty() {
-                out.push_str(&lx.decode(pending, false, line, col)?);
+                out.push_buf(&lx.decode(pending, false, line, col)?);
             }
             pending.clear();
             Ok(())
@@ -730,16 +731,17 @@ fn span(offs: &[usize], from: usize, to: usize) -> String {
     format!("{}-{}", offs[from], offs[to.max(from + 1)] - 1)
 }
 
-/// Decodes the escapes of a string or bytes literal body. Also returns the
-/// SyntaxWarning for the first invalid escape sequence, if any.
-pub fn unescape(s: &str, bytes: bool) -> Result<(String, Option<String>), String> {
+/// Decodes the escapes of a string or bytes literal body (\uXXXX may be a
+/// lone surrogate). Also returns the SyntaxWarning for the first invalid
+/// escape sequence, if any.
+pub fn unescape(s: &str, bytes: bool) -> Result<(Wtf8Buf, Option<String>), String> {
     if !s.contains('\\') {
-        return Ok((s.to_string(), None));
+        return Ok((Wtf8Buf::from(s.to_string()), None));
     }
     let cs: Vec<char> = s.chars().collect();
     let mut offs: Vec<usize> = s.char_indices().map(|(o, _)| o).collect();
     offs.push(s.len());
-    let mut out = String::with_capacity(s.len());
+    let mut out = Wtf8Buf::from(String::with_capacity(s.len()));
     let mut warn = None;
     let err = |from: usize, to: usize, what: &str| {
         if bytes {
@@ -784,7 +786,7 @@ pub fn unescape(s: &str, bytes: bool) -> Result<(String, Option<String>), String
                 if bytes {
                     v &= 0xff;
                 }
-                out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
+                out.push_cp(v);
             }
             'x' | 'u' | 'U' if !(bytes && e != 'x') => {
                 let len = match e {
@@ -807,7 +809,7 @@ pub fn unescape(s: &str, bytes: bool) -> Result<(String, Option<String>), String
                 if v > 0x10ffff {
                     return Err(err(start, i + len, "illegal Unicode character"));
                 }
-                out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
+                out.push_cp(v);
                 i += len;
             }
             'N' if !bytes => {

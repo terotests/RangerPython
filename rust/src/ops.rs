@@ -842,7 +842,10 @@ impl Vm {
             "__name__" => {
                 match &v {
                     Value::Str(s) if s.s.contains('\0') => return Err(self.value_error("type name must not contain null characters")),
-                    Value::Str(s) => *c.name.borrow_mut() = s.clone(),
+                    Value::Str(s) => {
+                        crate::strmethods::check_utf8(self, s)?;
+                        *c.name.borrow_mut() = s.clone()
+                    }
                     other => {
                         let tn = self.type_name(other);
                         return Err(self.type_error(format!("can only assign string to {}.__name__, not '{}'", c.name(), tn)));
@@ -1302,12 +1305,7 @@ impl Vm {
                 Some(v) => v,
                 Option::None => return Ok(Option::None),
             },
-            (Str(x), Str(y)) if op == BinOp::Add => {
-                let mut s = String::with_capacity(x.s.len() + y.s.len());
-                s.push_str(&x.s);
-                s.push_str(&y.s);
-                Value::string(s)
-            }
+            (Str(x), Str(y)) if op == BinOp::Add => x.concat(y),
             (Str(x), Int(n)) | (Int(n), Str(x)) if op == BinOp::Mul => {
                 if *n == 1 {
                     return Ok(Some(Str(x.clone())));
@@ -1316,10 +1314,10 @@ impl Vm {
                     Value::str("")
                 } else {
                     let n = self.repeat_count(x.s.len(), *n)?;
-                    Value::string(x.s.repeat(n))
+                    x.repeat(n)
                 }
             }
-            (Str(x), Bool(n)) | (Bool(n), Str(x)) if op == BinOp::Mul => Value::string(if *n { x.s.clone() } else { String::new() }),
+            (Str(x), Bool(n)) | (Bool(n), Str(x)) if op == BinOp::Mul => x.repeat(*n as usize),
             (Bytes(x), Bytes(y)) if op == BinOp::Add => {
                 let mut v = (**x).clone();
                 v.extend_from_slice(y);
@@ -2049,7 +2047,7 @@ impl Vm {
             (Big(_), Int(_) | Big(_)) | (Int(_), Big(_)) => Some(big_of(a).unwrap().cmp(&big_of(b).unwrap())),
             (Big(x), Float(y)) => x.cmp_f64(*y),
             (Float(x), Big(y)) => y.cmp_f64(*x).map(Ordering::reverse),
-            (Str(x), Str(y)) => Some(x.s.cmp(&y.s)),
+            (Str(x), Str(y)) => Some(x.wtf8().cmp(y.wtf8())),
             (Bytes(x), Bytes(y)) => Some(x.cmp(y)),
             (ByteArray(_), Bytes(_) | ByteArray(_)) | (Bytes(_), ByteArray(_)) => Some(bytes_vec(a).cmp(&bytes_vec(b))),
             (List(x), List(y)) => {
@@ -2097,7 +2095,7 @@ impl Vm {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => Ok(x < y),
             (Value::Float(x), Value::Float(y)) => Ok(x < y),
-            (Value::Str(x), Value::Str(y)) => Ok(x.s < y.s),
+            (Value::Str(x), Value::Str(y)) => Ok(x.wtf8() < y.wtf8()),
             _ => {
                 let r = self.rich_order(CmpOp::Lt, a, b)?;
                 self.truthy(&r)
@@ -2646,9 +2644,9 @@ impl Vm {
                 if *i >= s.s.len() {
                     return Ok(None);
                 }
-                let c = s.s[*i..].chars().next().unwrap();
-                *i += c.len_utf8();
-                Ok(Some(crate::builtins::char_value(c)))
+                let (cp, n) = s.cp_at(*i);
+                *i += n;
+                Ok(Some(Value::from_cp(cp)))
             }
             Iter::Bytes(bs, i) => {
                 if *i < bs.len() {
@@ -2903,7 +2901,7 @@ impl Vm {
                 crate::range::len(self, r)?;
                 Ok(crate::range::items(r))
             }
-            Value::Str(s) => Ok(s.s.chars().map(crate::builtins::char_value).collect()),
+            Value::Str(s) => Ok(s.code_points().map(Value::from_cp).collect()),
             _ => {
                 let it = self.iter(v)?;
                 let mut out = vec![];
@@ -3082,7 +3080,7 @@ impl Vm {
     pub fn contains(&mut self, container: &Value, item: &Value) -> PyResult<bool> {
         match container {
             Value::Str(s) => match item {
-                Value::Str(i) => Ok(s.s.contains(&*i.s)),
+                Value::Str(i) => Ok(s.contains(i)),
                 _ => {
                     let tn = self.type_name(item);
                     Err(self.type_error(format!("'in <string>' requires string as left operand, not {}", tn)))
@@ -3236,6 +3234,16 @@ impl Vm {
                 self.repr(v)
             }
             _ => crate::format::str_builtin(self, v),
+        }
+    }
+
+    /// format_value as a str, exact for a str with lone surrogates
+    pub fn format_to_str(&mut self, v: &Value, spec: &str) -> PyResult<Value> {
+        match v {
+            Value::Str(p) if p.has_surrogates() && spec.is_empty() => Ok(v.clone()),
+            Value::Str(p) if p.has_surrogates() => crate::format::format_pystr(self, p, spec),
+            Value::Int(_) | Value::Big(_) if spec.ends_with('c') => crate::format::format_char(self, v, spec),
+            _ => Ok(Value::string(self.format_value(v, spec)?)),
         }
     }
 

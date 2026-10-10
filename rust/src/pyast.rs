@@ -504,7 +504,7 @@ fn const_value(c: &Const) -> Value {
         Const::BigInt(s) => Value::from_big(crate::bigint::BigInt::from_radix(s, 10).unwrap()),
         Const::Float(f) => Value::Float(*f),
         Const::Imag(f) => Value::Complex(Rc::new((0.0, *f))),
-        Const::Str(s) => Value::str(s),
+        Const::Str(s) => Value::Str(s.clone()),
         Const::Bytes(b) => Value::Bytes(Rc::new(b.to_vec())),
     }
 }
@@ -961,7 +961,7 @@ impl FromPy<'_> {
                 let im = Expr::new(ExprKind::Const(Const::Imag(z.1)), pos);
                 return Ok(ExprKind::Bin(BinOp::Add, Box::new(re), Box::new(im)));
             }
-            Value::Str(s) => Const::Str(Rc::from(s.s.as_str())),
+            Value::Str(s) => Const::Str(s.clone()),
             Value::Bytes(b) => Const::Bytes(Rc::from(b.as_slice())),
             Value::Tuple(items) => {
                 let elts = items.iter().map(|x| Ok(Expr::new(self.constant(x, pos)?, pos))).collect::<PyResult<Vec<_>>>()?;

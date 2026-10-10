@@ -10,24 +10,26 @@ use std::rc::Rc;
 pub type Name = Rc<str>;
 
 /// A Python str: the text, whether it is all ASCII (so indexing is by
-/// byte), and its hash computed once.
+/// byte), and its hash computed once. A str with lone surrogates also has
+/// its exact code points in `wtf`, and U+FFFD for each in `s` (see wtf8.rs).
 pub struct PyStr {
     pub s: String,
     pub ascii: bool,
+    pub wtf: Option<Box<[u8]>>,
     hash: Cell<u64>,
 }
 
 impl PyStr {
     pub fn new(s: String) -> PyStr {
         let ascii = s.is_ascii();
-        PyStr { s, ascii, hash: Cell::new(0) }
+        PyStr { s, ascii, wtf: None, hash: Cell::new(0) }
     }
     pub fn hash(&self) -> u64 {
         let h = self.hash.get();
         if h != 0 {
             return h;
         }
-        let h = hash_bytes(self.s.as_bytes());
+        let h = hash_bytes(self.wtf8());
         self.hash.set(h);
         h
     }
@@ -37,6 +39,12 @@ impl PyStr {
         } else {
             self.s.chars().count()
         }
+    }
+}
+
+impl std::fmt::Debug for PyStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&crate::format::pystr_repr(self))
     }
 }
 
@@ -497,7 +505,7 @@ impl Dict {
                 if let Some(e) = &self.entries[ix as usize] {
                     if e.hash == hash {
                         if let Value::Str(s) = &e.key {
-                            if std::ptr::eq(&**s, key) || s.s == key.s {
+                            if std::ptr::eq(&**s, key) || s.same(key) {
                                 return Some(&e.value);
                             }
                         }
@@ -558,7 +566,7 @@ impl Dict {
                 if let Some(e) = &self.entries[ix as usize] {
                     if e.hash == hash {
                         if let Value::Str(s) = &e.key {
-                            if s.s == key.s {
+                            if s.same(key) {
                                 return Some(ix as usize);
                             }
                         }
@@ -916,7 +924,7 @@ pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
     use Value::*;
     Some(match (a, b) {
         (Int(x), Int(y)) => x == y,
-        (Str(x), Str(y)) => Rc::ptr_eq(x, y) || x.s == y.s,
+        (Str(x), Str(y)) => Rc::ptr_eq(x, y) || x.same(y),
         (None, None) => true,
         (Bool(x), Bool(y)) => x == y,
         (Bool(x), Int(y)) | (Int(y), Bool(x)) => (*x as i64) == *y,
@@ -1005,7 +1013,7 @@ impl Value {
             (Value::None, Value::None) => true,
             (Value::NotImplemented, Value::NotImplemented) => true,
             (Value::Ellipsis, Value::Ellipsis) => true,
-            (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b) || (a.s.len() <= 1 && a.s == b.s),
+            (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b) || (a.s.len() <= 1 && a.same(b)),
             (Value::Tuple(a), Value::Tuple(b)) => Rc::ptr_eq(a, b) || (a.is_empty() && b.is_empty()),
             _ => std::mem::discriminant(self) == std::mem::discriminant(o) && ptr_id(self) == ptr_id(o),
         }

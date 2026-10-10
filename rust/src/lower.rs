@@ -6,6 +6,7 @@
 
 use crate::ast::*;
 use crate::compile::CompileError;
+use crate::value::PyStr;
 use std::rc::Rc;
 
 type CResult<T> = Result<T, CompileError>;
@@ -226,7 +227,7 @@ fn name(pos: Pos, n: &str) -> Expr {
 }
 
 fn str_const(s: &str, pos: Pos) -> Expr {
-    at(pos, ExprKind::Const(Const::Str(Rc::from(s))))
+    at(pos, ExprKind::Const(Const::Str(Rc::new(PyStr::new(s.to_string())))))
 }
 
 fn call(func: Expr, args: Vec<Arg>, pos: Pos) -> Expr {
@@ -512,7 +513,7 @@ fn fold(e: &mut Expr) {
         },
         ExprKind::Bin(op, a, b) => match (&a.kind, &b.kind) {
             (ExprKind::Const(Const::Str(x)), ExprKind::Const(Const::Str(y))) if *op == BinOp::Add => {
-                Some(Const::Str(Rc::from(format!("{}{}", x, y).as_str())))
+                Some(Const::Str(Rc::new(PyStr::from_wtf8([x.wtf8(), y.wtf8()].concat()))))
             }
             _ => match (num(a), num(b)) {
                 (Some(x), Some(y)) => fold_num(*op, x, y),
@@ -532,7 +533,7 @@ fn truth(k: &Const) -> Option<bool> {
         Const::True | Const::Ellipsis => true,
         Const::Int(i) => *i != 0,
         Const::Float(f) => *f != 0.0,
-        Const::Str(s) => !s.is_empty(),
+        Const::Str(s) => !s.s.is_empty(),
         Const::Bytes(b) => !b.is_empty(),
         _ => return None,
     })

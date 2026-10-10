@@ -1263,13 +1263,14 @@ impl Vm {
                 }
                 Op::BuildString(n) => {
                     let at = f.stack.len() - n as usize;
-                    let mut s = String::new();
+                    let size = f.stack[at..].iter().map(|v| if let Value::Str(p) = v { p.s.len() } else { 0 }).sum();
+                    let mut s = crate::wtf8::Wtf8Buf::from(String::with_capacity(size));
                     for v in f.stack.drain(at..) {
                         if let Value::Str(p) = v {
-                            s.push_str(&p.s);
+                            s.push_pystr(&p);
                         }
                     }
-                    f.stack.push(Value::string(s));
+                    f.stack.push(s.into_value());
                 }
                 Op::ListAppend(d) => {
                     let v = Self::pop(f);
@@ -1346,6 +1347,7 @@ impl Vm {
                     let spec = if has_spec { Self::pop(f) } else { Value::str("") };
                     let v = Self::pop(f);
                     let v = match conv {
+                        1 if matches!(v, Value::Str(_)) => v,
                         1 => Value::string(self.str_of(&v)?),
                         2 => Value::string(self.repr(&v)?),
                         3 => Value::string(crate::format::ascii_escape(&self.repr(&v)?)),
@@ -1355,13 +1357,9 @@ impl Vm {
                         Value::Str(s) => s.s.clone(),
                         _ => String::new(),
                     };
-                    let r = if spec_s.is_empty() {
-                        match &v {
-                            Value::Str(_) => v,
-                            _ => Value::string(self.format_value(&v, "")?),
-                        }
-                    } else {
-                        Value::string(self.format_value(&v, &spec_s)?)
+                    let r = match &v {
+                        Value::Str(_) if spec_s.is_empty() => v,
+                        _ => self.format_to_str(&v, &spec_s)?,
                     };
                     f.stack.push(r);
                 }

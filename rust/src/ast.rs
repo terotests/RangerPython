@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Syntax tree produced by the parser.
 
+use crate::value::PyStr;
 use std::rc::Rc;
 
 pub type Name = Rc<str>;
@@ -161,7 +162,7 @@ pub enum Const {
     BigInt(String),
     Float(f64),
     Imag(f64),
-    Str(Rc<str>),
+    Str(Rc<PyStr>),
     Bytes(Rc<[u8]>),
 }
 

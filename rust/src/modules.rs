@@ -523,10 +523,16 @@ fn f_write(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let o = file_of(vm, &a[0])?;
     margs(vm, "write", a, 1, 1)?;
     let text: String = match &a[1] {
-        Value::Str(s) => s.s.clone(),
+        Value::Str(s) => {
+            crate::strmethods::check_utf8(vm, s)?;
+            s.s.clone()
+        }
         Value::Bytes(_) | Value::ByteArray(_) => bytes_to_latin1(&a[1]),
         v => match vm.base_of(v) {
-            Value::Str(s) => s.s.clone(),
+            Value::Str(s) => {
+                crate::strmethods::check_utf8(vm, &s)?;
+                s.s.clone()
+            }
             _ => {
                 let tn = vm.type_name(v);
                 return Err(vm.type_error(format!("write() argument must be str, not {}", tn)));
@@ -2721,9 +2727,10 @@ fn unicodedata_module() -> Value {
     m
 }
 
-fn ud_char(vm: &mut Vm, v: &Value, f: &str) -> PyResult<char> {
+/// the code point of a one-character str
+fn ud_char(vm: &mut Vm, v: &Value, f: &str) -> PyResult<u32> {
     if let Value::Str(s) = v {
-        let mut cs = s.s.chars();
+        let mut cs = s.code_points();
         if let (Some(c), None) = (cs.next(), cs.next()) {
             return Ok(c);
         }
@@ -2734,7 +2741,7 @@ fn ud_char(vm: &mut Vm, v: &Value, f: &str) -> PyResult<char> {
 
 fn ud_name(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let c = ud_char(vm, &a[0], "name")?;
-    match crate::unicode_name_of(c) {
+    match char::from_u32(c).and_then(crate::unicode_name_of) {
         Some(n) => Ok(Value::str(n)),
         None => match a.get(1) {
             Some(d) => Ok(d.clone()),

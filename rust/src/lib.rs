@@ -36,6 +36,7 @@ pub mod value;
 pub mod vm;
 pub mod tb;
 pub mod unidata;
+pub mod wtf8;
 
 use value::Value;
 

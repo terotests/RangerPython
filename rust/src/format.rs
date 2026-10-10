@@ -4,6 +4,7 @@
 
 use crate::value::*;
 use crate::vm::Vm;
+use crate::wtf8::Wtf8Buf;
 use std::rc::Rc;
 
 // -------------------------------------------------------------------------
@@ -200,10 +201,23 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
 // repr
 
 pub fn str_repr(s: &str) -> String {
+    repr_code_points(s, s.chars().map(|c| c as u32))
+}
+
+/// the repr of a str, lone surrogates too
+pub fn pystr_repr(p: &crate::value::PyStr) -> String {
+    repr_code_points(&p.s, p.code_points())
+}
+
+fn repr_code_points(s: &str, cps: impl Iterator<Item = u32>) -> String {
     let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
     let mut out = String::with_capacity(s.len() + 2);
     out.push(q);
-    for c in s.chars() {
+    for cp in cps {
+        let Some(c) = char::from_u32(cp) else {
+            out.push_str(&format!("\\u{:04x}", cp));
+            continue;
+        };
         match c {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
@@ -368,7 +382,7 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
         Value::Big(b) => big_decimal(vm, b)?,
         Value::Float(f) => float_repr(*f),
         Value::Complex(c) => complex_repr(c.0, c.1),
-        Value::Str(s) => str_repr(&s.s),
+        Value::Str(s) => pystr_repr(s),
         Value::Bytes(b) => bytes_repr(b),
         Value::ByteArray(b) => format!("bytearray({})", bytes_repr(&b.borrow())),
         Value::List(l) => {
@@ -708,7 +722,20 @@ fn pad(sp: &Spec, sign: &str, body: &str, numeric: bool, default_left: bool) -> 
     if sp.width <= len {
         return format!("{}{}", sign, body);
     }
-    let n = sp.width - len;
+    let (fill, [before, between, after]) = padding(sp, len, numeric, default_left);
+    let mut out = String::with_capacity(sp.width * fill.len_utf8() + sign.len() + body.len());
+    out.extend(std::iter::repeat_n(fill, before));
+    out.push_str(sign);
+    out.extend(std::iter::repeat_n(fill, between));
+    out.push_str(body);
+    out.extend(std::iter::repeat_n(fill, after));
+    out
+}
+
+/// the fill of a field holding len characters, and how many go before the
+/// sign, between it and the body, and after the body
+fn padding(sp: &Spec, len: usize, numeric: bool, default_left: bool) -> (char, [usize; 3]) {
+    let n = sp.width.saturating_sub(len);
     // the 0 flag fills with zeros unless a fill is given, after the sign for numbers
     let default_align = if default_left { '<' } else { '>' };
     let (fill, align) = if sp.zero && !sp.fill_set {
@@ -716,13 +743,61 @@ fn pad(sp: &Spec, sign: &str, body: &str, numeric: bool, default_left: bool) -> 
     } else {
         (sp.fill, sp.align.unwrap_or(default_align))
     };
-    let f = |k: usize| std::iter::repeat(fill).take(k).collect::<String>();
-    match align {
-        '<' => format!("{}{}{}", sign, body, f(n)),
-        '^' => format!("{}{}{}{}", f(n / 2), sign, body, f(n - n / 2)),
-        '=' => format!("{}{}{}", sign, f(n), body),
-        _ => format!("{}{}{}", f(n), sign, body),
+    let counts = match align {
+        '<' => [0, 0, n],
+        '^' => [n / 2, 0, n - n / 2],
+        '=' => [0, n, 0],
+        _ => [n, 0, 0],
+    };
+    (fill, counts)
+}
+
+/// a str in a field of `sp`, cut to its precision; exact for lone surrogates
+fn pad_pystr(sp: &Spec, p: &PyStr, default_left: bool) -> Wtf8Buf {
+    let cps: Vec<u32> = p.code_points().take(sp.prec.unwrap_or(usize::MAX)).collect();
+    let (fill, [before, _, after]) = padding(sp, cps.len(), false, default_left);
+    let mut out = Wtf8Buf::default();
+    (0..before).for_each(|_| out.push(fill));
+    cps.into_iter().for_each(|cp| out.push_cp(cp));
+    (0..after).for_each(|_| out.push(fill));
+    out
+}
+
+/// format(s, spec) of a str with lone surrogates
+pub fn format_pystr(vm: &mut Vm, p: &PyStr, spec: &str) -> PyResult<Value> {
+    let Some(sp) = parse_spec(spec) else {
+        return Err(vm.value_error(format!("Invalid format specifier '{}' for object of type 'str'", spec)));
+    };
+    str_spec_check(vm, &sp)?;
+    Ok(pad_pystr(&sp, p, true).into_value())
+}
+
+/// the parts of a format spec a str rejects
+fn str_spec_check(vm: &mut Vm, sp: &Spec) -> PyResult<()> {
+    if let Some(t) = sp.ty {
+        if t != 's' {
+            return Err(vm.value_error(format!("Unknown format code '{}' for object of type 'str'", t)));
+        }
     }
+    if let Some(g) = sp.grouping {
+        return Err(bad_grouping(vm, g, 's'));
+    }
+    if sp.sign == Some(' ') {
+        return Err(vm.value_error("Space not allowed in string format specifier"));
+    }
+    if sp.sign.is_some() {
+        return Err(vm.value_error("Sign not allowed in string format specifier"));
+    }
+    if sp.z {
+        return Err(vm.value_error("Negative zero coercion (z) not allowed in string format specifier"));
+    }
+    if sp.alt {
+        return Err(vm.value_error("Alternate form (#) not allowed in string format specifier"));
+    }
+    if sp.align == Some('=') {
+        return Err(vm.value_error("'=' alignment not allowed in string format specifier"));
+    }
+    Ok(())
 }
 
 fn sign_str(sp: &Spec, neg: bool) -> &'static str {
@@ -810,7 +885,8 @@ fn zero_group(digits: &str, sep: char, every: usize, min_len: usize) -> String {
     }
 }
 
-fn format_int(vm: &mut Vm, v: &crate::bigint::BigInt, sp: &Spec) -> PyResult<String> {
+/// int.__format__; exact for 'c' of a lone surrogate
+fn format_int(vm: &mut Vm, v: &crate::bigint::BigInt, sp: &Spec) -> PyResult<Wtf8Buf> {
     let ty = sp.ty.unwrap_or('d');
     if sp.prec.is_some() && matches!(ty, 'd' | 'b' | 'o' | 'x' | 'X' | 'c' | 'n') {
         return Err(vm.value_error("Precision not allowed in integer format specifier"));
@@ -827,7 +903,7 @@ fn format_int(vm: &mut Vm, v: &crate::bigint::BigInt, sp: &Spec) -> PyResult<Str
         }
     }
     if matches!(ty, 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%') {
-        return format_float(vm, v.to_f64(), sp);
+        return format_float(vm, v.to_f64(), sp).map(Wtf8Buf::from);
     }
     let neg = v.neg;
     let mag = v.abs();
@@ -838,8 +914,8 @@ fn format_int(vm: &mut Vm, v: &crate::bigint::BigInt, sp: &Spec) -> PyResult<Str
         'x' => ("0x", mag.to_radix(16)),
         'X' => ("0X", mag.to_radix(16).to_uppercase()),
         'c' => {
-            let c = v.to_i64().and_then(|i| char::from_u32(i as u32)).ok_or_else(|| vm.err("OverflowError", "%c arg not in range(0x110000)"))?;
-            return Ok(pad(sp, "", &c.to_string(), false, false));
+            let c = v.to_i64().and_then(|i| u32::try_from(i).ok()).filter(|&c| c < 0x110000).ok_or_else(|| vm.err("OverflowError", "%c arg not in range(0x110000)"))?;
+            return Ok(pad_pystr(sp, &PyStr::from_code_points([c]), false));
         }
         other => return Err(vm.value_error(format!("Unknown format code '{}' for object of type 'int'", other))),
     };
@@ -863,12 +939,12 @@ fn format_int(vm: &mut Vm, v: &crate::bigint::BigInt, sp: &Spec) -> PyResult<Str
         loop {
             let gz = group(&z, g, every);
             if sign.len() + gz.len() >= sp.width {
-                return Ok(format!("{}{}", sign, gz));
+                return Ok(format!("{}{}", sign, gz).into());
             }
             z.insert(0, '0');
         }
     }
-    Ok(pad(sp, &sign, &digits, true, false))
+    Ok(pad(sp, &sign, &digits, true, false).into())
 }
 
 fn format_float(vm: &mut Vm, x: f64, sp: &Spec) -> PyResult<String> {
@@ -953,6 +1029,14 @@ fn format_complex(vm: &mut Vm, re: f64, im: f64, sp: &Spec) -> PyResult<String> 
     Ok(pad(sp, "", &out, false, false))
 }
 
+/// format(n, spec) of an int with type 'c'; exact for a lone surrogate
+pub fn format_char(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<Value> {
+    match (parse_spec(spec), crate::ops::big_of(v)) {
+        (Some(sp), Some(b)) if sp.grouping.is_none() => Ok(format_int(vm, &b, &sp)?.into_value()),
+        _ => format_spec(vm, v, spec).map(Value::string),
+    }
+}
+
 pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
     let sp = match parse_spec(spec) {
         Some(s) => s,
@@ -979,30 +1063,11 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
         Value::Bool(b) if sp.ty.is_none() => Ok(pad(&sp, "", if *b { "True" } else { "False" }, false, true)),
         Value::Int(_) | Value::Big(_) | Value::Bool(_) => {
             let b = crate::ops::big_of(v).unwrap();
-            format_int(vm, &b, &sp)
+            format_int(vm, &b, &sp).map(Wtf8Buf::into_string_lossy)
         }
         Value::Float(f) => format_float(vm, *f, &sp),
         Value::Str(s) => {
-            if let Some(t) = sp.ty {
-                if t != 's' {
-                    return Err(vm.value_error(format!("Unknown format code '{}' for object of type 'str'", t)));
-                }
-            }
-            if sp.sign == Some(' ') {
-                return Err(vm.value_error("Space not allowed in string format specifier"));
-            }
-            if sp.sign.is_some() {
-                return Err(vm.value_error("Sign not allowed in string format specifier"));
-            }
-            if sp.z {
-                return Err(vm.value_error("Negative zero coercion (z) not allowed in string format specifier"));
-            }
-            if sp.alt {
-                return Err(vm.value_error("Alternate form (#) not allowed in string format specifier"));
-            }
-            if sp.align == Some('=') {
-                return Err(vm.value_error("'=' alignment not allowed in string format specifier"));
-            }
+            str_spec_check(vm, &sp)?;
             let body: String = match sp.prec {
                 Some(p) => s.s.chars().take(p).collect(),
                 None => s.s.clone(),
@@ -1030,19 +1095,20 @@ pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<Value>
     let mut sole = None;
     let out = percent_format_mode(vm, fmt, args, false, &mut sole)?;
     if let Some(Value::Str(x)) = &sole {
-        if x.s.len() == out.len() {
+        if x.wtf8().len() == out.as_bytes().len() {
             return Ok(sole.unwrap());
         }
     }
     match fmt {
-        Value::Str(f) if *f.s == *out => Ok(fmt.clone()),
-        _ => Ok(Value::string(out)),
+        Value::Str(f) if f.wtf8() == out.as_bytes() => Ok(fmt.clone()),
+        _ => Ok(out.into_value()),
     }
 }
 
 /// `bytes % args`: the format and the result are latin-1 text standing for bytes
 pub fn bytes_percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String> {
-    percent_format_mode(vm, fmt, args, true, &mut None)
+    let out = percent_format_mode(vm, fmt, args, true, &mut None)?;
+    Ok(out.into_string_lossy())
 }
 
 /// the bytes `%s`/`%b` inserts for `v`, as latin-1 text
@@ -1069,10 +1135,11 @@ fn bytes_operand(vm: &mut Vm, v: &Value, conv: char) -> PyResult<String> {
     }
 }
 
-fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool, sole: &mut Option<Value>) -> PyResult<String> {
-    let f = match fmt {
-        Value::Str(s) => s.s.clone(),
-        _ => vm.str_of(fmt)?,
+fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool, sole: &mut Option<Value>) -> PyResult<Wtf8Buf> {
+    let (f, exact) = match fmt {
+        // the text to copy, when it has lone surrogates
+        Value::Str(s) => (s.s.clone(), s.has_surrogates().then(|| s.code_points().collect::<Vec<u32>>())),
+        _ => (vm.str_of(fmt)?, None),
     };
     let mapping = match args {
         Value::Dict(_) => true,
@@ -1084,13 +1151,16 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool, sole
         _ => vec![args.clone()],
     };
     let mut ai = 0;
-    let mut out = String::with_capacity(f.len() + 16);
+    let mut out = Wtf8Buf::from(String::with_capacity(f.len() + 16));
     let c: Vec<char> = f.chars().collect();
     let mut i = 0;
     let mut used_mapping = false;
     while i < c.len() {
         if c[i] != '%' {
-            out.push(c[i]);
+            match &exact {
+                Some(cps) => out.push_cp(cps[i]),
+                None => out.push(c[i]),
+            }
             i += 1;
             continue;
         }
@@ -1239,6 +1309,16 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool, sole
                 };
                 pad(&sp, "", &ch, false, false)
             }
+            's' if matches!(&arg, Value::Str(p) if p.has_surrogates()) => {
+                let Value::Str(p) = &arg else { unreachable!() };
+                sp.zero = false;
+                let piece = pad_pystr(&sp, p, false);
+                if out.is_empty() && piece.as_bytes() == p.wtf8() {
+                    *sole = Some(arg.clone());
+                }
+                out.push_buf(&piece);
+                continue;
+            }
             's' | 'r' | 'a' => {
                 let s = match conv {
                     's' => vm.str_of(&arg)?,
@@ -1342,14 +1422,16 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool, sole
                     _ => None,
                 };
                 let ch = match (&arg, code) {
-                    (Value::Str(s), _) if s.char_len() == 1 => s.s.clone(),
-                    (_, Some(n)) => match u32::try_from(n).ok().and_then(char::from_u32) {
-                        Some(c) => c.to_string(),
+                    (Value::Str(s), _) if s.char_len() == 1 => s.clone(),
+                    (_, Some(n)) => match u32::try_from(n).ok().filter(|&u| u < 0x110000) {
+                        Some(u) => Rc::new(PyStr::from_code_points([u])),
                         None => return Err(vm.err("OverflowError", "%c arg not in range(0x110000)")),
                     },
                     _ => return Err(vm.type_error("%c requires int or char")),
                 };
-                pad(&sp, "", &ch, false, false)
+                sp.prec = None;
+                out.push_buf(&pad_pystr(&sp, &ch, false));
+                continue;
             }
             other => {
                 return Err(vm.value_error(format!("unsupported format character '{}' (0x{:x}) at index {}", other, other as u32, i - 1)));

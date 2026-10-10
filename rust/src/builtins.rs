@@ -338,6 +338,12 @@ pub fn seq_getitem(vm: &mut Vm, obj: &Value, idx: &Value) -> PyResult<Value> {
                     let out: String = slice_positions(a, b, st).into_iter().map(|i| by[i] as char).collect();
                     return Ok(Value::string(out));
                 }
+                if s.has_surrogates() {
+                    let cps: Vec<u32> = s.code_points().collect();
+                    let (a, b, st) = slice_indices(vm, sl, cps.len())?;
+                    let picked = slice_positions(a, b, st).into_iter().map(|i| cps[i]);
+                    return Ok(Value::Str(Rc::new(PyStr::from_code_points(picked))));
+                }
                 let cs = str_chars(s);
                 let (a, b, st) = slice_indices(vm, sl, cs.len())?;
                 Ok(Value::string(slice_positions(a, b, st).into_iter().map(|i| cs[i]).collect()))
@@ -383,7 +389,7 @@ pub fn seq_getitem(vm: &mut Vm, obj: &Value, idx: &Value) -> PyResult<Value> {
             }
             let n = s.char_len();
             let i = norm_index(vm, idx, n, "string")?;
-            Ok(char_value(s.s.chars().nth(i).unwrap()))
+            Ok(Value::from_cp(s.code_points().nth(i).unwrap()))
         }
         Value::Bytes(b) => {
             let i = norm_index(vm, idx, b.len(), "index")?;
@@ -1112,9 +1118,9 @@ pub fn decode_error(vm: &mut Vm, enc: &str, obj: &[u8], start: usize, end: usize
 }
 
 /// a UnicodeEncodeError with CPython's fields
-pub fn encode_error(vm: &mut Vm, enc: &str, obj: &str, start: usize, end: usize, reason: &str) -> Exc {
+pub fn encode_error(vm: &mut Vm, enc: &str, obj: &Rc<PyStr>, start: usize, end: usize, reason: &str) -> Exc {
     let cls = vm.exc_class("UnicodeEncodeError");
-    let v = vm.new_exc(&cls, vec![Value::str(enc), Value::str(obj), Value::Int(start as i64), Value::Int(end as i64), Value::str(reason)]);
+    let v = vm.new_exc(&cls, vec![Value::str(enc), Value::Str(obj.clone()), Value::Int(start as i64), Value::Int(end as i64), Value::str(reason)]);
     Exc { value: v }
 }
 
@@ -1329,18 +1335,25 @@ fn unicode_error_str(vm: &mut Vm, cls: &Rc<Class>, inst: &Instance) -> PyResult<
         }));
     }
     let ch = match &obj {
-        Value::Str(s) if single => s.s.chars().nth(start as usize),
+        Value::Str(s) if single => s.code_points().nth(start as usize),
         _ => None,
     };
     let what = if translate { "can't translate".to_string() } else { format!("'{}' codec can't encode", enc) };
     Ok(Some(match ch {
-        Some(c) => {
-            let n = c as u32;
+        Some(n) => {
             let esc = if n <= 0xff { format!("\\x{:02x}", n) } else if n <= 0xffff { format!("\\u{:04x}", n) } else { format!("\\U{:08x}", n) };
             format!("{} character '{}' in position {}: {}", what, esc, start, reason)
         }
         None => format!("{} characters in position {}-{}: {}", what, start, end - 1, reason),
     }))
+}
+
+/// str(exc) as a str; exact when its sole argument has lone surrogates
+pub fn exc_str_value(vm: &mut Vm, v: &Value) -> PyResult<Value> {
+    match &vm.exc_args(v)[..] {
+        [a @ Value::Str(p)] if p.has_surrogates() && !vm.class_of(v).is_subclass(&vm.exc_class("KeyError")) => Ok(a.clone()),
+        _ => exc_str(vm, v).map(Value::string),
+    }
 }
 
 pub fn exc_str(vm: &mut Vm, v: &Value) -> PyResult<String> {
@@ -1523,7 +1536,7 @@ fn exc_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 
 fn exc_str_native(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
-    Ok(Value::string(exc_str(vm, &a[0])?))
+    exc_str_value(vm, &a[0])
 }
 
 fn exc_repr_native(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -1871,15 +1884,15 @@ pub fn write_stdout(vm: &mut Vm, s: &str) -> PyResult<()> {
 }
 
 fn bi_print(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
-    let mut sep = " ".to_string();
-    let mut end = "\n".to_string();
+    let mut sep = ps(" ");
+    let mut end = ps("\n");
     let mut file = Value::None;
     for (key, v) in k {
         match &*key.s {
             "sep" => {
                 if !v.is_none() {
                     sep = match v {
-                        Value::Str(s) => s.s.clone(),
+                        Value::Str(s) => s.clone(),
                         _ => {
                             let tn = vm.type_name(v);
                             return Err(vm.type_error(format!("sep must be None or a string, not {}", tn)));
@@ -1890,7 +1903,7 @@ fn bi_print(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             "end" => {
                 if !v.is_none() {
                     end = match v {
-                        Value::Str(s) => s.s.clone(),
+                        Value::Str(s) => s.clone(),
                         _ => {
                             let tn = vm.type_name(v);
                             return Err(vm.type_error(format!("end must be None or a string, not {}", tn)));
@@ -1903,30 +1916,29 @@ fn bi_print(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             other => return Err(vm.type_error(format!("'{}' is an invalid keyword argument for print()", other))),
         }
     }
-    let mut s = String::new();
+    let mut s = crate::wtf8::Wtf8Buf::default();
     for (i, x) in a.iter().enumerate() {
         if i > 0 {
-            s.push_str(&sep);
+            s.push_pystr(&sep);
         }
         match x {
-            Value::Str(t) => s.push_str(&t.s),
-            Value::Int(n) => {
-                use std::fmt::Write;
-                let _ = write!(s, "{}", n);
-            }
+            Value::Str(t) => s.push_pystr(t),
+            Value::Int(n) => s.push_str(&n.to_string()),
             _ => s.push_str(&vm.str_of(x)?),
         }
     }
-    s.push_str(&end);
+    s.push_pystr(&end);
+    let Value::Str(s) = s.into_value() else { unreachable!() };
     if file.is_none() || crate::modules::is_std_stream(&file) {
+        crate::strmethods::check_utf8(vm, &s)?;
         if crate::modules::is_stderr(&file) {
-            vm.write_err(&s);
+            vm.write_err(&s.s);
             return Ok(Value::None);
         }
-        write_stdout(vm, &s)?;
+        write_stdout(vm, &s.s)?;
     } else {
         let w = vm.getattr(&file, &ps("write"))?;
-        vm.call_vec(&w, vec![Value::string(s)], &[])?;
+        vm.call_vec(&w, vec![Value::Str(s)], &[])?;
     }
     Ok(Value::None)
 }
@@ -2079,15 +2091,9 @@ fn bi_chr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             Err(e) => return Err(e),
         },
     };
-    match u32::try_from(i).ok().and_then(char::from_u32) {
-        Some(c) => Ok(char_value(c)),
-        None => {
-            if (0xd800..0xe000).contains(&i) {
-                // a lone surrogate cannot be a Rust char; keep the replacement
-                return Ok(Value::str("\u{fffd}"));
-            }
-            Err(vm.value_error("chr() arg not in range(0x110000)"))
-        }
+    match u32::try_from(i) {
+        Ok(cp) if cp <= 0x10ffff => Ok(Value::from_cp(cp)),
+        _ => Err(vm.value_error("chr() arg not in range(0x110000)")),
     }
 }
 
@@ -2095,7 +2101,7 @@ fn bi_ord(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "ord", a, 1, 1)?;
     match &vm.base_of(&a[0]) {
         Value::Str(s) => {
-            let mut cs = s.s.chars();
+            let mut cs = s.code_points();
             match (cs.next(), cs.next()) {
                 (Some(c), None) => Ok(Value::Int(c as i64)),
                 _ => Err(vm.type_error(format!("ord() expected a character, but string of length {} found", s.char_len()))),
@@ -2366,7 +2372,7 @@ pub fn bi_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             Ok(mk_iter(Iter::ListRev(l.clone(), n)))
         }
         Value::Tuple(t) => Ok(mk_iter(Iter::Vec(t.iter().rev().cloned().collect::<Vec<_>>().into_iter()))),
-        Value::Str(s) => Ok(mk_iter(Iter::Vec(s.s.chars().rev().map(char_value).collect::<Vec<_>>().into_iter()))),
+        Value::Str(s) => Ok(mk_iter(Iter::Vec(s.code_points().rev().map(Value::from_cp).collect::<Vec<_>>().into_iter()))),
         Value::Range(r) => {
             let n = range_len(r) as i128;
             let last = r.0 as i128 + (n - 1).max(0) * r.2 as i128;
@@ -2447,7 +2453,7 @@ fn bi_format(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
         None => String::new(),
     };
-    Ok(Value::string(vm.format_value(&a[0], &spec)?))
+    vm.format_to_str(&a[0], &spec)
 }
 
 fn bi_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -2849,7 +2855,8 @@ pub fn sort_values(vm: &mut Vm, items: &mut Vec<Value>, key: &Value, reverse: bo
             idx.sort_by(|a, b| fk[*a].partial_cmp(&fk[*b]).unwrap());
         }
     } else if keys.iter().all(|k| matches!(k, Value::Str(_))) {
-        let sk: Vec<&str> = keys.iter().map(|k| k.as_str().unwrap()).collect();
+        // code point order, lone surrogates too
+        let sk: Vec<&[u8]> = keys.iter().filter_map(|k| if let Value::Str(s) = k { Some(s.wtf8()) } else { None }).collect();
         if reverse {
             idx.sort_by(|a, b| sk[*b].cmp(sk[*a]));
         } else {
@@ -3296,7 +3303,7 @@ fn decode_source(vm: &mut Vm, b: &[u8]) -> PyResult<String> {
             return Err(e);
         }
         if !utf8 {
-            return crate::strmethods::decode_bytes(vm, b, &enc, "strict");
+            return Ok(crate::strmethods::decode_bytes(vm, b, &enc, "strict")?.into_string_lossy());
         }
     }
     match std::str::from_utf8(b) {

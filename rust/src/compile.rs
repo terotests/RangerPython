@@ -784,7 +784,7 @@ pub fn compile_module_opt(mut body: Vec<Stmt>, filename: &str, optimize: u8, top
     }
     // a docstring
     if let (Some(Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Const(Const::Str(d)), .. }), .. }), true) = (body.first(), optimize < 2) {
-        let k = c.const_str(d);
+        let k = c.const_pystr(d);
         c.emit(Op::LoadConst(k));
         let n = c.name_idx(&Rc::from("__doc__"));
         c.emit(Op::StoreName(n));
@@ -1028,6 +1028,15 @@ impl<'a> Compiler<'a> {
         let i = self.const_val(Value::str(s));
         self.u().str_consts.insert(s.to_string(), i);
         i
+    }
+
+    /// a literal's constant; one with lone surrogates is its own, as the
+    /// table of shared ones goes by text
+    fn const_pystr(&mut self, s: &Rc<PyStr>) -> u32 {
+        if s.has_surrogates() {
+            return self.const_val(Value::Str(s.clone()));
+        }
+        self.const_str(&s.s)
     }
 
     fn name_idx(&mut self, n: &Name) -> u32 {
@@ -1776,8 +1785,8 @@ impl<'a> Compiler<'a> {
         self.emit(Op::StoreName(qn));
         let mut doc = Value::None;
         if let (Some(Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Const(Const::Str(d)), .. }), .. }), true) = (c.body.first(), self.optimize < 2) {
-            doc = Value::str(d);
-            let k = self.const_str(d);
+            doc = Value::Str(d.clone());
+            let k = self.const_pystr(d);
             self.emit(Op::LoadConst(k));
             let dn = self.name_idx(&Rc::from("__doc__"));
             self.emit(Op::StoreName(dn));
@@ -1913,7 +1922,7 @@ impl<'a> Compiler<'a> {
         if !f.is_lambda {
             if let Some(Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Const(Const::Str(d)), .. }), .. }) = f.body.first() {
                 if self.optimize < 2 {
-                    doc = Value::str(d);
+                    doc = Value::Str(d.clone());
                 }
                 body = &f.body[1..];
             }
@@ -2153,7 +2162,7 @@ impl<'a> Compiler<'a> {
 
     fn constant(&mut self, c: &Const) -> u32 {
         match c {
-            Const::Str(s) => self.const_str(s),
+            Const::Str(s) => self.const_pystr(s),
             other => {
                 let v = match other {
                     Const::None => Value::None,
@@ -2659,7 +2668,7 @@ pub fn unparse(e: &Expr) -> String {
     match &e.kind {
         ExprKind::Name(n) => n.to_string(),
         ExprKind::Attr(o, a) => format!("{}.{}", unparse(o), a),
-        ExprKind::Const(Const::Str(s)) => format!("'{}'", s),
+        ExprKind::Const(Const::Str(s)) => format!("'{}'", s.s),
         ExprKind::Const(Const::None) => "None".into(),
         ExprKind::Const(Const::Int(i)) => i.to_string(),
         ExprKind::Const(Const::Ellipsis) => "...".into(),
