@@ -2980,8 +2980,18 @@ impl Vm {
     }
 
     pub fn import_one(&mut self, name: &str) -> PyResult<Value> {
-        if let Some(m) = self.modules.borrow().get_s(name) {
-            return Ok(m);
+        let cached = self.modules.borrow().get_s(name);
+        match cached {
+            // a None entry blocks the import
+            Some(Value::None) => {
+                let e = self.err("ModuleNotFoundError", format!("import of {} halted; None in sys.modules", name));
+                if let Value::Instance(i) = &e.value {
+                    i.extra.borrow_mut().set_s("name", Value::str(name));
+                }
+                return Err(e);
+            }
+            Some(m) => return Ok(m),
+            None => {}
         }
         if let Some(m) = crate::modules::native_module(self, name)? {
             self.modules.borrow_mut().set_s(name, m.clone());

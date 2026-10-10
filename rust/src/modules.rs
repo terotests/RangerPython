@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Native modules: sys, math (mathmod.rs), time, os, os.path, json, _random, and file
+//! Native modules: sys, math (mathmod.rs), time, os, os.path, json, _rpyrandom (the core of _random), and file
 //! objects. The rest of the standard library is Python (lib/, pylib/).
 
 use crate::bigint::BigInt;
@@ -32,11 +32,12 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
     Ok(Some(match name {
         "sys" => sys_module(vm),
         "math" => crate::mathmod::math_module(),
+        "_statistics" => crate::mathmod::statistics_module(),
         "_time" => time_module(),
         "os" => os_module(vm)?,
         "os.path" | "posixpath" => os_path_module(),
         "json" => json_module(vm),
-        "_random" => random_module(),
+        "_rpyrandom" => random_module(),
         "builtins" => Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() })),
         "_hashlib" => hashlib_module(),
         "_struct" => struct_module(),
@@ -44,6 +45,8 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_rpyweak" => weak_module(),
         "_rpygc" => gc_module(),
         "_rpyitertools" => itertools_module(),
+        "_rpycollections" => collections_module(vm),
+        "_rpyinternal" => internal_module(),
         "_rpyprocess" => crate::process::module(),
         _ => return Ok(None),
     }))
@@ -133,6 +136,128 @@ fn gc_type(vm: &Vm, v: &Value) -> bool {
         Value::Instance(i) => !Rc::ptr_eq(&i.class.borrow(), &vm.t.object),
         _ => true,
     }
+}
+
+// -------------------------------------------------------------------------
+// support for the _testinternalcapi stand-in of the test harness
+
+fn internal_module() -> Value {
+    let (d, m) = module("_rpyinternal");
+    put_fns(&d, &[("_rpyinternal.dict_getitem_knownhash", dict_getitem_knownhash)]);
+    m
+}
+
+/// dict_getitem_knownhash(d, key, hash): d[key] looked up under `hash`, with
+/// neither __getitem__ nor __missing__ of a subclass involved
+fn dict_getitem_knownhash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    if a.len() != 3 {
+        return Err(vm.type_error(format!("dict_getitem_knownhash expected 3 arguments, got {}", a.len())));
+    }
+    let h = vm.to_index(&a[2])?;
+    let d = match vm.base_of(&a[0]) {
+        Value::Dict(d) => d,
+        _ => return Err(vm.err("SystemError", "bad argument to internal function")),
+    };
+    match vm.dict_get_hashed(&d, h as u64, &a[1])? {
+        Some(v) => Ok(v),
+        None => Err(vm.key_error(a[1].clone())),
+    }
+}
+
+// -------------------------------------------------------------------------
+// support for _collections (pylib/_collections.py): the namedtuple field type
+
+fn collections_module(vm: &mut Vm) -> Value {
+    let (d, m) = module("_rpycollections");
+    d.borrow_mut().set_s("_tuplegetter", Value::Class(tuplegetter_class(vm)));
+    m
+}
+
+pub fn tuplegetter_class(vm: &mut Vm) -> Rc<Class> {
+    if let Some(c) = vm.classes.get("_tuplegetter") {
+        return c.clone();
+    }
+    let c = vm.native_class("_tuplegetter");
+    c.dict.borrow_mut().set_s("__module__", Value::str("_collections"));
+    crate::builtins::def_static(&c, "_tuplegetter.__new__", tg_new);
+    for (n, f) in [("_tuplegetter.__get__", tg_get as NativeFnPtr), ("_tuplegetter.__set__", tg_set), ("_tuplegetter.__delete__", tg_delete), ("_tuplegetter.__repr__", tg_repr), ("_tuplegetter.__reduce__", tg_reduce)] {
+        crate::builtins::def(&c, n, f);
+    }
+    c
+}
+
+fn tg_parts(v: &Value) -> Option<(usize, Value)> {
+    match v {
+        Value::Obj(o) => match &*o.kind.borrow() {
+            ObjKind::TupleGetter(i, d) => Some((*i, d.clone())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn is_tuplegetter(v: &Value) -> bool {
+    tg_parts(v).is_some()
+}
+
+fn tg_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if a.len() != 3 || !k.is_empty() {
+        return Err(vm.type_error(format!("_tuplegetter expected 2 arguments, got {}", a.len().saturating_sub(1) + k.len())));
+    }
+    let i = vm.to_index(&a[1])?;
+    if i < 0 {
+        return Err(vm.value_error("index must be non-negative"));
+    }
+    let class = match &a[0] {
+        Value::Class(c) => c.clone(),
+        _ => tuplegetter_class(vm),
+    };
+    Ok(Value::Obj(Rc::new(NativeObj { class, kind: RefCell::new(ObjKind::TupleGetter(i as usize, a[2].clone())) })))
+}
+
+/// the field read by a _tuplegetter `d` from tuple `obj`
+pub fn tuplegetter_read(vm: &mut Vm, d: &Value, obj: &Value) -> PyResult<Value> {
+    let (i, _) = tg_parts(d).ok_or_else(|| vm.type_error("expected a _tuplegetter"))?;
+    match vm.base_of(obj) {
+        Value::Tuple(t) => match t.get(i) {
+            Some(v) => Ok(v.clone()),
+            None => Err(vm.index_error("tuple index out of range")),
+        },
+        _ => {
+            let tn = vm.type_name(obj);
+            Err(vm.type_error(format!("descriptor for index '{}' for tuple subclasses doesn't apply to '{}' object", i, tn)))
+        }
+    }
+}
+
+fn tg_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    if a.len() < 2 || a[1].is_none() {
+        return Ok(a[0].clone());
+    }
+    tuplegetter_read(vm, &a[0], &a[1])
+}
+
+fn tg_set(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 3)?;
+    Err(vm.attr_error("can't set attribute"))
+}
+
+fn tg_delete(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
+    Err(vm.attr_error("can't delete attribute"))
+}
+
+fn tg_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let (i, d) = tg_parts(&a[0]).ok_or_else(|| vm.type_error("expected a _tuplegetter"))?;
+    let tn = vm.type_name(&a[0]);
+    let dr = vm.repr(&d)?;
+    Ok(Value::string(format!("{}({}, {})", tn, i, dr)))
+}
+
+fn tg_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let (i, d) = tg_parts(&a[0]).ok_or_else(|| vm.type_error("expected a _tuplegetter"))?;
+    let c = vm.class_of(&a[0]);
+    Ok(Value::tuple(vec![Value::Class(c), Value::tuple(vec![Value::Int(i as i64), d])]))
 }
 
 // -------------------------------------------------------------------------
@@ -645,6 +770,7 @@ pub fn obj_attr(_vm: &mut Vm, _obj: &Value, o: &Rc<NativeObj>, name: &str) -> Py
             "line_buffering" => Some(Value::Bool(false)),
             _ => None,
         },
+        ObjKind::TupleGetter(_, d) if name == "__doc__" => Some(d.clone()),
         ObjKind::Other(Value::Str(s)) if s.s.starts_with('<') => match name {
             "name" => Some(Value::Str(s.clone())),
             "mode" => Some(Value::str("w")),
@@ -773,7 +899,7 @@ fn sys_module(vm: &mut Vm) -> Value {
         b.set_s("stdin", stdin);
         b.set_s("__stdout__", stdout);
         b.set_s("__stderr__", stderr);
-        b.set_s("builtin_module_names", Value::tuple(["builtins", "sys", "math", "time", "json", "_random"].iter().map(|s| Value::str(s)).collect()));
+        b.set_s("builtin_module_names", Value::tuple(["builtins", "sys", "math", "time", "json"].iter().map(|s| Value::str(s)).collect()));
         b.set_s("dont_write_bytecode", Value::Bool(true));
         let mut fi = Dict::new();
         for (k, v) in [("max", Value::Float(f64::MAX)), ("min", Value::Float(f64::MIN_POSITIVE)), ("epsilon", Value::Float(f64::EPSILON)), ("dig", Value::Int(15)), ("mant_dig", Value::Int(53)), ("max_exp", Value::Int(1024)), ("min_exp", Value::Int(-1021)), ("radix", Value::Int(2))] {
@@ -822,8 +948,8 @@ fn sys_module(vm: &mut Vm) -> Value {
             ("sys.getfilesystemencoding", sys_encoding),
             ("sys._getframe", sys_getframe),
             ("sys.getrefcount", sys_getrefcount),
-            ("sys.settrace", sys_noop),
-            ("sys.setprofile", sys_noop),
+            ("sys.settrace", sys_settrace),
+            ("sys.setprofile", sys_setprofile),
             ("sys.gettrace", sys_noop),
             ("sys.audit", sys_noop),
             ("sys.is_finalizing", sys_false),
@@ -953,6 +1079,23 @@ fn sys_getrefcount(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(n as i64))
 }
 fn sys_noop(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
+    Ok(Value::None)
+}
+/// sys.settrace(f) and sys.setprofile(f): there are no trace or profile
+/// events here, so the function is never called and gettrace() stays None
+fn sys_settrace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    one_hook(vm, "settrace", a, k)
+}
+fn sys_setprofile(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    one_hook(vm, "setprofile", a, k)
+}
+fn one_hook(vm: &mut Vm, name: &str, a: &[Value], k: Kw) -> PyResult<Value> {
+    if !k.is_empty() {
+        return Err(vm.type_error(format!("{}() takes no keyword arguments", name)));
+    }
+    if a.len() != 1 {
+        return Err(vm.type_error(format!("{}() takes exactly one argument ({} given)", name, a.len())));
+    }
     Ok(Value::None)
 }
 fn sys_false(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -2210,8 +2353,8 @@ impl Random {
 }
 
 fn random_module() -> Value {
-    let (d, m) = module("_random");
-    put_fns(&d, &[("_random.new", r_new), ("_random.seed", r_seed), ("_random.random", r_random), ("_random.getrandbits", r_getrandbits), ("_random.getstate", r_getstate), ("_random.setstate", r_setstate)]);
+    let (d, m) = module("_rpyrandom");
+    put_fns(&d, &[("_rpyrandom.new", r_new), ("_rpyrandom.seed", r_seed), ("_rpyrandom.random", r_random), ("_rpyrandom.getrandbits", r_getrandbits), ("_rpyrandom.getstate", r_getstate), ("_rpyrandom.setstate", r_setstate)]);
     m
 }
 

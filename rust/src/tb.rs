@@ -204,6 +204,12 @@ pub fn obj_attr(vm: &mut Vm, o: &NativeObj, name: &str) -> PyResult<Option<Value
 /// tb.tb_next = ...
 pub fn obj_setattr(vm: &mut Vm, o: &NativeObj, name: &str, v: Value) -> PyResult<bool> {
     let mut k = o.kind.borrow_mut();
+    if let ObjKind::TupleGetter(_, doc) = &mut *k {
+        if name == "__doc__" {
+            *doc = v;
+            return Ok(true);
+        }
+    }
     if let ObjKind::Traceback { next, .. } = &mut *k {
         if name == "tb_next" {
             let ok = match &v {

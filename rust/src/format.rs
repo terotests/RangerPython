@@ -339,9 +339,9 @@ fn join_reprs(vm: &mut Vm, items: &[Value]) -> PyResult<String> {
     Ok(out)
 }
 
-/// how deeply container reprs may nest: the C recursion limit that
-/// test.support's get_c_recursion_limit() reports
-const C_RECURSION_LIMIT: usize = 150;
+/// how deeply container reprs (and the tuples isinstance walks) may nest:
+/// the C recursion limit that test.support's get_c_recursion_limit() reports
+pub const C_RECURSION_LIMIT: usize = 150;
 
 pub fn repr(vm: &mut Vm, v: &Value) -> PyResult<String> {
     match v {
@@ -755,11 +755,27 @@ pub fn big_decimal(vm: &mut Vm, b: &crate::bigint::BigInt) -> PyResult<String> {
             return Err(err(vm));
         }
     }
-    let s = b.to_string();
+    // past 1000 30-bit digits CPython converts with _pylong's subquadratic code
+    let s = if b.bit_length() > 30 * 1000 {
+        let f = pylong_fn(vm, "int_to_decimal_string")?;
+        match vm.call_vec(&f, vec![Value::Big(Rc::new(b.clone()))], &[])? {
+            Value::Str(s) => s.s.to_string(),
+            Value::Instance(i) if matches!(&*i.base.borrow(), Value::Str(_)) => vm.str_of(&Value::Instance(i.clone()))?,
+            _ => return Err(vm.type_error("_pylong.int_to_decimal_string did not return a str")),
+        }
+    } else {
+        b.to_string()
+    };
     if lim > 0 && s.trim_start_matches('-').len() > lim {
         return Err(err(vm));
     }
     Ok(s)
+}
+
+/// a function of the _pylong module, looked up at each use as CPython does
+pub fn pylong_fn(vm: &mut Vm, name: &str) -> PyResult<Value> {
+    let m = vm.import_one("_pylong")?;
+    vm.getattr(&m, &crate::builtins::ps(name))
 }
 
 /// int(str) under the digit limit; power-of-two bases are not limited
@@ -1008,13 +1024,25 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
 // -------------------------------------------------------------------------
 // printf-style
 
-pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String> {
-    percent_format_mode(vm, fmt, args, false)
+/// `str % args`; like CPython, a result that is all of one str (the format
+/// itself, or a lone `%s` operand) is that very object
+pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<Value> {
+    let mut sole = None;
+    let out = percent_format_mode(vm, fmt, args, false, &mut sole)?;
+    if let Some(Value::Str(x)) = &sole {
+        if x.s.len() == out.len() {
+            return Ok(sole.unwrap());
+        }
+    }
+    match fmt {
+        Value::Str(f) if *f.s == *out => Ok(fmt.clone()),
+        _ => Ok(Value::string(out)),
+    }
 }
 
 /// `bytes % args`: the format and the result are latin-1 text standing for bytes
 pub fn bytes_percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String> {
-    percent_format_mode(vm, fmt, args, true)
+    percent_format_mode(vm, fmt, args, true, &mut None)
 }
 
 /// the bytes `%s`/`%b` inserts for `v`, as latin-1 text
@@ -1041,7 +1069,7 @@ fn bytes_operand(vm: &mut Vm, v: &Value, conv: char) -> PyResult<String> {
     }
 }
 
-fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> PyResult<String> {
+fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool, sole: &mut Option<Value>) -> PyResult<String> {
     let f = match fmt {
         Value::Str(s) => s.s.clone(),
         _ => vm.str_of(fmt)?,
@@ -1222,7 +1250,11 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
                     None => s,
                 };
                 sp.zero = false;
-                pad(&sp, "", &s, false, false)
+                let piece = pad(&sp, "", &s, false, false);
+                if conv == 's' && out.is_empty() && matches!(&arg, Value::Str(x) if *x.s == *piece) {
+                    *sole = Some(arg.clone());
+                }
+                piece
             }
             'd' | 'i' | 'u' => {
                 let n = match &arg {
@@ -1244,7 +1276,7 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
                         }
                     },
                 };
-                let mut digits = n.abs().to_string();
+                let mut digits = big_decimal(vm, &n.abs())?;
                 if let Some(p) = sp.prec {
                     while digits.len() < p {
                         digits.insert(0, '0');

@@ -1,6 +1,5 @@
 # From CPython 3.13.0 Lib/random.py, under the PSF License (rust/pylib/LICENSE-PSF).
-# The MT19937 core is native in _random; _CoreRandom below stands in for
-# CPython's _random.Random type.
+# The MT19937 core is native in _rpyrandom, behind _random.Random.
 """Random variable generators.
 
     bytes
@@ -66,33 +65,6 @@ import os as _os
 import _random
 
 
-class _CoreRandom:
-    """The Mersenne Twister state; CPython's _random.Random."""
-
-    def __new__(cls, *args, **kwargs):
-        if cls is _CoreRandom and kwargs:
-            raise TypeError("Random() takes no keyword arguments")
-        self = object.__new__(cls)
-        self._mt = _random.new()
-        return self
-
-    def seed(self, n=None):
-        _random.seed(self._mt, n)
-
-    def random(self):
-        """random() -> x in the interval [0, 1)."""
-        return _random.random(self._mt)
-
-    def getrandbits(self, k):
-        """getrandbits(k) -> x.  Generates an int with k random bits."""
-        return _random.getrandbits(self._mt, k)
-
-    def getstate(self):
-        return _random.getstate(self._mt)
-
-    def setstate(self, state):
-        _random.setstate(self._mt, state)
-
 __all__ = [
     "Random",
     "SystemRandom",
@@ -130,7 +102,7 @@ RECIP_BPF = 2 ** -BPF
 _ONE = 1
 
 
-class Random(_CoreRandom):
+class Random(_random.Random):
     """Random number generator base class used by bound module functions.
 
     Used to instantiate instances of Random to get generators that don't

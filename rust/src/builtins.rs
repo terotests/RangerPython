@@ -2494,6 +2494,12 @@ fn bi_input(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 /// isinstance(v, spec) with tuples, unions and __instancecheck__
 pub fn isinstance_of(vm: &mut Vm, v: &Value, spec: &Value) -> PyResult<bool> {
+    isinstance_nested(vm, v, spec, 0)
+}
+
+/// isinstance_of within `nest` levels of tuples, which CPython walks in C and
+/// so bounds by its C recursion limit
+fn isinstance_nested(vm: &mut Vm, v: &Value, spec: &Value, nest: usize) -> PyResult<bool> {
     if let Value::Class(c) = spec {
         if Rc::ptr_eq(&vm.class_of(v), c) {
             return Ok(true);
@@ -2507,13 +2513,16 @@ pub fn isinstance_of(vm: &mut Vm, v: &Value, spec: &Value) -> PyResult<bool> {
         }
     }
     if let Some(args) = union_args(vm, spec)? {
-        return isinstance_of(vm, v, &args);
+        return isinstance_nested(vm, v, &args, nest);
     }
     if let Value::Tuple(t) = spec {
+        if nest >= crate::format::C_RECURSION_LIMIT {
+            return Err(vm.err("RecursionError", "maximum recursion depth exceeded in __instancecheck__"));
+        }
         vm.enter(" in __instancecheck__")?;
         let mut r = Ok(false);
         for x in t.iter() {
-            match isinstance_of(vm, v, x) {
+            match isinstance_nested(vm, v, x, nest + 1) {
                 Ok(false) => {}
                 other => {
                     r = other;
@@ -2642,6 +2651,11 @@ fn bi_isinstance(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 pub fn issubclass_of(vm: &mut Vm, c: &Value, spec: &Value) -> PyResult<bool> {
+    issubclass_nested(vm, c, spec, 0)
+}
+
+/// issubclass_of within `nest` levels of tuples, bounded like isinstance_nested
+fn issubclass_nested(vm: &mut Vm, c: &Value, spec: &Value, nest: usize) -> PyResult<bool> {
     if let Value::Class(s) = spec {
         let plain = match &*s.meta.borrow() {
             None => true,
@@ -2655,13 +2669,16 @@ pub fn issubclass_of(vm: &mut Vm, c: &Value, spec: &Value) -> PyResult<bool> {
         }
     }
     if let Some(args) = union_args(vm, spec)? {
-        return issubclass_of(vm, c, &args);
+        return issubclass_nested(vm, c, &args, nest);
     }
     if let Value::Tuple(t) = spec {
+        if nest >= crate::format::C_RECURSION_LIMIT {
+            return Err(vm.err("RecursionError", "maximum recursion depth exceeded in __subclasscheck__"));
+        }
         vm.enter(" in __subclasscheck__")?;
         let mut r = Ok(false);
         for x in t.iter() {
-            match issubclass_of(vm, c, x) {
+            match issubclass_nested(vm, c, x, nest + 1) {
                 Ok(false) => {}
                 other => {
                     r = other;
@@ -3499,7 +3516,7 @@ pub fn builtin_doc(name: &str) -> Option<(&'static str, &'static str)> {
 /// the module a native function belongs to, from its dotted name
 pub fn native_module_name(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((m, _)) if matches!(m, "math" | "sys" | "_time" | "os" | "posixpath" | "json" | "_random" | "_struct" | "_hashlib") => m,
+        Some((m, _)) if matches!(m, "math" | "sys" | "_time" | "os" | "posixpath" | "json" | "_struct" | "_hashlib" | "_statistics") => m,
         _ => "builtins",
     }
 }

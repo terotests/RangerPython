@@ -313,6 +313,8 @@ pub enum ObjKind {
     Frame { code: Rc<crate::code::Code>, line: u32, globals: Rc<RefCell<Dict>>, locals: Value, back: Value },
     /// the referent of a weakref.ref
     Weak(WeakTarget),
+    /// a namedtuple field: _collections._tuplegetter(index, doc)
+    TupleGetter(usize, Value),
     Other(Value),
 }
 

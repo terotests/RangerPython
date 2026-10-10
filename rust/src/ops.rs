@@ -394,6 +394,9 @@ impl Vm {
                         }
                     }
                 }
+                Value::Obj(_) if crate::modules::is_tuplegetter(t) => {
+                    return Ok(Some(crate::modules::tuplegetter_read(self, t, obj)?));
+                }
                 Value::Obj(_) if crate::tb::is_member(t) => {
                     return match crate::tb::member_read(self, t, obj) {
                         Ok(v) => Ok(Some(v)),
@@ -723,6 +726,9 @@ impl Vm {
                 Value::Obj(_) if crate::tb::is_member(&t) => {
                     return crate::tb::member_write(self, &t, obj, Some(v));
                 }
+                Value::Obj(_) if crate::modules::is_tuplegetter(&t) => {
+                    return Err(self.attr_error("can't set attribute"));
+                }
                 Value::Property(p) => {
                     if p.fset.is_none() {
                         return Err(crate::methods::prop_missing(self, p, obj, "setter"));
@@ -885,6 +891,9 @@ impl Vm {
                     match &t {
                         Value::Obj(_) if crate::tb::is_member(&t) => {
                             return crate::tb::member_write(self, &t, obj, None);
+                        }
+                        Value::Obj(_) if crate::modules::is_tuplegetter(&t) => {
+                            return Err(self.attr_error("can't delete attribute"));
                         }
                         Value::Property(p) => {
                             if p.fdel.is_none() {
@@ -1288,7 +1297,7 @@ impl Vm {
                 let (x, y) = (big_of(a).unwrap(), big_of(b).unwrap());
                 self.big_binop(op, &x, &y)?
             }
-            (Str(_), _) if op == BinOp::Mod => Value::string(crate::format::percent_format(self, a, b)?),
+            (Str(_), _) if op == BinOp::Mod => crate::format::percent_format(self, a, b)?,
             (Complex(_), _) | (_, Complex(_)) => match crate::builtins::complex_binop(self, op, a, b)? {
                 Some(v) => v,
                 Option::None => return Ok(Option::None),
@@ -2306,6 +2315,11 @@ impl Vm {
             }
         }
         let h = self.hash(k)?;
+        self.dict_get_hashed(d, h, k)
+    }
+
+    /// dict_get for a key whose hash is `h` (_PyDict_GetItem_KnownHash)
+    pub fn dict_get_hashed(&mut self, d: &Rc<RefCell<Dict>>, h: u64, k: &Value) -> PyResult<Option<Value>> {
         let r = d.borrow().lookup(h, k);
         match r {
             Lookup::Found(i) => Ok(d.borrow().entries[i].as_ref().map(|e| e.value.clone())),
@@ -2323,7 +2337,7 @@ impl Vm {
                         };
                         return match v {
                             Some(v) => Ok(v),
-                            None => self.dict_get(d, k),
+                            None => self.dict_get_hashed(d, h, k),
                         };
                     }
                 }
@@ -2794,10 +2808,17 @@ impl Vm {
             Iter::Seq(obj, i) => {
                 let obj = obj.clone();
                 let idx = *i;
-                *i += 1;
+                if idx == i64::MAX {
+                    return Err(self.err("OverflowError", "iter index too large"));
+                }
                 drop(b);
                 match self.getitem(&obj, &Value::Int(idx)) {
-                    Ok(v) => Ok(Some(v)),
+                    Ok(v) => {
+                        if let Iter::Seq(_, i) = &mut *r.borrow_mut() {
+                            *i = idx + 1;
+                        }
+                        Ok(Some(v))
+                    }
                     Err(e) if self.exc_is(&e, "IndexError") || self.exc_is(&e, "StopIteration") => {
                         *r.borrow_mut() = Iter::Empty;
                         Ok(None)

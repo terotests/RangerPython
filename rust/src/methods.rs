@@ -1274,6 +1274,39 @@ fn type_ror(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 /// int(text, base) as CPython parses it
 pub fn parse_int(s: &str, base: u32) -> Option<BigInt> {
+    let (neg, base, clean) = int_digits(s, base)?;
+    Some(digits_int(neg, base, &clean)?)
+}
+
+/// parse_int for int(): like CPython's PyLong_FromString, a decimal string of
+/// more than 6000 digits goes to _pylong.int_from_string
+pub fn parse_int_vm(vm: &mut Vm, s: &str, base: u32) -> PyResult<Option<BigInt>> {
+    let (neg, base, clean) = match int_digits(s, base) {
+        Some(x) => x,
+        None => return Ok(None),
+    };
+    if base != 10 || clean.len() <= 6000 {
+        return Ok(digits_int(neg, base, &clean));
+    }
+    let f = crate::format::pylong_fn(vm, "int_from_string")?;
+    let r = vm.call_vec(&f, vec![Value::string(clean)], &[])?;
+    match crate::ops::big_of(&vm.base_of(&r)) {
+        Some(v) => Ok(Some(if neg { v.neg() } else { v })),
+        None => Err(vm.type_error("_pylong.int_from_string did not return an int")),
+    }
+}
+
+fn digits_int(neg: bool, base: u32, clean: &str) -> Option<BigInt> {
+    let v = if clean.len() <= 18 && base == 10 {
+        BigInt::from_i64(clean.parse::<i64>().ok()?)
+    } else {
+        BigInt::from_radix(clean, base)?
+    };
+    Some(if neg { v.neg() } else { v })
+}
+
+/// the sign, base and ASCII digits (underscores dropped) of an int literal
+fn int_digits(s: &str, base: u32) -> Option<(bool, u32, String)> {
     let t = s.trim_matches(|c: char| c.is_whitespace());
     let (neg, t) = match t.strip_prefix('-') {
         Some(r) => (true, r),
@@ -1305,12 +1338,7 @@ pub fn parse_int(s: &str, base: u32) -> Option<BigInt> {
     if !clean.chars().all(|c| c.is_digit(base)) {
         return None;
     }
-    let v = if clean.len() <= 18 && base == 10 {
-        BigInt::from_i64(clean.parse::<i64>().ok()?)
-    } else {
-        BigInt::from_radix(&clean, base)?
-    };
-    Some(if neg { v.neg() } else { v })
+    Some((neg, base, clean))
 }
 
 pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
@@ -1331,7 +1359,7 @@ pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
                 Value::from_big(BigInt::from_f64(t).unwrap())
             }
         }
-        Value::Str(s) => match { crate::format::check_str_digits(vm, &s.s, 10)?; parse_int(&s.s, 10) } {
+        Value::Str(s) => match { crate::format::check_str_digits(vm, &s.s, 10)?; parse_int_vm(vm, &s.s, 10)? } {
             Some(b) => Value::from_big(b),
             None => {
                 let r = crate::format::str_repr(&s.s);
@@ -1341,7 +1369,7 @@ pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
         Value::Bytes(_) | Value::ByteArray(_) => {
             let s = bytes_to_latin1(v);
             crate::format::check_str_digits(vm, &s, 10)?;
-            match parse_int(&s, 10) {
+            match parse_int_vm(vm, &s, 10)? {
                 Some(b) => Value::from_big(b),
                 None => {
                     let r = crate::format::bytes_repr(&s.chars().map(|c| c as u8).collect::<Vec<u8>>());
@@ -1451,7 +1479,7 @@ fn int_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
                 if t.starts_with("0x") { 16 } else if t.starts_with("0o") { 8 } else if t.starts_with("0b") { 2 } else { 10 }
             };
             crate::format::check_str_digits(vm, &s, eff)?;
-            match parse_int(&s, b as u32) {
+            match parse_int_vm(vm, &s, b as u32)? {
                 Some(v) => Value::from_big(v),
                 None => {
                     let r = if matches!(vm.base_of(&x), Value::Str(_)) { crate::format::str_repr(&s) } else { crate::format::bytes_repr(&s.chars().map(|c| c as u8).collect::<Vec<u8>>()) };

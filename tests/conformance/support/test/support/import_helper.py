@@ -10,13 +10,35 @@ def import_module(name, deprecated=False, *, required_on=()):
         raise unittest.SkipTest(str(e))
 
 
-def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
-    # there is one implementation of each module here, so a blocked
-    # accelerator gives the same module
+def _save_and_remove_modules(names):
+    orig_modules = {}
+    prefixes = tuple(name + '.' for name in names)
+    for modname in list(sys.modules):
+        if modname in names or modname.startswith(prefixes):
+            orig_modules[modname] = sys.modules.pop(modname)
+    return orig_modules
+
+
+def import_fresh_module(name, fresh=(), blocked=(), *, deprecated=False, usefrozen=False):
+    # as CPython's: import `name` anew, with the `fresh` modules imported
+    # anew too and the `blocked` ones unimportable, then restore sys.modules
+    fresh = list(fresh)
+    blocked = list(blocked)
+    names = {name, *fresh, *blocked}
+    orig_modules = _save_and_remove_modules(names)
+    for modname in blocked:
+        sys.modules[modname] = None
     try:
-        return __import__(name, fromlist=["_"])
-    except ImportError:
-        return None
+        try:
+            for modname in fresh:
+                __import__(modname)
+        except ImportError:
+            return None
+        __import__(name)
+        return sys.modules[name]
+    finally:
+        _save_and_remove_modules(names)
+        sys.modules.update(orig_modules)
 
 
 class CleanImport:

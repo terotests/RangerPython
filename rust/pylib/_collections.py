@@ -3,6 +3,7 @@
 import sys as _sys
 from operator import itemgetter as _itemgetter
 from keyword import iskeyword as _iskeyword
+from _rpycollections import _tuplegetter
 
 
 class deque:

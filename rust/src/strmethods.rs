@@ -952,7 +952,7 @@ fn str_mul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn str_mod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let x = me(vm, a, "__mod__")?;
-    Ok(s(crate::format::percent_format(vm, &Value::Str(x), &a[1])?))
+    crate::format::percent_format(vm, &Value::Str(x), &a[1])
 }
 fn str_rmod(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::NotImplemented)
@@ -1097,10 +1097,22 @@ fn field_value(vm: &mut Vm, field: &str, args: Option<&[Value]>, kw: &Value, aut
 pub fn format_str(vm: &mut Vm, fmt: &str, args: &[Value], kw: &Value) -> PyResult<String> {
     let mut auto = 0usize;
     let mut manual = false;
-    format_inner(vm, fmt, Some(args), kw, &mut auto, &mut manual, 0)
+    format_inner(vm, fmt, Some(args), kw, &mut auto, &mut manual, 0, &mut None)
 }
 
-fn format_inner(vm: &mut Vm, fmt: &str, args: Option<&[Value]>, kw: &Value, auto: &mut usize, manual: &mut bool, depth: u32) -> PyResult<String> {
+/// the result of formatting `fmt`: like CPython, output that is all of one
+/// str (the format itself, or a lone field left as it was) is that very object
+fn format_result(fmt: &Rc<PyStr>, out: String, sole: Option<Value>) -> Value {
+    match sole {
+        Some(Value::Str(x)) if x.s.len() == out.len() => Value::Str(x),
+        _ if *fmt.s == *out => Value::Str(fmt.clone()),
+        _ => s(out),
+    }
+}
+
+/// `sole` is set to the field value the output starts with when that is an
+/// exact str written out unchanged
+fn format_inner(vm: &mut Vm, fmt: &str, args: Option<&[Value]>, kw: &Value, auto: &mut usize, manual: &mut bool, depth: u32, sole: &mut Option<Value>) -> PyResult<String> {
     if depth >= 2 {
         return Err(vm.value_error("Max string recursion exceeded"));
     }
@@ -1178,7 +1190,7 @@ fn format_inner(vm: &mut Vm, fmt: &str, args: Option<&[Value]>, kw: &Value, auto
             }
             let spec = rest.strip_prefix(':').unwrap_or("");
             let v = field_value(vm, field, args, kw, auto, manual)?;
-            let spec = if spec.contains('{') { format_inner(vm, spec, args, kw, auto, manual, depth + 1)? } else { spec.to_string() };
+            let spec = if spec.contains('{') { format_inner(vm, spec, args, kw, auto, manual, depth + 1, &mut None)? } else { spec.to_string() };
             let v = match conv {
                 None => v,
                 Some('r') => Value::string(vm.repr(&v)?),
@@ -1186,7 +1198,11 @@ fn format_inner(vm: &mut Vm, fmt: &str, args: Option<&[Value]>, kw: &Value, auto
                 Some('a') => Value::string(crate::format::ascii_escape(&vm.repr(&v)?)),
                 Some(x) => return Err(vm.value_error(format!("Unknown conversion specifier {}", x))),
             };
-            out.push_str(&vm.format_value(&v, &spec)?);
+            let piece = vm.format_value(&v, &spec)?;
+            if out.is_empty() && matches!(&v, Value::Str(x) if *x.s == *piece) {
+                *sole = Some(v);
+            }
+            out.push_str(&piece);
         } else if ch == '}' {
             if i + 1 < c.len() && c[i + 1] == '}' {
                 out.push('}');
@@ -1208,14 +1224,18 @@ fn str_format(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     for (key, v) in k {
         d.set_str(key.clone(), v.clone());
     }
-    Ok(s(format_str(vm, &x.s, &a[1..], &Value::dict(d))?))
+    let (mut auto, mut manual, mut sole) = (0usize, false, None);
+    let out = format_inner(vm, &x.s, Some(&a[1..]), &Value::dict(d), &mut auto, &mut manual, 0, &mut sole)?;
+    Ok(format_result(&x, out, sole))
 }
 
 fn str_format_map(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "format_map")?;
     margs(vm, "format_map", a, 1, 1)?;
     let (mut auto, mut manual) = (0usize, false);
-    Ok(s(format_inner(vm, &x.s, None, &a[1], &mut auto, &mut manual, 0)?))
+    let mut sole = None;
+    let out = format_inner(vm, &x.s, None, &a[1], &mut auto, &mut manual, 0, &mut sole)?;
+    Ok(format_result(&x, out, sole))
 }
 
 // -------------------------------------------------------------------------
