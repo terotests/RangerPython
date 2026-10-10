@@ -6,7 +6,7 @@ use crate::bigint::BigInt;
 use crate::builtins::*;
 use crate::value::*;
 use crate::vm::Vm;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// a built-in value of `cls`, or an instance of a subclass wrapping it
@@ -193,17 +193,33 @@ fn d_divmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let x = this(vm, a);
     let y = vm.base_of(&a[1]);
-    let q = vm.binop(BinOp::FloorDiv, &x, &y)?;
-    let r = vm.binop(BinOp::Mod, &x, &y)?;
-    Ok(Value::tuple(vec![q, r]))
+    builtin_divmod(vm, &x, &y)
 }
 fn d_rdivmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let x = this(vm, a);
     let y = vm.base_of(&a[1]);
-    let q = vm.binop(BinOp::FloorDiv, &y, &x)?;
-    let r = vm.binop(BinOp::Mod, &y, &x)?;
+    builtin_divmod(vm, &y, &x)
+}
+fn builtin_divmod(vm: &mut Vm, x: &Value, y: &Value) -> PyResult<Value> {
+    if matches!(x, Value::Instance(_)) || matches!(y, Value::Instance(_)) {
+        return Ok(Value::NotImplemented);
+    }
+    let q = match vm.builtin_binop(BinOp::FloorDiv, x, y)? {
+        Some(q) => q,
+        None => return Ok(Value::NotImplemented),
+    };
+    let r = match vm.builtin_binop(BinOp::Mod, x, y)? {
+        Some(r) => r,
+        None => return Ok(Value::NotImplemented),
+    };
     Ok(Value::tuple(vec![q, r]))
+}
+/// seq.__mul__(n) and seq.__rmul__(n): n is anything with __index__
+fn seq_mul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__mul__", a, 1, 1)?;
+    let x = vm.base_of(&a[0]);
+    Ok(vm.seq_repeat(&x, &a[1])?.unwrap_or(Value::NotImplemented))
 }
 fn not_implemented(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::NotImplemented)
@@ -285,7 +301,7 @@ pub fn install_types(vm: &mut Vm) {
     // object
     let o = t.object.clone();
     def(&o, "object.__new__", object_new);
-    def(&o, "object.__init__", no_op);
+    def(&o, "object.__init__", object_init);
     def(&o, "object.__repr__", object_repr);
     def(&o, "object.__str__", object_str);
     def(&o, "object.__eq__", object_eq);
@@ -375,8 +391,8 @@ pub fn install_types(vm: &mut Vm) {
     def_cmp(&l, "list");
     l.dict.borrow_mut().set_s("__hash__", Value::None);
     def(&l, "list.__add__", d_add);
-    def(&l, "list.__mul__", d_mul);
-    def(&l, "list.__rmul__", d_rmul);
+    def(&l, "list.__mul__", seq_mul);
+    def(&l, "list.__rmul__", seq_mul);
     def(&l, "list.__iadd__", d_iadd);
     def(&l, "list.__imul__", d_imul);
     def(&l, "list.__setitem__", d_setitem);
@@ -398,8 +414,12 @@ pub fn install_types(vm: &mut Vm) {
     def_seq(&tu, "tuple");
     def_cmp(&tu, "tuple");
     def(&tu, "tuple.__add__", d_add);
-    def(&tu, "tuple.__mul__", d_mul);
-    def(&tu, "tuple.__rmul__", d_rmul);
+    def(&tu, "tuple.__mul__", seq_mul);
+    def(&tu, "tuple.__rmul__", seq_mul);
+    def(&t.bytes.clone(), "bytes.__mul__", seq_mul);
+    def(&t.bytes.clone(), "bytes.__rmul__", seq_mul);
+    def(&t.bytearray.clone(), "bytearray.__mul__", seq_mul);
+    def(&t.bytearray.clone(), "bytearray.__rmul__", seq_mul);
     def(&tu, "tuple.__getnewargs__", getnewargs);
     def(&tu, "tuple.index", seq_index);
     def(&tu, "tuple.count", seq_count);
@@ -538,6 +558,7 @@ pub fn install_types(vm: &mut Vm) {
     def(&t.notimpl, "NotImplementedType.__new__", notimpl_new);
     def(&t.ellipsis, "ellipsis.__new__", ellipsis_new);
     let f = t.function.clone();
+    def_static(&f, "function.__new__", function_new);
     def(&f, "function.__get__", function_get);
     def(&f, "function.__repr__", d_repr);
     def(&f, "function.__call__", function_call);
@@ -574,8 +595,8 @@ pub fn install_types(vm: &mut Vm) {
         def(&g, leak("send"), gen_send);
         def(&g, leak("throw"), gen_throw);
         def(&g, leak("close"), gen_close);
-        def(&g, leak("__await__"), return_self);
     }
+    def(&t.coroutine.clone(), "coroutine.__await__", return_self);
     for (c, nm) in [(t.dict_keys.clone(), "dict_keys"), (t.dict_values.clone(), "dict_values"), (t.dict_items.clone(), "dict_items")] {
         let leak = |x: &str| -> &'static str { Box::leak(format!("{}.{}", nm, x).into_boxed_str()) };
         def(&c, leak("__len__"), d_len);
@@ -614,7 +635,7 @@ pub fn install_types(vm: &mut Vm) {
     def(&p, "property.getter", property_getter);
     def(&p, "property.setter", property_setter);
     def(&p, "property.deleter", property_deleter);
-    def(&p, "property.__set_name__", no_op);
+    def(&p, "property.__set_name__", property_set_name);
     let sm = t.staticmethod.clone();
     def(&sm, "staticmethod.__new__", staticmethod_new);
     def(&sm, "staticmethod.__init__", no_op);
@@ -651,12 +672,23 @@ fn cls_arg(vm: &mut Vm, v: &Value, what: &str) -> PyResult<Rc<Class>> {
     }
 }
 
-fn object_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 1)?;
+fn is_native_named(v: &Option<Value>, name: &str) -> bool {
+    matches!(v, Some(Value::Native(n)) if n.name == name)
+}
+
+fn object_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     if a.is_empty() {
         return Err(vm.type_error("object.__new__(): not enough arguments"));
     }
     let c = cls_arg(vm, &a[0], "object.__new__")?;
+    if a.len() > 1 || !k.is_empty() {
+        if !is_native_named(&c.lookup(&vm.n.new), "object.__new__") {
+            return Err(vm.type_error("object.__new__() takes exactly one argument (the type to instantiate)"));
+        }
+        if is_native_named(&c.lookup(&vm.n.init), "object.__init__") {
+            return Err(vm.type_error(format!("{}() takes no arguments", c.name())));
+        }
+    }
     let abstract_ = c.dict.borrow().get_s("__abstractmethods__");
     if let Some(am) = abstract_ {
         let names = vm.to_vec(&am)?;
@@ -668,6 +700,79 @@ fn object_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
     }
     Ok(vm.new_instance(&c))
+}
+
+fn object_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if a.len() > 1 || !k.is_empty() {
+        let c = match a.first() {
+            Some(v) => vm.class_of(v),
+            None => return Ok(Value::None),
+        };
+        if !is_native_named(&c.lookup(&vm.n.init), "object.__init__") {
+            return Err(vm.type_error("object.__init__() takes exactly one argument (the instance to initialize)"));
+        }
+        if is_native_named(&c.lookup(&vm.n.new), "object.__new__") {
+            return Err(vm.type_error(format!("{}.__init__() takes exactly one argument (the instance to initialize)", c.name())));
+        }
+    }
+    Ok(Value::None)
+}
+
+/// types.FunctionType(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None)
+fn function_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let arg = |i: usize, n: &str| arg_or_kw(a, i, k, n).unwrap_or(Value::None);
+    let code = match arg(1, "code") {
+        Value::Code(c) => c,
+        other => return Err(vm.type_error(format!("function() argument 'code' must be code, not {}", vm.type_name(&other)))),
+    };
+    let globals = match arg(2, "globals") {
+        Value::Dict(d) => d,
+        other => return Err(vm.type_error(format!("function() argument 'globals' must be dict, not {}", vm.type_name(&other)))),
+    };
+    let name = arg(3, "name");
+    if !name.is_none() && !matches!(name, Value::Str(_)) {
+        return Err(vm.type_error("arg 3 (name) must be None or string"));
+    }
+    let defaults = match arg(4, "argdefs") {
+        Value::None => vec![],
+        Value::Tuple(t) => t.to_vec(),
+        _ => return Err(vm.type_error("arg 4 (defaults) must be None or tuple")),
+    };
+    let closure = match arg(5, "closure") {
+        Value::None => vec![],
+        Value::Tuple(t) => {
+            let mut cells = vec![];
+            for c in t.iter() {
+                match c {
+                    Value::Cell(c) => cells.push(c.clone()),
+                    other => return Err(vm.type_error(format!("arg 5 (closure) expected cell, found {}", vm.type_name(other)))),
+                }
+            }
+            cells
+        }
+        _ => return Err(vm.type_error("arg 5 (closure) must be None or tuple")),
+    };
+    if closure.len() != code.freevars.len() {
+        return Err(vm.value_error(format!("{} requires closure of length {}, not {}", code.name.s, code.freevars.len(), closure.len())));
+    }
+    let kwdefaults = match arg(6, "kwdefaults") {
+        Value::None => vec![],
+        Value::Dict(d) => {
+            let mut kd = vec![];
+            for e in d.borrow().iter() {
+                if let Value::Str(s) = &e.key {
+                    kd.push((Rc::from(s.s.as_str()), e.value.clone()));
+                }
+            }
+            kd
+        }
+        _ => return Err(vm.type_error("arg 6 (kwdefaults) must be None or dict")),
+    };
+    let f = vm.make_function(code, globals, defaults, kwdefaults, closure);
+    if let (Value::Func(func), Value::Str(n)) = (&f, &name) {
+        *func.name.borrow_mut() = n.clone();
+    }
+    Ok(f)
 }
 
 fn object_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -874,11 +979,15 @@ fn getnewargs(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 // type
 
 fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
-    if a.len() == 2 {
+    let exact = matches!(a.first(), Some(Value::Class(c)) if Rc::ptr_eq(c, &vm.t.type_));
+    if a.len() == 2 && exact && k.is_empty() {
         return Ok(Value::Class(vm.class_of(&a[1])));
     }
     if a.len() != 4 {
-        return Err(vm.type_error("type() takes 1 or 3 arguments"));
+        if exact {
+            return Err(vm.type_error("type() takes 1 or 3 arguments"));
+        }
+        return Err(vm.type_error(format!("type.__new__() takes exactly 3 arguments ({} given)", a.len().saturating_sub(1))));
     }
     let meta = cls_arg(vm, &a[0], "type.__new__")?;
     let name = as_pystr(vm, &a[1], "type.__new__() argument 1")?;
@@ -890,6 +999,34 @@ fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             _ => return Err(vm.type_error("bases must be types")),
         }
     }
+    // the most derived metaclass; one with its own __new__ makes the class
+    let mut winner = meta.clone();
+    for b in &bases {
+        let bm = vm.class_of(&Value::Class(b.clone()));
+        if winner.is_subclass(&bm) {
+            continue;
+        }
+        if bm.is_subclass(&winner) {
+            winner = bm;
+            continue;
+        }
+        return Err(vm.type_error("metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases"));
+    }
+    if !Rc::ptr_eq(&winner, &meta) {
+        let wnew = winner.lookup(&vm.n.new);
+        if !matches!(&wnew, Some(Value::Native(n)) if n.name == "type.__new__") {
+            if let Some(f) = wnew {
+                let f = match f {
+                    Value::StaticMethod(inner) => (*inner).clone(),
+                    other => other,
+                };
+                let mut args = vec![Value::Class(winner.clone())];
+                args.extend(a[1..].iter().cloned());
+                return vm.call_vec(&f, args, k);
+            }
+        }
+    }
+    let meta = winner;
     let ns = match &a[3] {
         Value::Dict(d) => d.clone(),
         other => match vm.base_of(other) {
@@ -952,17 +1089,12 @@ fn type_subclasses(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 fn type_instancecheck(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
-    let c = cls_arg(vm, &a[0], "__instancecheck__")?;
-    Ok(Value::Bool(vm.isinstance(&a[1], &c)))
+    Ok(Value::Bool(crate::builtins::real_isinstance(vm, &a[1], &a[0])?))
 }
 
 fn type_subclasscheck(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
-    let c = cls_arg(vm, &a[0], "__subclasscheck__")?;
-    match &a[1] {
-        Value::Class(s) => Ok(Value::Bool(s.is_subclass(&c))),
-        _ => Err(vm.type_error("issubclass() arg 1 must be a class")),
-    }
+    Ok(Value::Bool(crate::builtins::real_issubclass(vm, &a[1], &a[0])?))
 }
 
 fn type_prepare(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -2703,21 +2835,54 @@ fn gen_close(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 // -------------------------------------------------------------------------
 // property, staticmethod, classmethod, super
 
-fn make_property(a: &[Value], k: Kw) -> Property {
+/// property(fget, fset, fdel, doc): the doc falls back to fget.__doc__
+fn new_property(vm: &mut Vm, fget: Value, fset: Value, fdel: Value, doc: Value) -> PyResult<Property> {
+    let mut doc = doc;
+    let mut getter_doc = false;
+    if doc.is_none() && !fget.is_none() {
+        let d = match vm.getattr_opt(&fget, &ps("__doc__")) {
+            Ok(d) => d,
+            Err(e) if vm.exc_is(&e, "AttributeError") => None,
+            Err(e) => return Err(e),
+        };
+        if let Some(d) = d {
+            if !d.is_none() {
+                doc = d;
+                getter_doc = true;
+            }
+        }
+    }
+    Ok(Property { fget, fset, fdel, doc: RefCell::new(doc), name: RefCell::new(Value::Undef), getter_doc: Cell::new(getter_doc) })
+}
+
+fn make_property(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Property> {
+    if a.len() > 5 {
+        return Err(vm.type_error(format!("property() takes at most 4 arguments ({} given)", a.len() - 1)));
+    }
     let get = |i: usize, n: &str| arg_or_kw(a, i, k, n).unwrap_or(Value::None);
-    Property { fget: get(1, "fget"), fset: get(2, "fset"), fdel: get(3, "fdel"), doc: get(4, "doc") }
+    new_property(vm, get(1, "fget"), get(2, "fset"), get(3, "fdel"), get(4, "doc"))
 }
 
 fn property_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
-    let p = Value::Property(Rc::new(make_property(a, k)));
+    let p = Value::Property(Rc::new(make_property(vm, a, k)?));
     let t = vm.t.property.clone();
     Ok(wrap_new(vm, &a[0], &t, p))
 }
 
-fn property_init(_vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+fn property_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     if let Value::Instance(i) = &a[0] {
-        *i.base.borrow_mut() = Value::Property(Rc::new(make_property(a, k)));
+        let p = make_property(vm, a, k)?;
+        let doc = p.doc.borrow().clone();
+        let getter_doc = p.getter_doc.get();
+        *i.base.borrow_mut() = Value::Property(Rc::new(p));
+        // a subclass keeps the doc in the instance, where it shadows the
+        // class's own __doc__
+        match vm.setattr(&a[0], &ps("__doc__"), doc) {
+            Ok(()) => {}
+            Err(e) if !getter_doc && vm.exc_is(&e, "AttributeError") => {}
+            Err(e) => return Err(e),
+        }
     }
     Ok(Value::None)
 }
@@ -2729,13 +2894,28 @@ fn prop_of(vm: &mut Vm, v: &Value) -> PyResult<Rc<Property>> {
     }
 }
 
+/// "property 'x' of 'C' object has no getter"
+pub(crate) fn prop_missing(vm: &mut Vm, p: &Property, obj: &Value, what: &str) -> Exc {
+    let q = vm.class_of(obj).qualname.borrow().s.to_string();
+    let name = p.name.borrow().clone();
+    let msg = if name.is_undef() {
+        format!("property of '{}' object has no {}", q, what)
+    } else {
+        match vm.repr(&name) {
+            Ok(r) => format!("property {} of '{}' object has no {}", r, q, what),
+            Err(e) => return e,
+        }
+    };
+    vm.attr_error(msg)
+}
+
 fn property_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let p = prop_of(vm, &a[0])?;
     match a.get(1) {
         None | Some(Value::None) => Ok(a[0].clone()),
         Some(obj) => {
             if p.fget.is_none() {
-                return Err(vm.attr_error("property has no getter"));
+                return Err(prop_missing(vm, &p, obj, "getter"));
             }
             vm.call_vec(&p.fget.clone(), vec![obj.clone()], &[])
         }
@@ -2746,7 +2926,7 @@ fn property_set(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 3)?;
     let p = prop_of(vm, &a[0])?;
     if p.fset.is_none() {
-        return Err(vm.attr_error("property has no setter"));
+        return Err(prop_missing(vm, &p, &a[1], "setter"));
     }
     vm.call_vec(&p.fset.clone(), vec![a[1].clone(), a[2].clone()], &[])?;
     Ok(Value::None)
@@ -2756,9 +2936,18 @@ fn property_delete(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let p = prop_of(vm, &a[0])?;
     if p.fdel.is_none() {
-        return Err(vm.attr_error("property has no deleter"));
+        return Err(prop_missing(vm, &p, &a[1], "deleter"));
     }
     vm.call_vec(&p.fdel.clone(), vec![a[1].clone()], &[])?;
+    Ok(Value::None)
+}
+
+fn property_set_name(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    if a.len() != 3 {
+        return Err(vm.type_error(format!("__set_name__() takes 2 positional arguments but {} were given", a.len().saturating_sub(1))));
+    }
+    let p = prop_of(vm, &a[0])?;
+    *p.name.borrow_mut() = a[2].clone();
     Ok(Value::None)
 }
 
@@ -2771,12 +2960,18 @@ fn prop_copy(vm: &mut Vm, a: &[Value], which: u8) -> PyResult<Value> {
         1 => (p.fget.clone(), f, p.fdel.clone()),
         _ => (p.fget.clone(), p.fset.clone(), f),
     };
-    if let Value::Instance(_) = &a[0] {
-        // a property subclass: build the same class again
+    // a doc taken from the old getter is taken from the new one instead
+    let doc = if p.getter_doc.get() && !g.is_none() { Value::None } else { p.doc.borrow().clone() };
+    let new = if let Value::Instance(_) = &a[0] {
         let cls = vm.class_of(&a[0]);
-        return vm.call_vec(&Value::Class(cls), vec![g, s, d, p.doc.clone()], &[]);
+        vm.call_vec(&Value::Class(cls), vec![g, s, d, doc], &[])?
+    } else {
+        Value::Property(Rc::new(new_property(vm, g, s, d, doc)?))
+    };
+    if let Value::Property(np) = vm.base_of(&new) {
+        *np.name.borrow_mut() = p.name.borrow().clone();
     }
-    Ok(Value::Property(Rc::new(Property { fget: g, fset: s, fdel: d, doc: p.doc.clone() })))
+    Ok(new)
 }
 
 fn property_getter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -2826,20 +3021,30 @@ fn classmethod_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 
-fn super_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+/// super(type, obj): obj must be an instance or subclass of type
+fn super_check(vm: &mut Vm, c: &Rc<Class>, obj: &Value) -> PyResult<()> {
+    let ok = match obj {
+        Value::Class(k) => k.is_subclass(c) || vm.isinstance(obj, c),
+        o => vm.isinstance(o, c),
+    };
+    if !ok {
+        let tn = vm.type_name(obj);
+        return Err(vm.type_error(format!("super(type, obj): obj (instance of {}) is not an instance or subtype of type ({}).", tn, c.name())));
+    }
+    Ok(())
+}
+
+fn super_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if !k.is_empty() {
+        return Err(vm.type_error("super() takes no keyword arguments"));
+    }
     let (start, obj) = match a.len() {
         3 => match &a[1] {
             Value::Class(c) => {
-                let ok = match &a[2] {
-                    Value::Class(k) => k.is_subclass(c),
-                    o => vm.isinstance(o, c),
-                };
-                if !ok {
-                    return Err(vm.type_error("super(type, obj): obj must be an instance or subtype of type"));
-                }
+                super_check(vm, c, &a[2])?;
                 (c.clone(), a[2].clone())
             }
-            _ => return Err(vm.type_error("super() argument 1 must be a type")),
+            _ => return Err(vm.type_error(format!("super() argument 1 must be a type, not {}", vm.type_name(&a[1])))),
         },
         1 => {
             // zero arguments: the __class__ cell and the first argument
@@ -2848,39 +3053,51 @@ fn super_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
                 None => return Err(vm.err("RuntimeError", "super(): no current frame")),
             };
             let code = f.code.clone();
+            if code.argcount == 0 && !code.varargs {
+                return Err(vm.err("RuntimeError", "super(): no arguments"));
+            }
+            let first = match code.cellvars.iter().position(|c| code.varnames.first().map(|v| v == c).unwrap_or(false)) {
+                Some(i) => f.cells.get(i).map(|c| c.borrow().clone()).unwrap_or(Value::Undef),
+                None => {
+                    if code.argcount == 0 {
+                        match f.stack.first() {
+                            Some(Value::Tuple(t)) if !t.is_empty() => t[0].clone(),
+                            _ => return Err(vm.err("RuntimeError", "super(): no arguments")),
+                        }
+                    } else {
+                        f.stack.first().cloned().unwrap_or(Value::Undef)
+                    }
+                }
+            };
+            if first.is_undef() {
+                return Err(vm.err("RuntimeError", "super(): arg[0] deleted"));
+            }
             let ci = code.freevars.iter().position(|n| &**n == "__class__");
             let cls = match ci.and_then(|i| f.cells.get(code.cellvars.len() + i)) {
                 Some(c) => c.borrow().clone(),
                 None => return Err(vm.err("RuntimeError", "super(): __class__ cell not found")),
             };
-            if code.argcount == 0 && !code.varargs {
-                return Err(vm.err("RuntimeError", "super(): no arguments"));
-            }
-            let first = match code.cellvars.iter().position(|c| code.varnames.first().map(|v| v == c).unwrap_or(false)) {
-                Some(i) => f.cells[i].borrow().clone(),
-                None => {
-                    if code.argcount == 0 {
-                        match &f.stack[0] {
-                            Value::Tuple(t) if !t.is_empty() => t[0].clone(),
-                            _ => return Err(vm.err("RuntimeError", "super(): no arguments")),
-                        }
-                    } else {
-                        f.stack[0].clone()
-                    }
-                }
-            };
             match cls {
-                Value::Class(c) => (c, first),
-                _ => return Err(vm.err("RuntimeError", "super(): empty __class__ cell")),
+                Value::Class(c) => {
+                    super_check(vm, &c, &first)?;
+                    (c, first)
+                }
+                Value::Undef => return Err(vm.err("RuntimeError", "super(): empty __class__ cell")),
+                other => {
+                    let tn = vm.type_name(&other);
+                    return Err(vm.err("RuntimeError", format!("super(): __class__ is not a type ({})", tn)));
+                }
             }
         }
         2 => match &a[1] {
             Value::Class(c) => (c.clone(), Value::None),
-            _ => return Err(vm.type_error("super() argument 1 must be a type")),
+            _ => return Err(vm.type_error(format!("super() argument 1 must be a type, not {}", vm.type_name(&a[1])))),
         },
-        _ => return Err(vm.type_error("super() takes at most 2 arguments")),
+        n => return Err(vm.type_error(format!("super() expected at most 2 arguments, got {}", n - 1))),
     };
-    Ok(Value::Super(Rc::new((start, obj))))
+    let st = vm.t.super_.clone();
+    let v = Value::Super(Rc::new((start, obj)));
+    Ok(wrap_new(vm, &a[0], &st, v))
 }
 
 macro_rules! iter_class_new {
@@ -3115,4 +3332,191 @@ fn range_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
         _ => Err(vm.type_error("descriptor '__reduce__' requires a 'range' object")),
     }
+}
+
+// -------------------------------------------------------------------------
+// mappingproxy: a read-only view of a mapping (types.MappingProxyType)
+
+pub fn mappingproxy_class(vm: &mut Vm) -> Rc<Class> {
+    if let Some(c) = vm.classes.get("mappingproxy") {
+        return c.clone();
+    }
+    let c = Class::new("mappingproxy", vec![vm.t.object.clone()], Builtin::Obj);
+    *c.mro.borrow_mut() = vec![c.clone(), vm.t.object.clone()];
+    def_static(&c, "mappingproxy.__new__", mp_new);
+    def(&c, "mappingproxy.__getitem__", mp_getitem);
+    def(&c, "mappingproxy.__contains__", mp_contains);
+    def(&c, "mappingproxy.__iter__", mp_iter);
+    def(&c, "mappingproxy.__len__", mp_len);
+    def(&c, "mappingproxy.__reversed__", mp_reversed);
+    def(&c, "mappingproxy.get", mp_get);
+    def(&c, "mappingproxy.keys", mp_keys);
+    def(&c, "mappingproxy.values", mp_values);
+    def(&c, "mappingproxy.items", mp_items);
+    def(&c, "mappingproxy.copy", mp_copy);
+    def(&c, "mappingproxy.__or__", mp_or);
+    def(&c, "mappingproxy.__ror__", mp_ror);
+    def(&c, "mappingproxy.__ior__", mp_ior);
+    def(&c, "mappingproxy.__eq__", mp_eq);
+    def(&c, "mappingproxy.__ne__", mp_ne);
+    def(&c, "mappingproxy.__hash__", mp_hash);
+    def(&c, "mappingproxy.__repr__", mp_repr);
+    def(&c, "mappingproxy.__str__", mp_str);
+    def_class(&c, "mappingproxy.__class_getitem__", mp_class_getitem);
+    vm.classes.insert("mappingproxy", c.clone());
+    c
+}
+
+pub fn mappingproxy(vm: &mut Vm, mapping: Value) -> Value {
+    let c = mappingproxy_class(vm);
+    Value::Obj(Rc::new(NativeObj { class: c, kind: RefCell::new(ObjKind::Other(mapping)) }))
+}
+
+/// the mapping behind a mappingproxy
+fn mp_target(v: &Value) -> Option<Value> {
+    if let Value::Obj(o) = v {
+        if o.class.name() == "mappingproxy" {
+            if let ObjKind::Other(m) = &*o.kind.borrow() {
+                return Some(m.clone());
+            }
+        }
+    }
+    None
+}
+
+fn mp_self(vm: &mut Vm, a: &[Value]) -> PyResult<Value> {
+    match a.first().and_then(mp_target) {
+        Some(m) => Ok(m),
+        None => Err(vm.type_error("descriptor requires a 'mappingproxy' object")),
+    }
+}
+
+fn mp_call(vm: &mut Vm, a: &[Value], name: &str) -> PyResult<Value> {
+    let m = mp_self(vm, a)?;
+    let f = vm.getattr(&m, &ps(name))?;
+    vm.call_vec(&f, a[1..].to_vec(), &[])
+}
+
+fn mp_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let m = match arg_or_kw(a, 1, k, "mapping") {
+        Some(m) if a.len() <= 2 => m,
+        _ => return Err(vm.type_error(format!("mappingproxy() takes exactly 1 argument ({} given)", a.len().saturating_sub(1)))),
+    };
+    let is_mapping = match vm.base_of(&m) {
+        Value::List(_) | Value::Tuple(_) => false,
+        Value::Dict(_) => true,
+        _ => vm.class_of(&m).lookup(&vm.n.getitem).is_some(),
+    };
+    if !is_mapping {
+        let tn = vm.type_name(&m);
+        return Err(vm.type_error(format!("mappingproxy() argument must be a mapping, not {}", tn)));
+    }
+    Ok(mappingproxy(vm, m))
+}
+
+fn mp_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__getitem__", a, 1, 1)?;
+    let m = mp_self(vm, a)?;
+    vm.getitem(&m, &a[1])
+}
+
+fn mp_contains(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__contains__", a, 1, 1)?;
+    let m = mp_self(vm, a)?;
+    Ok(Value::Bool(vm.contains(&m, &a[1])?))
+}
+
+fn mp_iter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let m = mp_self(vm, a)?;
+    vm.iter(&m)
+}
+
+fn mp_len(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let m = mp_self(vm, a)?;
+    Ok(Value::Int(vm.len(&m)? as i64))
+}
+
+fn mp_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let m = mp_self(vm, a)?;
+    crate::builtins::bi_reversed(vm, &[m], k)
+}
+
+fn mp_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "get", a, 1, 2)?;
+    let m = mp_self(vm, a)?;
+    let f = vm.getattr(&m, &ps("get"))?;
+    let d = a.get(2).cloned().unwrap_or(Value::None);
+    vm.call_vec(&f, vec![a[1].clone(), d], &[])
+}
+
+fn mp_keys(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "keys", a, 0, 0)?;
+    mp_call(vm, a, "keys")
+}
+
+fn mp_values(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "values", a, 0, 0)?;
+    mp_call(vm, a, "values")
+}
+
+fn mp_items(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "items", a, 0, 0)?;
+    mp_call(vm, a, "items")
+}
+
+fn mp_copy(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "copy", a, 0, 0)?;
+    mp_call(vm, a, "copy")
+}
+
+fn mp_or(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__or__", a, 1, 1)?;
+    let x = mp_target(&a[0]).unwrap_or_else(|| a[0].clone());
+    let y = mp_target(&a[1]).unwrap_or_else(|| a[1].clone());
+    vm.binop(BinOp::BitOr, &x, &y)
+}
+
+fn mp_ror(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__ror__", a, 1, 1)?;
+    let x = mp_target(&a[0]).unwrap_or_else(|| a[0].clone());
+    let y = mp_target(&a[1]).unwrap_or_else(|| a[1].clone());
+    vm.binop(BinOp::BitOr, &y, &x)
+}
+
+fn mp_ior(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
+    Err(vm.type_error("'|=' is not supported by mappingproxy; use '|' instead"))
+}
+
+fn mp_eq(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__eq__", a, 1, 1)?;
+    let m = mp_self(vm, a)?;
+    vm.compare(CmpOp::Eq, &m, &a[1])
+}
+
+fn mp_ne(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__ne__", a, 1, 1)?;
+    let m = mp_self(vm, a)?;
+    vm.compare(CmpOp::Ne, &m, &a[1])
+}
+
+fn mp_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let m = mp_self(vm, a)?;
+    let h = vm.hash(&m)?;
+    Ok(Value::Int(h as i64))
+}
+
+fn mp_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let m = mp_self(vm, a)?;
+    let r = vm.repr(&m)?;
+    Ok(Value::string(format!("mappingproxy({})", r)))
+}
+
+fn mp_str(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let m = mp_self(vm, a)?;
+    Ok(Value::string(vm.str_of(&m)?))
+}
+
+fn mp_class_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
+    crate::builtins::generic_alias(vm, &a[0], &a[1])
 }

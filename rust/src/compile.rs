@@ -259,6 +259,9 @@ impl<'a> Collector<'a> {
                         return Err(CompileError { msg: format!("name '{}' is used prior to global declaration", n), line: s.line });
                     }
                     self.sc().globals.insert(n.clone());
+                    // as in CPython, the module's own uses of the name
+                    // become explicitly global too
+                    self.st.scopes[0].globals.insert(n.clone());
                 }
             }
             StmtKind::Nonlocal(ns) => {
@@ -322,6 +325,9 @@ impl<'a> Collector<'a> {
                 }
                 for (n, alias) in names {
                     if &**n == "*" {
+                        if self.sc().kind != ScopeKind::Module {
+                            return Err(CompileError { msg: "import * only allowed at module level".into(), line: s.line });
+                        }
                         continue;
                     }
                     let b = alias.clone().unwrap_or_else(|| n.clone());
@@ -861,6 +867,9 @@ impl<'a> Compiler<'a> {
                 if s.globals.contains(n) {
                     let i = self.name_idx(n);
                     self.emit(Op::LoadGlobal(i));
+                } else if s.nonlocals.contains(n) {
+                    let c = self.u().cell_map[n];
+                    self.emit(Op::LoadDeref(c));
                 } else if s.frees.contains(n) && !s.assigned.contains(n) {
                     let c = self.u().cell_map[n];
                     self.emit(Op::LoadClassDeref(c));
@@ -1532,16 +1541,12 @@ impl<'a> Compiler<'a> {
             self.emit(Op::SetupAnnotations);
         }
         self.stmts(&c.body)?;
-        let cls_cell: Name = Rc::from("__class__");
-        if let Some(&ci) = self.u().cell_map.get(&cls_cell) {
-            if self.u().cellvars.contains(&cls_cell) {
-                self.emit(Op::LoadClosure(ci));
-                self.emit(Op::Return);
-            } else {
-                let k = self.const_val(Value::None);
-                self.emit(Op::LoadConst(k));
-                self.emit(Op::Return);
-            }
+        if let Some(ci) = self.class_cell() {
+            self.emit(Op::LoadClosure(ci));
+            let cc = self.name_idx(&Rc::from("__classcell__"));
+            self.emit(Op::StoreName(cc));
+            self.emit(Op::LoadClosure(ci));
+            self.emit(Op::Return);
         } else {
             let k = self.const_val(Value::None);
             self.emit(Op::LoadConst(k));
@@ -1582,12 +1587,24 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// the implicit __class__ cell of the class body being compiled
+    fn class_cell(&mut self) -> Option<u32> {
+        let u = self.u();
+        if u.kind != ScopeKind::Class {
+            return None;
+        }
+        u.cellvars.iter().position(|n| &**n == "__class__").map(|i| i as u32)
+    }
+
     /// pushes the function object for `code`, with `flags` already pushed
     fn emit_closure_and_make(&mut self, code: Code, mut flags: u8) -> CResult<()> {
         if !code.freevars.is_empty() {
             for fv in code.freevars.clone() {
-                let ci = match self.u().cell_map.get(&fv) {
-                    Some(&c) => c,
+                // a method's __class__ is the class's implicit cell, even
+                // when the class body declares __class__ nonlocal
+                let implicit = if &*fv == "__class__" { self.class_cell() } else { None };
+                let ci = match implicit.or_else(|| self.u().cell_map.get(&fv).copied()) {
+                    Some(c) => c,
                     None => return Err(self.err(&format!("internal: free variable {} not found", fv))),
                 };
                 self.emit(Op::LoadClosure(ci));

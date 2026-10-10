@@ -18,16 +18,19 @@ def add(a, b): return a + b
 def and_(a, b): return a & b
 def floordiv(a, b): return a // b
 def index(a):
-    if type(a) is int:
-        return a
-    try:
-        m = type(a).__index__
-    except AttributeError:
-        raise TypeError(f"'{type(a).__name__}' object cannot be interpreted as an integer") from None
+    if isinstance(a, int):
+        return int.__index__(a)
+    m = getattr(type(a), "__index__", None)
+    if m is None:
+        raise TypeError("'%s' object cannot be interpreted as an integer" % type(a).__name__)
     r = m(a)
+    if type(r) is int:
+        return r
     if not isinstance(r, int):
-        raise TypeError(f"__index__ returned non-int (type {type(r).__name__})")
-    return r
+        raise TypeError("__index__ returned non-int (type %s)" % type(r).__name__)
+    import warnings
+    warnings.warn("__index__ returned non-int (type %s).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python." % type(r).__name__, DeprecationWarning, stacklevel=2)
+    return int.__index__(r)
 def inv(a): return ~a
 invert = inv
 def lshift(a, b): return a << b

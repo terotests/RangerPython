@@ -420,18 +420,15 @@ fn ns_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     }
     let d = ns_dict(vm, &a[0])?;
     if let Some(m) = a.get(1) {
-        let items = match m {
+        // a mapping or an iterable of pairs, as dict() takes them
+        let dict_t = Value::Class(vm.t.dict.clone());
+        let src = match m {
+            Value::Dict(_) => m.clone(),
+            other => vm.call_vec(&dict_t, vec![other.clone()], &[])?,
+        };
+        let items = match vm.base_of(&src) {
             Value::Dict(src) => src.borrow().iter().map(|e| (e.key.clone(), e.value.clone())).collect::<Vec<_>>(),
-            other => {
-                let kf = vm.getattr(other, &ps("keys"))?;
-                let keys = vm.call_vec(&kf, vec![], &[])?;
-                let mut out = vec![];
-                for key in vm.to_vec(&keys)? {
-                    let v = vm.getitem(other, &key)?;
-                    out.push((key, v));
-                }
-                out
-            }
+            _ => vec![],
         };
         for (key, v) in items {
             match &key {

@@ -124,7 +124,11 @@ pub struct Property {
     pub fget: Value,
     pub fset: Value,
     pub fdel: Value,
-    pub doc: Value,
+    pub doc: RefCell<Value>,
+    /// set by __set_name__; Undef until then
+    pub name: RefCell<Value>,
+    /// the doc came from fget
+    pub getter_doc: Cell<bool>,
 }
 
 pub type NativeFnPtr = fn(&mut crate::vm::Vm, &[Value], &[(Rc<PyStr>, Value)]) -> PyResult<Value>;
@@ -181,6 +185,8 @@ pub struct Class {
     pub has_getattribute: Cell<bool>,
     pub has_setattr: Cell<bool>,
     pub has_descriptors: Cell<bool>,
+    /// instances run __del__ when the last reference goes
+    pub has_del: Cell<bool>,
     pub slots: RefCell<Option<Vec<Name>>>,
 }
 
@@ -234,6 +240,40 @@ pub struct Instance {
     /// values kept outside __dict__: __slots__ members, and an exception's
     /// __traceback__, __cause__, __context__ and __suppress_context__
     pub extra: RefCell<Dict>,
+}
+
+thread_local! {
+    /// instances whose __del__ is still to run, kept alive until then
+    pub static PENDING_DEL: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+    pub static HAS_PENDING_DEL: Cell<bool> = const { Cell::new(false) };
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        if !self.class.get_mut().has_del.get() {
+            return;
+        }
+        let extra = self.extra.get_mut();
+        if extra.get_s("__finalized__").is_some() {
+            return;
+        }
+        // the object comes back to life once, so that __del__ can see it
+        let mut extra = std::mem::replace(extra, Dict::new());
+        extra.set_s("__finalized__", Value::Bool(true));
+        let inst = Instance {
+            class: RefCell::new(self.class.get_mut().clone()),
+            dict: std::mem::replace(&mut self.dict, Rc::new(RefCell::new(Dict::new()))),
+            base: RefCell::new(std::mem::replace(self.base.get_mut(), Value::Undef)),
+            extra: RefCell::new(extra),
+        };
+        let v = Value::Instance(Rc::new(inst));
+        let _ = PENDING_DEL.try_with(|p| {
+            if let Ok(mut p) = p.try_borrow_mut() {
+                p.push(v);
+                let _ = HAS_PENDING_DEL.try_with(|h| h.set(true));
+            }
+        });
+    }
 }
 
 pub struct Module {
@@ -760,8 +800,17 @@ pub fn fast_hash(v: &Value) -> Option<u64> {
         Value::FrozenSet(d) => frozenset_hash(&d.borrow()),
         Value::Complex(c) => hash_float(c.0) ^ hash_float(c.1).wrapping_mul(1000003),
         Value::Range(_) | Value::BigRange(_) => crate::range::hash(v),
-        Value::Instance(_) => return None,
+        Value::Instance(_) | Value::Obj(_) => return None,
         Value::List(_) | Value::Dict(_) | Value::Set(_) | Value::ByteArray(_) => return None,
+        // a bound method hashes by the identity of its self
+        Value::Method(m) => ((ptr_id(&m.0) as u64) >> 4) ^ fast_hash(&m.1)?,
+        Value::Slice(sl) => {
+            let mut acc: u64 = 0x27D4EB2F165667C5;
+            for it in [&sl.0, &sl.1, &sl.2] {
+                acc = acc.wrapping_add(fast_hash(it)?.wrapping_mul(0xC2B2AE3D27D4EB4F)).rotate_left(31).wrapping_mul(0x9E3779B185EBCA87);
+            }
+            acc
+        }
         other => (ptr_id(other) as u64) >> 4,
     })
 }
@@ -837,8 +886,8 @@ pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
         (ByteArray(x), ByteArray(y)) => Rc::ptr_eq(x, y) || *x.borrow() == *y.borrow(),
         (ByteArray(x), Bytes(y)) | (Bytes(y), ByteArray(x)) => **y == *x.borrow(),
         (Instance(x), Instance(y)) if Rc::ptr_eq(x, y) => true,
-        (Instance(_), _) | (_, Instance(_)) => return Option::None,
-        (List(_), List(_)) | (Dict(_), Dict(_)) | (Set(_), Set(_)) | (FrozenSet(_), FrozenSet(_)) | (Set(_), FrozenSet(_)) | (FrozenSet(_), Set(_)) => return Option::None,
+        (Instance(_), _) | (_, Instance(_)) | (Obj(_), _) | (_, Obj(_)) => return Option::None,
+        (List(_), List(_)) | (Slice(_), Slice(_)) | (Method(_), Method(_)) | (Dict(_), Dict(_)) | (Set(_), Set(_)) | (FrozenSet(_), FrozenSet(_)) | (Set(_), FrozenSet(_)) | (FrozenSet(_), Set(_)) => return Option::None,
         (DictView(_), _) | (_, DictView(_)) => return Option::None,
         (Complex(x), Complex(y)) => x.0 == y.0 && x.1 == y.1,
         (Complex(c), o @ (Int(_) | Bool(_) | Float(_) | Big(_))) | (o @ (Int(_) | Bool(_) | Float(_) | Big(_)), Complex(c)) => c.1 == 0.0 && fast_eq(&Float(c.0), o)?,
@@ -917,6 +966,7 @@ impl Class {
             has_getattribute: Cell::new(false),
             has_setattr: Cell::new(false),
             has_descriptors: Cell::new(false),
+            has_del: Cell::new(false),
             slots: RefCell::new(None),
         });
         c

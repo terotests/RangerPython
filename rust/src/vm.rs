@@ -61,6 +61,8 @@ pub struct Generator {
     pub coroutine: bool,
     /// the exceptions its frame was handling when it last yielded
     pub handled: Vec<Value>,
+    /// gi_code / cr_code, kept after the frame is gone
+    pub code: Rc<Code>,
 }
 
 /// interned names the VM looks up often
@@ -499,6 +501,9 @@ impl Vm {
     }
 
     pub fn run_frame(&mut self, f: &mut Frame) -> PyResult<Exit> {
+        if crate::value::HAS_PENDING_DEL.with(|h| h.get()) {
+            self.run_finalizers();
+        }
         self.frames.push(f as *mut Frame);
         self.frame_objs.push(Value::Undef);
         let r = loop {
@@ -520,6 +525,27 @@ impl Vm {
         self.frames.pop();
         self.frame_objs.pop();
         r
+    }
+
+    /// runs __del__ of the instances whose last reference went away
+    pub fn run_finalizers(&mut self) {
+        crate::value::HAS_PENDING_DEL.with(|h| h.set(false));
+        loop {
+            let v = crate::value::PENDING_DEL.with(|p| p.borrow_mut().pop());
+            let v = match v {
+                Some(v) => v,
+                None => break,
+            };
+            let name = PyStr::new("__del__".to_string());
+            if let Some(f) = self.lookup_special(&v, &Rc::new(name)) {
+                if let Err(e) = self.call_vec(&f, vec![], &[]) {
+                    let fr = self.repr(&f).unwrap_or_default();
+                    let tn = self.type_name(&e.value);
+                    let msg = self.str_of(&e.value).unwrap_or_default();
+                    eprintln!("Exception ignored in: {}\n{}: {}", fr, tn, msg);
+                }
+            }
+        }
     }
 
     /// the innermost running frame
@@ -1916,7 +1942,7 @@ impl Vm {
         cells.extend(func.closure.iter().cloned());
         let f = Frame { code: code.clone(), ip: 0, stack: locals, cells, blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         if code.generator || code.coroutine {
-            let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator, handled: vec![] };
+            let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator, handled: vec![], code: code.clone() };
             return Ok(Value::Gen(Rc::new(RefCell::new(g))));
         }
         let mut f = f;
@@ -2223,10 +2249,19 @@ impl Vm {
                     }
                 }
                 _ => {
-                    let mut a = Vec::with_capacity(args.len() + 1);
-                    a.push(obj.clone());
-                    a.extend(args);
-                    let r = self.call_vec(&init, a, kw)?;
+                    let r = if matches!(init, Value::Func(_) | Value::Native(_)) {
+                        let mut a = Vec::with_capacity(args.len() + 1);
+                        a.push(obj.clone());
+                        a.extend(args);
+                        self.call_vec(&init, a, kw)?
+                    } else {
+                        // a descriptor: call what it gives for the instance
+                        let ini = self.n.init.clone();
+                        match self.lookup_special_get(&obj, &ini)? {
+                            Some(f) => self.call_vec(&f, args, kw)?,
+                            None => Value::None,
+                        }
+                    };
                     if !r.is_none() {
                         let tn = self.type_name(&r);
                         return Err(self.type_error(format!("__init__() should return None, not '{}'", tn)));
@@ -2329,7 +2364,15 @@ impl Vm {
             }
         }
         cls.dict.borrow_mut().remove_str(&self.n.qualname);
-        cls.dict.borrow_mut().remove_str(&self.n.classcell);
+        let cc = cls.dict.borrow_mut().remove_str(&self.n.classcell);
+        match cc {
+            Some(Value::Cell(c)) => *c.borrow_mut() = Value::Class(cls.clone()),
+            Some(other) => {
+                let r = format!("<class '{}'>", self.type_name(&other));
+                return Err(self.type_error(format!("__classcell__ must be a nonlocal cell, not {}", r)));
+            }
+            None => {}
+        }
         // implicit staticmethod / classmethod
         for (n, wrap) in [("__new__", 0), ("__init_subclass__", 1), ("__class_getitem__", 1)] {
             let key = PyStr::new(n.to_string());
@@ -2339,11 +2382,25 @@ impl Vm {
                 cls.dict.borrow_mut().set_s(n, w);
             }
         }
-        if cls.dict.borrow().get_str(&self.n.doc).is_none() {
-            cls.dict.borrow_mut().set_str(self.n.doc.clone(), Value::None);
-        }
         *cls.meta.borrow_mut() = Some(meta.clone());
         self.compute_mro(&cls)?;
+        if !Rc::ptr_eq(meta, &self.t.type_) {
+            // a metaclass's own mro()
+            if let Some(f @ Value::Func(_)) = meta.lookup(&PyStr::new("mro".to_string())) {
+                let r = self.call_vec(&f, vec![Value::Class(cls.clone())], &[])?;
+                let mut mro = vec![];
+                for x in self.to_vec(&r)? {
+                    match x {
+                        Value::Class(c) => mro.push(c),
+                        other => {
+                            let tn = self.type_name(&other);
+                            return Err(self.type_error(format!("mro() returned a non-class ('{}')", tn)));
+                        }
+                    }
+                }
+                *cls.mro.borrow_mut() = mro;
+            }
+        }
         self.update_flags(&cls);
         // __slots__
         let slots = cls.dict.borrow().get_str(&self.n.slots).cloned();
@@ -2383,6 +2440,9 @@ impl Vm {
             }
             *cls.slots.borrow_mut() = Some(names);
         }
+        if cls.dict.borrow().get_str(&self.n.doc).is_none() {
+            cls.dict.borrow_mut().set_str(self.n.doc.clone(), Value::None);
+        }
         Ok(cls)
     }
 
@@ -2391,34 +2451,45 @@ impl Vm {
         let gab = matches!(cls.lookup(&self.n.getattribute), Some(Value::Func(_)));
         let sa = matches!(cls.lookup(&self.n.setattr), Some(Value::Func(_)));
         cls.has_getattr.set(ga);
+        cls.has_del.set(cls.lookup(&PyStr::new("__del__".to_string())).is_some());
         cls.has_getattribute.set(gab);
         cls.has_setattr.set(sa || matches!(cls.lookup(&self.n.delattr), Some(Value::Func(_))));
     }
 
     /// __build_class__(func, name, *bases, metaclass=None, **kw)
     pub fn build_class(&mut self, args: &[Value], kw: &[(Rc<PyStr>, Value)]) -> PyResult<Value> {
+        if args.len() < 2 {
+            return Err(self.type_error("__build_class__: not enough arguments"));
+        }
         let body = args[0].clone();
         let name = match &args[1] {
             Value::Str(s) => s.s.clone(),
             _ => return Err(self.type_error("__build_class__: name is not a string")),
         };
         let orig_bases: Vec<Value> = args[2..].to_vec();
+        // __mro_entries__ of bases that are not types
         let mut bases_v = vec![];
         let mut changed = false;
         for b in &orig_bases {
-            match b {
-                Value::Class(_) => bases_v.push(b.clone()),
-                other => {
-                    let me = self.getattr_opt(other, &self.n.mro_entries.clone())?;
-                    match me {
-                        Some(f) => {
-                            let r = self.call_vec(&f, vec![Value::tuple(orig_bases.clone())], &[])?;
-                            bases_v.extend(self.to_vec(&r)?);
-                            changed = true;
-                        }
-                        None => return Err(self.type_error("bases must be types")),
+            if let Value::Class(_) = b {
+                bases_v.push(b.clone());
+                continue;
+            }
+            let me = match self.getattr_opt(b, &self.n.mro_entries.clone()) {
+                Ok(m) => m,
+                Err(e) if self.exc_is(&e, "AttributeError") => None,
+                Err(e) => return Err(e),
+            };
+            match me {
+                Some(f) => {
+                    let r = self.call_vec(&f, vec![Value::tuple(orig_bases.clone())], &[])?;
+                    match r {
+                        Value::Tuple(t) => bases_v.extend(t.iter().cloned()),
+                        _ => return Err(self.type_error("__mro_entries__ must return a tuple")),
                     }
+                    changed = true;
                 }
+                None => bases_v.push(b.clone()),
             }
         }
         let mut meta: Option<Value> = None;
@@ -2430,45 +2501,67 @@ impl Vm {
                 rest_kw.push((k.clone(), v.clone()));
             }
         }
-        let bases: Vec<Rc<Class>> = bases_v
-            .iter()
-            .map(|b| match b {
-                Value::Class(c) => c.clone(),
-                _ => unreachable!(),
-            })
-            .collect();
-        // the most derived metaclass among the bases
         let meta = match meta {
             Some(m) => m,
-            None => {
-                let mut m = self.t.type_.clone();
-                for b in &bases {
-                    let bm = b.meta.borrow().clone().unwrap_or_else(|| self.t.type_.clone());
-                    if bm.is_subclass(&m) {
-                        m = bm;
-                    }
-                }
-                Value::Class(m)
-            }
+            None => match bases_v.first() {
+                Some(b) => Value::Class(self.class_of(b)),
+                None => Value::Class(self.t.type_.clone()),
+            },
         };
+        // the most derived metaclass among the bases
+        let meta = match &meta {
+            Value::Class(mc) => {
+                let mut winner = mc.clone();
+                for b in &bases_v {
+                    let bm = self.class_of(b);
+                    if winner.is_subclass(&bm) {
+                        continue;
+                    }
+                    if bm.is_subclass(&winner) {
+                        winner = bm;
+                        continue;
+                    }
+                    return Err(self.type_error("metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases"));
+                }
+                Value::Class(winner)
+            }
+            other => other.clone(),
+        };
+        let bases_t = Value::tuple(bases_v.clone());
         let ns = Rc::new(RefCell::new(Dict::new()));
-        let ns = match &meta {
-            Value::Class(mc) if !Rc::ptr_eq(mc, &self.t.type_) => match mc.lookup(&self.n.prepare) {
+        let plain = matches!(&meta, Value::Class(mc) if Rc::ptr_eq(mc, &self.t.type_));
+        let ns = if plain {
+            ns
+        } else {
+            let prep = match self.getattr_opt(&meta, &self.n.prepare.clone()) {
+                Ok(p) => p,
+                Err(e) if self.exc_is(&e, "AttributeError") => None,
+                Err(e) => return Err(e),
+            };
+            match prep {
                 Some(p) => {
-                    let p = self.bind_classmethod(&p, &meta);
-                    let r = self.call_vec(&p, vec![Value::str(&name), Value::tuple(bases_v.clone())], &rest_kw)?;
+                    let r = self.call_vec(&p, vec![Value::str(&name), bases_t.clone()], &rest_kw)?;
                     match r {
                         Value::Dict(d) => d,
-                        Value::Instance(i) => match &*i.base.borrow() {
+                        Value::Instance(i) if matches!(&*i.base.borrow(), Value::Dict(_)) => match &*i.base.borrow() {
                             Value::Dict(d) => d.clone(),
                             _ => ns,
                         },
-                        _ => ns,
+                        other => {
+                            if self.class_of(&other).lookup(&self.n.getitem).is_none() {
+                                let mn = match &meta {
+                                    Value::Class(c) => c.name(),
+                                    _ => "<metaclass>".to_string(),
+                                };
+                                let tn = self.type_name(&other);
+                                return Err(self.type_error(format!("{}.__prepare__() must return a mapping, not {}", mn, tn)));
+                            }
+                            ns
+                        }
                     }
                 }
                 None => ns,
-            },
-            _ => ns,
+            }
         };
         if changed {
             ns.borrow_mut().set_s("__orig_bases__", Value::tuple(orig_bases.clone()));
@@ -2491,16 +2584,31 @@ impl Vm {
         };
         let cls_v = match &meta {
             Value::Class(mc) if Rc::ptr_eq(mc, &self.t.type_) => {
-                let c = self.type_new(mc, &name, bases.clone(), &ns)?;
+                let mut bases = vec![];
+                for b in &bases_v {
+                    match b {
+                        Value::Class(c) => bases.push(c.clone()),
+                        _ => return Err(self.type_error("bases must be types")),
+                    }
+                }
+                let c = self.type_new(mc, &name, bases, &ns)?;
                 Value::Class(c)
             }
             _ => {
                 let nsv = Value::Dict(ns.clone());
-                self.call_vec(&meta, vec![Value::str(&name), Value::tuple(bases_v.clone()), nsv], &rest_kw)?
+                self.call_vec(&meta, vec![Value::str(&name), bases_t, nsv], &rest_kw)?
             }
         };
-        if let Value::Cell(c) = &cell {
-            *c.borrow_mut() = cls_v.clone();
+        if let (Value::Cell(c), Value::Class(_)) = (&cell, &cls_v) {
+            let got = c.borrow().clone();
+            if !got.is(&cls_v) {
+                let cr = self.repr(&cls_v)?;
+                if got.is_undef() {
+                    return Err(self.err("RuntimeError", format!("__class__ not set defining '{}' as {}. Was __classcell__ propagated to type.__new__?", name, cr)));
+                }
+                let gr = self.repr(&got)?;
+                return Err(self.type_error(format!("__class__ set to {} defining '{}' as {}", gr, name, cr)));
+            }
         }
         // a metaclass's type.__new__ already ran class_created
         if let (Value::Class(cls), Value::Class(mc)) = (&cls_v, &meta) {
@@ -2520,8 +2628,8 @@ impl Vm {
         let items = cls.dict.borrow().items();
         cls.dict.borrow_mut().remove_str(&PyStr::new("__ranger_created__".into()));
         for (k, v) in items {
-            if let Value::Instance(_) = &v {
-                if let Some(sn) = self.lookup_special(&v, &self.n.set_name.clone()) {
+            if let Value::Instance(_) | Value::Property(_) | Value::Obj(_) = &v {
+                if let Some(sn) = self.lookup_special_get(&v, &self.n.set_name.clone())? {
                     self.call_vec(&sn, vec![Value::Class(cls.clone()), k.clone()], &[])?;
                 }
             }

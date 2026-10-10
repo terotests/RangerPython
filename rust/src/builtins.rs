@@ -231,17 +231,26 @@ pub fn clamp_index(vm: &mut Vm, v: &Value) -> PyResult<Option<i64>> {
     }
 }
 
+/// _PyEval_SliceIndex: an index clamped to the i64 range
+pub fn slice_index(vm: &mut Vm, v: &Value) -> PyResult<i64> {
+    let ok = match v {
+        Value::Int(_) | Value::Big(_) | Value::Bool(_) => true,
+        _ => vm.class_of(v).lookup(&vm.n.index).is_some(),
+    };
+    if !ok {
+        return Err(vm.type_error("slice indices must be integers or None or have an __index__ method"));
+    }
+    match vm.number_index(v)? {
+        Value::Int(i) => Ok(i),
+        Value::Big(b) => Ok(if b.neg { i64::MIN } else { i64::MAX }),
+        _ => Ok(0),
+    }
+}
+
 /// start, stop, step of a slice over `len` items (CPython's PySlice_AdjustIndices)
 pub fn slice_indices(vm: &mut Vm, s: &(Value, Value, Value), len: usize) -> PyResult<(i64, i64, i64)> {
     let len = len as i64;
-    let step = if s.2.is_none() {
-        1
-    } else {
-        match clamp_index(vm, &s.2)? {
-            Some(i) => i.max(-i64::MAX),
-            None => return Err(vm.type_error("slice indices must be integers or None or have an __index__ method")),
-        }
-    };
+    let step = if s.2.is_none() { 1 } else { slice_index(vm, &s.2)?.max(-i64::MAX) };
     if step == 0 {
         return Err(vm.value_error("slice step cannot be zero"));
     }
@@ -249,10 +258,7 @@ pub fn slice_indices(vm: &mut Vm, s: &(Value, Value, Value), len: usize) -> PyRe
         if v.is_none() {
             return Ok(dflt);
         }
-        match clamp_index(vm, v)? {
-            Some(i) => Ok(i.clamp(i64::MIN / 2, i64::MAX / 2)),
-            None => Err(vm.type_error("slice indices must be integers or None or have an __index__ method")),
-        }
+        slice_index(vm, v).map(|i| i.clamp(i64::MIN / 2, i64::MAX / 2))
     };
     let (lo_d, hi_d) = if step < 0 { (len - 1, -1) } else { (0, len) };
     let mut start = conv(vm, &s.0, if step < 0 { i64::MAX } else { 0 })?;
@@ -1009,7 +1015,7 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
                 "__name__" => Some(Value::Str(g.name.clone())),
                 "__qualname__" => Some(Value::Str(g.qualname.clone())),
                 "gi_running" | "cr_running" => Some(Value::Bool(g.running)),
-                "gi_code" | "cr_code" => g.frame.as_ref().map(|f| Value::Code(f.code.clone())),
+                "gi_code" | "cr_code" => Some(Value::Code(g.code.clone())),
                 "gi_yieldfrom" | "cr_await" => Some(match &g.frame {
                     Some(f) if !g.running && matches!(f.code.ops.get(f.ip), Some(crate::code::Op::YieldFrom)) => f.stack.last().cloned().unwrap_or(Value::None),
                     _ => Value::None,
@@ -1022,20 +1028,39 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
             "fget" => Some(p.fget.clone()),
             "fset" => Some(p.fset.clone()),
             "fdel" => Some(p.fdel.clone()),
-            "__doc__" => Some(if p.doc.is_none() {
-                match &p.fget {
-                    Value::Func(f) => f.code.doc.clone(),
-                    _ => Value::None,
+            "__doc__" => Some(p.doc.borrow().clone()),
+            "__name__" => {
+                let n = p.name.borrow().clone();
+                if !n.is_undef() {
+                    Some(n)
+                } else {
+                    let f = p.fget.clone();
+                    match vm.getattr_opt(&f, &ps("__name__"))? {
+                        Some(v) if !f.is_none() => Some(v),
+                        _ => return Err(vm.attr_error("'property' object has no attribute '__name__'")),
+                    }
                 }
-            } else {
-                p.doc.clone()
-            }),
+            }
             "__isabstractmethod__" => {
-                let f = p.fget.clone();
-                match vm.getattr_opt(&f, &ps("__isabstractmethod__"))? {
-                    Some(v) => Some(v),
-                    None => Some(Value::Bool(false)),
+                let fs = [p.fget.clone(), p.fset.clone(), p.fdel.clone()];
+                let mut r = false;
+                for f in &fs {
+                    if f.is_none() {
+                        continue;
+                    }
+                    let v = match vm.getattr_opt(f, &ps("__isabstractmethod__")) {
+                        Ok(v) => v,
+                        Err(e) if vm.exc_is(&e, "AttributeError") => None,
+                        Err(e) => return Err(e),
+                    };
+                    if let Some(v) = v {
+                        if vm.truthy(&v)? {
+                            r = true;
+                            break;
+                        }
+                    }
                 }
+                Some(Value::Bool(r))
             }
             _ => None,
         },
@@ -1059,7 +1084,7 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
         },
         Value::Code(c) => code_attr(c, name),
         Value::DictView(dv) => match name {
-            "mapping" => Some(Value::Dict(dv.0.clone())),
+            "mapping" => Some(crate::methods::mappingproxy(vm, Value::Dict(dv.0.clone()))),
             _ => None,
         },
         Value::Obj(o) => {
@@ -1104,6 +1129,42 @@ pub fn instance_special(vm: &mut Vm, obj: &Value, inst: &Rc<Instance>, name: &st
     Ok(None)
 }
 
+/// type.__flags__, as CPython's Py_TPFLAGS_* bits
+fn type_flags(vm: &mut Vm, c: &Rc<Class>) -> PyResult<i64> {
+    let heap = matches!(c.dict.borrow().get_s("__module__"), Some(Value::Str(m)) if &*m.s != "builtins");
+    let mut f: i64 = 1 << 12;
+    if heap {
+        f |= (1 << 9) | (1 << 14);
+        if matches!(c.builtin.get(), Builtin::User | Builtin::Object) && crate::ops::has_dict(c) {
+            f |= (1 << 2) | (1 << 3);
+        }
+    } else {
+        f |= 1 << 8;
+    }
+    if !matches!(c.builtin.get(), Builtin::Bool | Builtin::NoneType | Builtin::NotImplementedType | Builtin::Ellipsis | Builtin::Range | Builtin::Slice | Builtin::Function | Builtin::Code | Builtin::Cell) {
+        f |= 1 << 10;
+    }
+    f |= match c.builtin.get() {
+        Builtin::Int | Builtin::Bool => 1 << 24,
+        Builtin::List => (1 << 25) | (1 << 5),
+        Builtin::Tuple => (1 << 26) | (1 << 5),
+        Builtin::Bytes => 1 << 27,
+        Builtin::Str => 1 << 28,
+        Builtin::Dict => (1 << 29) | (1 << 6),
+        Builtin::BaseException => 1 << 30,
+        Builtin::Type => 1 << 31,
+        Builtin::Range => 1 << 5,
+        _ => 0,
+    };
+    let am = c.dict.borrow().get_s("__abstractmethods__");
+    if let Some(am) = am {
+        if vm.truthy(&am)? {
+            f |= 1 << 20;
+        }
+    }
+    Ok(f)
+}
+
 pub fn class_special(vm: &mut Vm, c: &Rc<Class>, name: &str) -> PyResult<Option<Value>> {
     Ok(Some(match name {
         "__name__" => Value::Str(c.name.borrow().clone()),
@@ -1117,7 +1178,7 @@ pub fn class_special(vm: &mut Vm, c: &Rc<Class>, name: &str) -> PyResult<Option<
             Some(b) => Value::Class(b.clone()),
             None => Value::None,
         },
-        "__dict__" => Value::Dict(c.dict.clone()),
+        "__dict__" => crate::methods::mappingproxy(vm, Value::Dict(c.dict.clone())),
         "__module__" => Value::str("builtins"),
         "__doc__" => Value::None,
         "__class__" => Value::Class(vm.class_of(&Value::Class(c.clone()))),
@@ -1129,6 +1190,19 @@ pub fn class_special(vm: &mut Vm, c: &Rc<Class>, name: &str) -> PyResult<Option<
             d
         }
         "__type_params__" => Value::tuple(vec![]),
+        "__flags__" => Value::Int(type_flags(vm, c)?),
+        "__basicsize__" => Value::Int(match c.builtin.get() {
+            Builtin::Object | Builtin::NoneType => 16,
+            Builtin::Int | Builtin::Bool | Builtin::Tuple | Builtin::Bytes => 24,
+            Builtin::Float => 24,
+            _ => 32,
+        }),
+        "__itemsize__" => Value::Int(match c.builtin.get() {
+            Builtin::Int | Builtin::Bool => 4,
+            Builtin::Tuple => 8,
+            Builtin::Bytes => 1,
+            _ => 0,
+        }),
         "__abstractmethods__" => return Ok(None),
         "__text_signature__" => Value::None,
         _ => return Ok(None),
@@ -2284,6 +2358,8 @@ fn bi_divmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
                 return Ok(r);
             }
         }
+        let (x, y) = (vm.type_name(&a[0]), vm.type_name(&a[1]));
+        return Err(vm.type_error(format!("unsupported operand type(s) for divmod(): '{}' and '{}'", x, y)));
     }
     let q = vm.binop(BinOp::FloorDiv, &a[0], &a[1]).map_err(|e| {
         if vm.exc_is(&e, "TypeError") {
@@ -2383,7 +2459,7 @@ pub fn bi_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         _ => {
             if let Some(f) = vm.lookup_special(v, &vm.n.reversed.clone()) {
                 let is_native = matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)));
-                if !is_native {
+                if !is_native || matches!(v, Value::Obj(_)) {
                     return vm.call_vec(&f, vec![], &[]);
                 }
             }
@@ -2475,57 +2551,158 @@ fn bi_input(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 /// isinstance(v, spec) with tuples, unions and __instancecheck__
 pub fn isinstance_of(vm: &mut Vm, v: &Value, spec: &Value) -> PyResult<bool> {
-    match spec {
-        Value::Class(c) => {
-            if vm.isinstance(v, c) {
+    if let Value::Class(c) = spec {
+        if Rc::ptr_eq(&vm.class_of(v), c) {
+            return Ok(true);
+        }
+        let plain = match &*c.meta.borrow() {
+            None => true,
+            Some(m) => Rc::ptr_eq(m, &vm.t.type_),
+        };
+        if plain {
+            return real_isinstance(vm, v, spec);
+        }
+    }
+    if is_union(vm, spec) {
+        let (_, args) = alias_parts(spec);
+        for x in &args {
+            if isinstance_of(vm, v, x)? {
                 return Ok(true);
             }
-            let meta = c.meta.borrow().clone();
-            if let Some(m) = meta {
-                if !Rc::ptr_eq(&m, &vm.t.type_) {
-                    if let Some(f @ Value::Func(_)) = m.lookup(&vm.n.instancecheck) {
-                        let r = vm.call_vec(&f, vec![spec.clone(), v.clone()], &[])?;
-                        return vm.truthy(&r);
+        }
+        return Ok(false);
+    }
+    if let Value::Tuple(t) = spec {
+        vm.enter(" in __instancecheck__")?;
+        let mut r = Ok(false);
+        for x in t.iter() {
+            match isinstance_of(vm, v, x) {
+                Ok(false) => {}
+                other => {
+                    r = other;
+                    break;
+                }
+            }
+        }
+        vm.depth -= 1;
+        return r;
+    }
+    if let Value::Obj(_) = spec {
+        let (origin, _) = alias_parts(spec);
+        if !origin.is_none() {
+            return Err(vm.type_error("isinstance() argument 2 cannot be a parameterized generic"));
+        }
+    }
+    let name = vm.n.instancecheck.clone();
+    match vm.lookup_special_get(spec, &name)? {
+        Some(Value::Method(m)) if matches!(&m.1, Value::Native(n) if n.name == "type.__instancecheck__") => real_isinstance(vm, v, spec),
+        Some(f) => {
+            vm.enter(" in __instancecheck__")?;
+            let r = vm.call_vec(&f, vec![v.clone()], &[]);
+            vm.depth -= 1;
+            let r = r?;
+            vm.truthy(&r)
+        }
+        None => real_isinstance(vm, v, spec),
+    }
+}
+
+/// type.__instancecheck__: isinstance without the hook on the class
+pub fn real_isinstance(vm: &mut Vm, v: &Value, spec: &Value) -> PyResult<bool> {
+    let name = vm.n.class.clone();
+    if let Value::Class(c) = spec {
+        if vm.isinstance(v, c) {
+            return Ok(true);
+        }
+        // an instance whose class overrides __class__ (mock objects)
+        if let Value::Instance(i) = v {
+            let own = i.class.borrow().clone();
+            if own.lookup(&name).is_some() {
+                if let Some(Value::Class(ic)) = get_optional(vm, v, &name)? {
+                    if !Rc::ptr_eq(&ic, &own) {
+                        return Ok(ic.is_subclass(c));
                     }
                 }
             }
-            // a class with a __class__ property (mock objects)
-            Ok(false)
         }
-        Value::Tuple(t) => {
-            for x in t.iter() {
-                if isinstance_of(vm, v, x)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-        Value::Obj(_) if is_union(vm, spec) => {
-            let (_, args) = alias_parts(spec);
-            for x in &args {
-                let x = if x.is_none() { Value::Class(vm.t.none.clone()) } else { x.clone() };
-                if isinstance_of(vm, v, &x)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-        Value::Obj(_) => {
-            let (origin, _) = alias_parts(spec);
-            if !origin.is_none() {
-                return Err(vm.type_error("isinstance() argument 2 cannot be a parameterized generic"));
-            }
-            Err(vm.type_error("isinstance() arg 2 must be a type, a tuple of types, or a union"))
-        }
-        Value::Instance(_) => {
-            if let Some(f) = vm.lookup_special(spec, &vm.n.instancecheck.clone()) {
-                let r = vm.call_vec(&f, vec![v.clone()], &[])?;
-                return vm.truthy(&r);
-            }
-            Err(vm.type_error("isinstance() arg 2 must be a type, a tuple of types, or a union"))
-        }
-        _ => Err(vm.type_error("isinstance() arg 2 must be a type, a tuple of types, or a union")),
+        return Ok(false);
     }
+    check_class(vm, spec, "isinstance() arg 2 must be a type, a tuple of types, or a union")?;
+    match get_optional(vm, v, &name)? {
+        Some(ic) => abstract_issubclass(vm, &ic, spec),
+        None => Ok(false),
+    }
+}
+
+/// getattr that turns AttributeError into None
+fn get_optional(vm: &mut Vm, v: &Value, name: &Rc<PyStr>) -> PyResult<Option<Value>> {
+    match vm.getattr_opt(v, name) {
+        Ok(r) => Ok(r),
+        Err(e) if vm.exc_is(&e, "AttributeError") => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn abstract_get_bases(vm: &mut Vm, v: &Value) -> PyResult<Option<Rc<Vec<Value>>>> {
+    if let Value::Class(c) = v {
+        let b: Vec<Value> = c.bases.borrow().iter().map(|b| Value::Class(b.clone())).collect();
+        return Ok(Some(Rc::new(b)));
+    }
+    let name = PyStr::new("__bases__".to_string());
+    match get_optional(vm, v, &Rc::new(name))? {
+        Some(Value::Tuple(t)) => Ok(Some(t)),
+        _ => Ok(None),
+    }
+}
+
+fn check_class(vm: &mut Vm, v: &Value, msg: &str) -> PyResult<()> {
+    match abstract_get_bases(vm, v)? {
+        Some(_) => Ok(()),
+        None => Err(vm.type_error(msg)),
+    }
+}
+
+fn abstract_issubclass(vm: &mut Vm, derived: &Value, cls: &Value) -> PyResult<bool> {
+    let mut derived = derived.clone();
+    let bases = loop {
+        if derived.is(cls) {
+            return Ok(true);
+        }
+        let bases = match abstract_get_bases(vm, &derived)? {
+            Some(b) => b,
+            None => return Ok(false),
+        };
+        match bases.len() {
+            0 => return Ok(false),
+            1 => derived = bases[0].clone(),
+            _ => break bases,
+        }
+    };
+    vm.enter(" in __subclasscheck__")?;
+    let mut r = Ok(false);
+    for b in bases.iter() {
+        match abstract_issubclass(vm, b, cls) {
+            Ok(false) => {}
+            other => {
+                r = other;
+                break;
+            }
+        }
+    }
+    vm.depth -= 1;
+    r
+}
+
+/// type.__subclasscheck__: issubclass without the hook on the class
+pub fn real_issubclass(vm: &mut Vm, c: &Value, spec: &Value) -> PyResult<bool> {
+    if let (Value::Class(a), Value::Class(b)) = (c, spec) {
+        return Ok(a.is_subclass(b));
+    }
+    check_class(vm, c, "issubclass() arg 1 must be a class")?;
+    if !is_union(vm, spec) {
+        check_class(vm, spec, "issubclass() arg 2 must be a class, a tuple of classes, or a union")?;
+    }
+    abstract_issubclass(vm, c, spec)
 }
 
 fn bi_isinstance(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -2534,45 +2711,59 @@ fn bi_isinstance(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 pub fn issubclass_of(vm: &mut Vm, c: &Value, spec: &Value) -> PyResult<bool> {
-    let cls = match c {
-        Value::Class(c) => c.clone(),
-        _ => return Err(vm.type_error("issubclass() arg 1 must be a class")),
-    };
-    match spec {
-        Value::Class(s) => {
-            if cls.is_subclass(s) {
+    if let Value::Class(s) = spec {
+        let plain = match &*s.meta.borrow() {
+            None => true,
+            Some(m) => Rc::ptr_eq(m, &vm.t.type_),
+        };
+        if plain {
+            if c.is(spec) {
                 return Ok(true);
             }
-            let meta = s.meta.borrow().clone();
-            if let Some(m) = meta {
-                if !Rc::ptr_eq(&m, &vm.t.type_) {
-                    if let Some(f @ Value::Func(_)) = m.lookup(&vm.n.subclasscheck) {
-                        let r = vm.call_vec(&f, vec![spec.clone(), c.clone()], &[])?;
-                        return vm.truthy(&r);
-                    }
+            return real_issubclass(vm, c, spec);
+        }
+    }
+    if is_union(vm, spec) {
+        let (_, args) = alias_parts(spec);
+        for x in &args {
+            if issubclass_of(vm, c, x)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+    if let Value::Tuple(t) = spec {
+        vm.enter(" in __subclasscheck__")?;
+        let mut r = Ok(false);
+        for x in t.iter() {
+            match issubclass_of(vm, c, x) {
+                Ok(false) => {}
+                other => {
+                    r = other;
+                    break;
                 }
             }
-            Ok(false)
         }
-        Value::Tuple(t) => {
-            for x in t.iter() {
-                if issubclass_of(vm, c, x)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
+        vm.depth -= 1;
+        return r;
+    }
+    if let Value::Obj(_) = spec {
+        let (origin, _) = alias_parts(spec);
+        if !origin.is_none() {
+            return Err(vm.type_error("issubclass() argument 2 cannot be a parameterized generic"));
         }
-        Value::Obj(_) if is_union(vm, spec) => {
-            let (_, args) = alias_parts(spec);
-            for x in &args {
-                let x = if x.is_none() { Value::Class(vm.t.none.clone()) } else { x.clone() };
-                if issubclass_of(vm, c, &x)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
+    }
+    let name = vm.n.subclasscheck.clone();
+    match vm.lookup_special_get(spec, &name)? {
+        Some(Value::Method(m)) if matches!(&m.1, Value::Native(n) if n.name == "type.__subclasscheck__") => real_issubclass(vm, c, spec),
+        Some(f) => {
+            vm.enter(" in __subclasscheck__")?;
+            let r = vm.call_vec(&f, vec![c.clone()], &[]);
+            vm.depth -= 1;
+            let r = r?;
+            vm.truthy(&r)
         }
-        _ => Err(vm.type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")),
+        None => real_issubclass(vm, c, spec),
     }
 }
 

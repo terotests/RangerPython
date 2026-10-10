@@ -145,7 +145,7 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
         }
         '%' => {
             let p = prec.unwrap_or(6);
-            format!("{}%", fixed(x * 100.0, p))
+            format!("{}{}%", fixed(x * 100.0, p), if alt && p == 0 { "." } else { "" })
         }
         'g' | 'G' | 'n' => {
             let p = prec.unwrap_or(6).max(1);
@@ -760,10 +760,40 @@ pub fn check_str_digits(vm: &mut Vm, s: &str, base: u32) -> PyResult<()> {
     Ok(())
 }
 
+/// "Cannot specify ',' with 'x'."
+fn bad_grouping(vm: &mut Vm, g: char, ty: char) -> Exc {
+    let t = if (ty as u32) > 32 && (ty as u32) < 128 { format!("'{}'", ty) } else { format!("'\\x{:x}'", ty as u32) };
+    vm.value_error(format!("Cannot specify '{}' with {}.", g, t))
+}
+
+/// the integer digits zero-padded so that, grouped, they fill `min_len`;
+/// a separator never comes first
+fn zero_group(digits: &str, sep: char, every: usize, min_len: usize) -> String {
+    let mut z = digits.to_string();
+    loop {
+        let gz = group(&z, sep, every);
+        if gz.chars().count() >= min_len {
+            return gz;
+        }
+        z.insert(0, '0');
+    }
+}
+
 fn format_int(vm: &mut Vm, v: &crate::bigint::BigInt, sp: &Spec) -> PyResult<String> {
     let ty = sp.ty.unwrap_or('d');
     if sp.prec.is_some() && matches!(ty, 'd' | 'b' | 'o' | 'x' | 'X' | 'c' | 'n') {
         return Err(vm.value_error("Precision not allowed in integer format specifier"));
+    }
+    if sp.z && !matches!(ty, 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%') {
+        return Err(vm.value_error("Negative zero coercion (z) not allowed in integer format specifier"));
+    }
+    if ty == 'c' {
+        if sp.sign.is_some() {
+            return Err(vm.value_error("Sign not allowed with integer format specifier 'c'"));
+        }
+        if sp.alt {
+            return Err(vm.value_error("Alternate form (#) not allowed with integer format specifier 'c'"));
+        }
     }
     if matches!(ty, 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%') {
         return format_float(vm, v.to_f64(), sp);
@@ -825,6 +855,14 @@ fn format_float(vm: &mut Vm, x: f64, sp: &Spec) -> PyResult<String> {
         body = "0.0".into();
     }
     if let Some(g) = sp.grouping {
+        let sign = sign_str(sp, neg);
+        let n = body.find(|c: char| !c.is_ascii_digit()).unwrap_or(body.len());
+        if sp.zero && !sp.fill_set && matches!(sp.align, None | Some('=')) && n > 0 {
+            // zero padding takes part in the grouping
+            let rest = body[n..].to_string();
+            let min = sp.width.saturating_sub(sign.len() + rest.chars().count());
+            return Ok(format!("{}{}{}", sign, zero_group(&body[..n], g, 3, min), rest));
+        }
         body = group(&body, g, 3);
     }
     Ok(pad(sp, sign_str(sp, neg), &body, true, false))
@@ -838,12 +876,19 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
             return Err(vm.value_error(format!("Invalid format specifier '{}' for object of type '{}'", spec, tn)));
         }
     };
-    if let (Some(','), Some(t @ ('x' | 'X' | 'o' | 'b' | 'c' | 'n'))) = (sp.grouping, sp.ty) {
-        return Err(vm.value_error(format!("Cannot specify ',' with '{}'.", t)));
-    }
-    if let (Some(g), Some(t @ (',' | '_'))) = (sp.grouping, sp.ty) {
-        let msg = if g == t { format!("Cannot specify '{}' with '{}'.", g, t) } else { "Cannot specify both ',' and '_'.".to_string() };
-        return Err(vm.value_error(msg));
+    if let Some(g) = sp.grouping {
+        let ty = sp.ty.unwrap_or(if matches!(v, Value::Str(_)) { 's' } else { '\0' });
+        let ok = match ty {
+            'd' | 'e' | 'f' | 'g' | 'E' | 'G' | '%' | 'F' | '\0' => true,
+            'b' | 'o' | 'x' | 'X' => g == '_',
+            _ => false,
+        };
+        if !ok && matches!(ty, ',' | '_') && ty != g {
+            return Err(vm.value_error("Cannot specify both ',' and '_'."));
+        }
+        if !ok {
+            return Err(bad_grouping(vm, g, ty));
+        }
     }
     match v {
         Value::Bool(b) if sp.ty.is_none() => Ok(pad(&sp, "", if *b { "True" } else { "False" }, false, true)),

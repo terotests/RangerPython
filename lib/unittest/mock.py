@@ -2,6 +2,7 @@
 # unittest.mock for the Ranger Python runtime: Mock, MagicMock, patch,
 # call, ANY, sentinel and DEFAULT, written against the documented API.
 import functools
+import sys
 
 __all__ = ["Mock", "MagicMock", "NonCallableMock", "NonCallableMagicMock", "patch", "call",
            "ANY", "DEFAULT", "sentinel", "create_autospec", "PropertyMock", "mock_open", "seal"]
@@ -641,7 +642,7 @@ class _patch:
     def __enter__(self):
         self.target = self.getter()
         original = getattr(self.target, self.attribute, _missing)
-        if original is _missing and not self.create:
+        if original is _missing and not self.create and not (self.attribute in _builtins and isinstance(self.target, type(sys))):
             raise AttributeError("%r does not have the attribute %r" % (self.target, self.attribute))
         d = getattr(self.target, "__dict__", None)
         self.is_local = isinstance(d, dict) and self.attribute in d or not isinstance(self.target, type)
@@ -686,6 +687,7 @@ class _patch:
 
 
 _active = []
+_builtins = {name for name in dir(__import__("builtins")) if not name.startswith('_')}
 
 
 def _get_target(target):

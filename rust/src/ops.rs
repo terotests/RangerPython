@@ -103,6 +103,14 @@ pub fn big_of(v: &Value) -> Option<BigInt> {
     }
 }
 
+fn bytes_vec(v: &Value) -> Vec<u8> {
+    match v {
+        Value::Bytes(b) => (**b).clone(),
+        Value::ByteArray(b) => b.borrow().clone(),
+        _ => vec![],
+    }
+}
+
 impl Vm {
     // ------------------------------------------------------------------
     // types
@@ -202,6 +210,32 @@ impl Vm {
         let cls = self.class_of(obj);
         let v = cls.lookup(name)?;
         Some(self.bind(v, obj, &cls))
+    }
+
+    /// a special method looked up on the type, run through any descriptor
+    pub fn lookup_special_get(&mut self, obj: &Value, name: &Rc<PyStr>) -> PyResult<Option<Value>> {
+        let cls = self.class_of(obj);
+        let v = match cls.lookup(name) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        match &v {
+            Value::Property(p) => {
+                if p.fget.is_none() {
+                    return Err(crate::methods::prop_missing(self, p, obj, "getter"));
+                }
+                let g = p.fget.clone();
+                Ok(Some(self.call_vec(&g, vec![obj.clone()], &[])?))
+            }
+            Value::Instance(_) | Value::Obj(_) => {
+                let dcls = self.class_of(&v);
+                match dcls.lookup(&self.n.get) {
+                    Some(g) => Ok(Some(self.call_vec(&g, vec![v.clone(), obj.clone(), Value::Class(cls.clone())], &[])?)),
+                    None => Ok(Some(v)),
+                }
+            }
+            _ => Ok(Some(self.bind(v, obj, &cls))),
+        }
     }
 
     pub fn bind(&mut self, v: Value, obj: &Value, cls: &Rc<Class>) -> Value {
@@ -315,6 +349,13 @@ impl Vm {
                 Err(e) => Err(e),
             };
         }
+        if cls.builtin.get() == Builtin::Super && &*name.s != "__class__" {
+            if let Value::Super(s) = self.base_of(obj) {
+                if let Some(v) = self.super_getattr(&s.0, &s.1, name)? {
+                    return Ok(Some(v));
+                }
+            }
+        }
         self.generic_getattr(obj, inst, &cls, name)
     }
 
@@ -325,7 +366,7 @@ impl Vm {
             match t {
                 Value::Property(p) => {
                     if p.fget.is_none() {
-                        return Err(self.attr_error(format!("property '{}' of '{}' object has no getter", name.s, cls.name())));
+                        return Err(crate::methods::prop_missing(self, p, obj, "getter"));
                     }
                     let g = p.fget.clone();
                     return Ok(Some(self.call_vec(&g, vec![obj.clone()], &[])?));
@@ -601,6 +642,14 @@ impl Vm {
                 Ok(())
             }
             Value::Method(m) if matches!(m.1, Value::Func(_)) => Err(self.attr_error(format!("'method' object has no attribute '{}'", name.s))),
+            Value::Property(p) if matches!(&*name.s, "__doc__" | "__name__") => {
+                if &*name.s == "__doc__" {
+                    *p.doc.borrow_mut() = v;
+                } else {
+                    *p.name.borrow_mut() = v;
+                }
+                Ok(())
+            }
             _ => {
                 if let Value::Obj(o) = obj {
                     if crate::tb::obj_setattr(self, o, &name.s, v.clone())? {
@@ -626,7 +675,7 @@ impl Vm {
                 }
                 Value::Property(p) => {
                     if p.fset.is_none() {
-                        return Err(self.attr_error(format!("property '{}' of '{}' object has no setter", name.s, cls.name())));
+                        return Err(crate::methods::prop_missing(self, p, obj, "setter"));
                     }
                     let s = p.fset.clone();
                     self.call_vec(&s, vec![obj.clone(), v], &[])?;
@@ -655,6 +704,9 @@ impl Vm {
                     }
                 }
                 if !any {
+                    if cls.lookup(name).is_some() {
+                        return Err(self.attr_error(format!("'{}' object attribute '{}' is read-only", cls.name(), name.s)));
+                    }
                     return Err(self.attr_error(format!("'{}' object has no attribute '{}' and no __dict__ for setting new attributes", cls.name(), name.s)));
                 }
             }
@@ -764,7 +816,7 @@ impl Vm {
                         }
                         Value::Property(p) => {
                             if p.fdel.is_none() {
-                                return Err(self.attr_error(format!("property '{}' of '{}' object has no deleter", name.s, cls.name())));
+                                return Err(crate::methods::prop_missing(self, p, obj, "deleter"));
                             }
                             let d = p.fdel.clone();
                             self.call_vec(&d, vec![obj.clone()], &[])?;
@@ -792,7 +844,18 @@ impl Vm {
                         _ => {}
                     }
                 }
+                if &*name.s == "__dict__" && has_dict(&cls) {
+                    // the next access sees a fresh, empty dict
+                    inst.dict.borrow_mut().clear();
+                    return Ok(());
+                }
                 if inst.dict.borrow_mut().remove_str(name).is_none() {
+                    if !has_dict(&cls) {
+                        if cls.lookup(name).is_some() {
+                            return Err(self.attr_error(format!("'{}' object attribute '{}' is read-only", cls.name(), name.s)));
+                        }
+                        return Err(self.attr_error(format!("'{}' object has no attribute '{}' and no __dict__ for setting new attributes", cls.name(), name.s)));
+                    }
                     return Err(self.no_attr(obj, name));
                 }
                 Ok(())
@@ -867,32 +930,52 @@ impl Vm {
         }
     }
 
+    /// PyNumber_Index: an exact int from an int, an int subclass or __index__
+    pub fn number_index(&mut self, v: &Value) -> PyResult<Value> {
+        match v {
+            Value::Int(_) | Value::Big(_) => return Ok(v.clone()),
+            Value::Bool(b) => return Ok(Value::Int(*b as i64)),
+            Value::Instance(_) => match self.base_of(v) {
+                i @ (Value::Int(_) | Value::Big(_)) => return Ok(i),
+                _ => {}
+            },
+            _ => {}
+        }
+        let f = match self.lookup_special(v, &self.n.index.clone()) {
+            Some(f) => f,
+            None => {
+                let tn = self.type_name(v);
+                return Err(self.type_error(format!("'{}' object cannot be interpreted as an integer", tn)));
+            }
+        };
+        let r = self.call_vec(&f, vec![], &[])?;
+        match &r {
+            Value::Int(_) | Value::Big(_) => Ok(r),
+            _ => {
+                let rb = self.base_of(&r);
+                if let Value::Int(_) | Value::Big(_) | Value::Bool(_) = rb {
+                    let rn = self.type_name(&r);
+                    crate::tb::warn(self, "DeprecationWarning", &format!("__index__ returned non-int (type {}).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.", rn))?;
+                    return Ok(match rb {
+                        Value::Bool(b) => Value::Int(b as i64),
+                        o => o,
+                    });
+                }
+                let rn = self.type_name(&r);
+                Err(self.type_error(format!("__index__ returned non-int (type {})", rn)))
+            }
+        }
+    }
+
     /// an index (int, bool, or __index__)
     pub fn to_index(&mut self, v: &Value) -> PyResult<i64> {
         match v {
             Value::Int(i) => Ok(*i),
             Value::Bool(b) => Ok(*b as i64),
-            Value::Big(_) => Err(self.err("OverflowError", "cannot fit 'int' into an index-sized integer")),
-            Value::Instance(_) => {
-                let b = self.base_of(v);
-                if let Value::Int(i) = b {
-                    return Ok(i);
-                }
-                match self.lookup_special(v, &self.n.index.clone()) {
-                    Some(f) => {
-                        let r = self.call_vec(&f, vec![], &[])?;
-                        self.to_index(&r)
-                    }
-                    None => {
-                        let tn = self.type_name(v);
-                        Err(self.type_error(format!("'{}' object cannot be interpreted as an integer", tn)))
-                    }
-                }
-            }
-            _ => {
-                let tn = self.type_name(v);
-                Err(self.type_error(format!("'{}' object cannot be interpreted as an integer", tn)))
-            }
+            _ => match self.number_index(v)? {
+                Value::Int(i) => Ok(i),
+                _ => Err(self.err("OverflowError", "cannot fit 'int' into an index-sized integer")),
+            },
         }
     }
 
@@ -1170,9 +1253,27 @@ impl Vm {
                 v.extend_from_slice(&y.borrow());
                 Value::ByteArray(Rc::new(RefCell::new(v)))
             }
-            (Bytes(x), Int(n)) if op == BinOp::Mul => {
+            (Bytes(x), Int(n)) | (Int(n), Bytes(x)) if op == BinOp::Mul => {
                 let n = self.repeat_count(x.len(), *n)?;
                 Value::Bytes(Rc::new(x.repeat(n)))
+            }
+            (ByteArray(x), Int(n)) | (Int(n), ByteArray(x)) if op == BinOp::Mul => {
+                let v = x.borrow().clone();
+                let n = self.repeat_count(v.len(), *n)?;
+                Value::ByteArray(Rc::new(RefCell::new(v.repeat(n))))
+            }
+            (ByteArray(x), Bytes(_) | ByteArray(_)) if op == BinOp::Add => {
+                let mut v = x.borrow().clone();
+                v.extend(bytes_vec(b));
+                Value::ByteArray(Rc::new(RefCell::new(v)))
+            }
+            (Bytes(x), ByteArray(y)) if op == BinOp::Add => {
+                let mut v = (**x).clone();
+                v.extend(y.borrow().iter());
+                Value::Bytes(Rc::new(v))
+            }
+            (Str(_) | Bytes(_) | ByteArray(_) | List(_) | Tuple(_), Big(_)) | (Big(_), Str(_) | Bytes(_) | ByteArray(_) | List(_) | Tuple(_)) if op == BinOp::Mul => {
+                return Err(self.err("OverflowError", "cannot fit 'int' into an index-sized integer"));
             }
             (Bytes(_), _) if op == BinOp::Mod => {
                 let s = crate::builtins::bytes_to_latin1(a);
@@ -1243,11 +1344,16 @@ impl Vm {
     }
 
     pub fn binop(&mut self, op: BinOp, a: &Value, b: &Value) -> PyResult<Value> {
-        let a_inst = matches!(a, Value::Instance(_) | Value::Class(_));
-        let b_inst = matches!(b, Value::Instance(_) | Value::Class(_));
+        let a_inst = matches!(a, Value::Instance(_) | Value::Class(_) | Value::Obj(_));
+        let b_inst = matches!(b, Value::Instance(_) | Value::Class(_) | Value::Obj(_));
         if !a_inst && !b_inst {
             if let Some(v) = self.builtin_binop(op, a, b)? {
                 return Ok(v);
+            }
+            if op == BinOp::Mul {
+                if let Some(v) = self.seq_repeat(a, b)? {
+                    return Ok(v);
+                }
             }
             return Err(self.binop_error(op, a, b));
         }
@@ -1289,6 +1395,11 @@ impl Vm {
                 return Ok(v);
             }
         }
+        if op == BinOp::Mul {
+            if let Some(v) = self.seq_repeat(&ab, b)? {
+                return Ok(v);
+            }
+        }
         if op == BinOp::BitOr {
             // X | Y on types builds a union
             if matches!(a, Value::Class(_) | Value::None) && matches!(b, Value::Class(_) | Value::None) || matches!(a, Value::Class(_)) || matches!(b, Value::Class(_)) {
@@ -1296,6 +1407,26 @@ impl Vm {
             }
         }
         Err(self.binop_error(op, a, b))
+    }
+
+    /// seq * n (either order) where n is not an int but has __index__
+    pub fn seq_repeat(&mut self, a: &Value, b: &Value) -> PyResult<Option<Value>> {
+        let is_seq = |v: &Value| matches!(v, Value::Str(_) | Value::Bytes(_) | Value::ByteArray(_) | Value::List(_) | Value::Tuple(_));
+        let (seq, n) = if is_seq(a) {
+            (a.clone(), b)
+        } else {
+            let bb = self.base_of(b);
+            if !is_seq(&bb) {
+                return Ok(None);
+            }
+            (bb, a)
+        };
+        let int_like = matches!(n, Value::Int(_) | Value::Big(_) | Value::Bool(_)) || self.class_of(n).lookup(&self.n.index).is_some();
+        if !int_like {
+            return Ok(None);
+        }
+        let k = self.to_index(n)?;
+        self.builtin_binop(BinOp::Mul, &seq, &Value::Int(k))
     }
 
     /// calls obj.name(other) found on the type; None for NotImplemented
@@ -1487,8 +1618,10 @@ impl Vm {
 
     pub fn rich_eq(&mut self, a: &Value, b: &Value, negate: bool) -> PyResult<Value> {
         let (name, rname) = if negate { (self.n.ne.clone(), self.n.ne.clone()) } else { (self.n.eq.clone(), self.n.eq.clone()) };
-        let a_inst = matches!(a, Value::Instance(_));
-        let b_inst = matches!(b, Value::Instance(_));
+        // native objects whose class defines __eq__ compare like instances
+        let native_eq = |v: &Value| matches!(v, Value::Obj(o) if o.class.dict.borrow().get_s("__eq__").is_some());
+        let a_inst = matches!(a, Value::Instance(_)) || native_eq(a);
+        let b_inst = matches!(b, Value::Instance(_)) || native_eq(b);
         if a_inst || b_inst {
             let ca = self.class_of(a);
             let cb = self.class_of(b);
@@ -1550,8 +1683,21 @@ impl Vm {
                 }
             }
             // natives of classes made in Rust (SimpleNamespace)
-            Some(f @ Value::Native(_)) if matches!(&f, Value::Native(n) if !n.name.starts_with("object.")) && cls.builtin.get() == Builtin::User => {
+            Some(f @ Value::Native(_)) if matches!(&f, Value::Native(n) if !n.name.starts_with("object.")) && matches!(cls.builtin.get(), Builtin::User | Builtin::Obj) => {
                 let r = self.call_vec(&f, vec![obj.clone(), other.clone()], &[])?;
+                if matches!(r, Value::NotImplemented) {
+                    Ok(None)
+                } else {
+                    Ok(Some(r))
+                }
+            }
+            Some(Value::Property(_) | Value::StaticMethod(_) | Value::ClassMethod(_)) => {
+                // a failed lookup through a descriptor counts as NotImplemented
+                let f = match self.lookup_special_get(obj, name) {
+                    Ok(Some(f)) => f,
+                    _ => return Ok(None),
+                };
+                let r = self.call_vec(&f, vec![other.clone()], &[])?;
                 if matches!(r, Value::NotImplemented) {
                     Ok(None)
                 } else {
@@ -1709,8 +1855,10 @@ impl Vm {
             CmpOp::Gt => (self.n.gt.clone(), self.n.lt.clone()),
             _ => (self.n.ge.clone(), self.n.le.clone()),
         };
-        let a_inst = matches!(a, Value::Instance(_));
-        let b_inst = matches!(b, Value::Instance(_));
+        // native objects whose class defines __eq__ compare like instances
+        let native_eq = |v: &Value| matches!(v, Value::Obj(o) if o.class.dict.borrow().get_s("__eq__").is_some());
+        let a_inst = matches!(a, Value::Instance(_)) || native_eq(a);
+        let b_inst = matches!(b, Value::Instance(_)) || native_eq(b);
         if a_inst || b_inst {
             let ca = self.class_of(a);
             let cb = self.class_of(b);
@@ -1800,6 +1948,7 @@ impl Vm {
             (Float(x), Big(y)) => x.partial_cmp(&y.to_f64()),
             (Str(x), Str(y)) => Some(x.s.cmp(&y.s)),
             (Bytes(x), Bytes(y)) => Some(x.cmp(y)),
+            (ByteArray(_), Bytes(_) | ByteArray(_)) | (Bytes(_), ByteArray(_)) => Some(bytes_vec(a).cmp(&bytes_vec(b))),
             (List(x), List(y)) => {
                 let (xv, yv) = (x.borrow().clone(), y.borrow().clone());
                 return self.seq_order(&xv, &yv);
@@ -1939,6 +2088,25 @@ impl Vm {
                         }
                         Ok((ptr_id(v) as u64) >> 4)
                     }
+                }
+            }
+            Value::Obj(o) => {
+                let own = o.class.dict.borrow().get_str(&self.n.hash).cloned();
+                match own {
+                    Some(Value::None) => {
+                        let tn = o.class.name();
+                        Err(self.type_error(format!("unhashable type: '{}'", tn)))
+                    }
+                    Some(f @ (Value::Native(_) | Value::Func(_))) => {
+                        let r = self.call_vec(&f, vec![v.clone()], &[])?;
+                        match r {
+                            Value::Int(i) => Ok(hash_int(i)),
+                            Value::Big(b) => Ok(hash_big(&b)),
+                            Value::Bool(b) => Ok(b as u64),
+                            _ => Err(self.type_error("__hash__ method should return an integer")),
+                        }
+                    }
+                    _ => Ok((ptr_id(v) as u64) >> 4),
                 }
             }
             Value::Tuple(items) => {
@@ -2837,7 +3005,7 @@ impl Vm {
                 }
                 if let Some(f) = self.lookup_special(container, &self.n.contains.clone()) {
                     let is_native = matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)));
-                    if !is_native {
+                    if !is_native || matches!(container, Value::Obj(_)) {
                         let r = self.call_vec(&f, vec![item.clone()], &[])?;
                         return self.truthy(&r);
                     }
