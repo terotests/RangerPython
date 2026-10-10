@@ -95,7 +95,7 @@ pub struct Sandbox {
     pub mounts: Vec<(String, String)>,
     pub search_path: Vec<String>,
     pub dirs: Vec<String>,
-    pub files: Vec<(String, String)>,
+    pub files: Vec<(String, Vec<u8>)>,
     /// files that are no longer there
     pub gone: Vec<String>,
 }
@@ -112,8 +112,8 @@ impl Sandbox {
         }
     }
 
-    /// One record per line, `kind<TAB>field...`; a file's text follows its
-    /// line, its length in bytes given on the line.
+    /// One record per line, `kind<TAB>field...`; a file's bytes follow its
+    /// line, their count given on the line.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = String::from("rpy-sandbox 1\n");
         out.push_str(&format!("cwd\t{}\n", self.cwd));
@@ -126,23 +126,25 @@ impl Sandbox {
         for d in &self.dirs {
             out.push_str(&format!("dir\t{}\n", d));
         }
-        for (p, t) in &self.files {
-            out.push_str(&format!("file\t{}\t{}\n", p, t.len()));
-            out.push_str(t);
-            out.push('\n');
-        }
         for p in &self.gone {
             out.push_str(&format!("gone\t{}\n", p));
         }
-        out.into_bytes()
+        let mut out = out.into_bytes();
+        for (p, t) in &self.files {
+            out.extend_from_slice(format!("file\t{}\t{}\n", p, t.len()).as_bytes());
+            out.extend_from_slice(t);
+            out.push(b'\n');
+        }
+        out
     }
 
-    pub fn decode(text: &str) -> Option<Sandbox> {
-        let mut rest = text.strip_prefix("rpy-sandbox 1\n")?;
+    pub fn decode(data: &[u8]) -> Option<Sandbox> {
+        let mut rest = data.strip_prefix(b"rpy-sandbox 1\n".as_slice())?;
         let mut sb = Sandbox::default();
         while !rest.is_empty() {
-            let (line, after) = rest.split_once('\n')?;
-            rest = after;
+            let nl = rest.iter().position(|c| *c == b'\n')?;
+            let line = std::str::from_utf8(&rest[..nl]).ok()?;
+            rest = &rest[nl + 1..];
             let mut f = line.split('\t');
             match (f.next()?, f.next()?) {
                 ("cwd", p) => sb.cwd = p.to_string(),
@@ -153,7 +155,7 @@ impl Sandbox {
                 ("file", p) => {
                     let n: usize = f.next()?.parse().ok()?;
                     let t = rest.get(..n)?;
-                    sb.files.push((p.to_string(), t.to_string()));
+                    sb.files.push((p.to_string(), t.to_vec()));
                     rest = rest.get(n + 1..)?;
                 }
                 _ => return None,
@@ -171,7 +173,7 @@ impl Sandbox {
         for (p, t) in &self.files {
             if as_host {
                 fs.put(p, t.clone());
-            } else if fs.read(p).as_deref() != Some(t.as_str()) {
+            } else if fs.get(p) != Some(t.as_slice()) {
                 fs.write(p, t.clone());
             }
         }
@@ -384,7 +386,7 @@ mod imp {
         });
         if let Some(p) = sandbox {
             let back = p.with_extension("out");
-            if let Some(sb) = std::fs::read_to_string(&back).ok().and_then(|t| Sandbox::decode(&t)) {
+            if let Some(sb) = std::fs::read(&back).ok().and_then(|t| Sandbox::decode(&t)) {
                 sb.apply(&mut vm.fs, false);
             }
             let _ = std::fs::remove_file(&p);

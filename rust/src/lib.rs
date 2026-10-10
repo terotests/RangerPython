@@ -100,11 +100,11 @@ impl Runtime {
         Runtime { fs: fs::Fs::new(), argv: vec![], max_steps: 0, echo: false, search_path: vec![], host: Default::default() }
     }
 
-    pub fn write_file(&mut self, path: &str, text: &str) {
-        self.fs.put(path, text.to_string());
+    pub fn write_file(&mut self, path: &str, data: impl AsRef<[u8]>) {
+        self.fs.put(path, data.as_ref().to_vec());
     }
 
-    pub fn read_file(&self, path: &str) -> Option<String> {
+    pub fn read_file(&self, path: &str) -> Option<Vec<u8>> {
         self.fs.read(path)
     }
 
@@ -118,6 +118,23 @@ impl Runtime {
 
     /// runs a script; the filesystem keeps what it wrote
     pub fn run(&mut self, source: &str, filename: &str) -> RunResult {
+        self.run_with(filename, |vm, globals| vm.run_source(source, filename, globals))
+    }
+
+    /// runs a script file's bytes, decoded as UTF-8 or as its coding
+    /// comment says (PEP 263)
+    pub fn run_bytes(&mut self, source: &[u8], filename: &str) -> RunResult {
+        self.run_with(filename, |vm, globals| {
+            let src = crate::builtins::decode_file_source(vm, source, filename)?;
+            vm.run_source(&src, filename, globals)
+        })
+    }
+
+    fn run_with(
+        &mut self,
+        filename: &str,
+        run: impl FnOnce(&mut vm::Vm, std::rc::Rc<std::cell::RefCell<value::Dict>>) -> value::PyResult<Value>,
+    ) -> RunResult {
         let fs = std::mem::replace(&mut self.fs, fs::Fs::new());
         let mut vm = vm::Vm::new(fs);
         vm.argv = self.argv.clone();
@@ -127,7 +144,7 @@ impl Runtime {
         vm.host = self.host.clone();
         let globals = vm.main_globals.clone();
         globals.borrow_mut().set_s("__file__", Value::str(filename));
-        let r = vm.run_source(source, filename, globals);
+        let r = run(&mut vm, globals);
         let mut res = RunResult {
             ok: true,
             stdout: String::new(),

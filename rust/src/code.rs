@@ -12,6 +12,11 @@ pub enum Op {
     LoadFast(u32),
     StoreFast(u32),
     DelFast(u32),
+    /// pushes a fast local, bound or not, and unbinds it (an inlined
+    /// comprehension saving its host's variable)
+    LoadFastAndClear(u32),
+    /// puts a new empty cell in a cell slot (an inlined comprehension's variable)
+    MakeCell(u32),
     LoadDeref(u32),
     StoreDeref(u32),
     DelDeref(u32),
@@ -43,6 +48,8 @@ pub enum Op {
     Rot2,
     Rot3,
     Rot4,
+    /// swaps the top of the stack with the item `n` - 1 below it
+    Swap(u32),
     Jump(u32),
     PopJumpIfFalse(u32),
     PopJumpIfTrue(u32),

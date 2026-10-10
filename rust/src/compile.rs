@@ -67,6 +67,9 @@ struct Scope {
     used: HashSet<Name>,
     is_gen: bool,
     is_comp: bool,
+    /// a list, set or dict comprehension: compiled into the code of its host,
+    /// the nearest enclosing scope that is not one (PEP 709)
+    inlined: bool,
     /// an `async def`
     is_async: bool,
     /// awaits (CPython's ste_coroutine): an async comprehension, or the
@@ -91,6 +94,7 @@ impl Scope {
             used: HashSet::new(),
             is_gen: false,
             is_comp: false,
+            inlined: false,
             is_async: false,
             coro: false,
             cells: HashSet::new(),
@@ -113,6 +117,8 @@ struct SymTable {
     scopes: Vec<Scope>,
     by_node: HashMap<usize, usize>,
     future_annotations: bool,
+    /// the inlined comprehensions of each host scope
+    inlined: HashMap<usize, Vec<usize>>,
 }
 
 fn key<T>(r: &T) -> usize {
@@ -474,7 +480,11 @@ impl<'a> Collector<'a> {
         let save = self.cur;
         self.cur = id;
         self.sc().is_comp = true;
-        self.sc().params = vec![Rc::from(".0")];
+        if genexp {
+            self.sc().params = vec![Rc::from(".0")];
+        } else {
+            self.sc().inlined = true;
+        }
         for (i, c) in comps.iter().enumerate() {
             if i > 0 {
                 self.expr(&c.iter)?;
@@ -615,6 +625,9 @@ impl<'a> Collector<'a> {
                     s = self.st.scopes[s].parent.unwrap();
                 }
                 if s != self.cur {
+                    if self.st.scopes[s].kind == ScopeKind::Class {
+                        return Err(CompileError::at("assignment expression within a comprehension cannot be used in a class body", e.pos));
+                    }
                     if self.st.scopes[s].kind == ScopeKind::Module {
                         let mut t = self.cur;
                         while t != s {
@@ -643,12 +656,21 @@ impl<'a> Collector<'a> {
 
 impl SymTable {
     fn build(body: &[Stmt], top_await: bool) -> CResult<SymTable> {
-        let mut st = SymTable { scopes: vec![Scope::new(ScopeKind::Module, None)], by_node: HashMap::new(), future_annotations: false };
+        let mut st = SymTable { scopes: vec![Scope::new(ScopeKind::Module, None)], by_node: HashMap::new(), future_annotations: false, inlined: HashMap::new() };
         {
             let mut c = Collector { st: &mut st, cur: 0, cls: vec![], top_await, pos: Pos::default() };
             c.stmts(body)?;
         }
         st.resolve()?;
+        for i in 0..st.scopes.len() {
+            let mut host = i;
+            while st.scopes[host].inlined {
+                host = st.scopes[host].parent.unwrap();
+            }
+            if host != i {
+                st.inlined.entry(host).or_default().push(i);
+            }
+        }
         Ok(st)
     }
 
@@ -661,6 +683,10 @@ impl SymTable {
             match s.kind {
                 ScopeKind::Module => return false,
                 ScopeKind::Class => {
+                    // never through a class body from code inlined into it
+                    if &**n == "__class__" && path.iter().all(|&q| self.scopes[q].inlined) {
+                        return false;
+                    }
                     if &**n == "__class__" {
                         self.scopes[pi].cells.insert(n.clone());
                         for q in path {
@@ -676,6 +702,10 @@ impl SymTable {
                         return false;
                     }
                     if s.is_local(n) {
+                        // inlined comprehensions use their host's variable directly
+                        if path.iter().all(|&q| self.scopes[q].inlined) {
+                            return true;
+                        }
                         self.scopes[pi].cells.insert(n.clone());
                         for q in path {
                             self.scopes[q].frees.insert(n.clone());
@@ -757,6 +787,20 @@ struct Unit<'a> {
     pos: Pos,
     qualname: String,
     tmp: u32,
+    /// where the variables of the comprehensions inlined here live
+    hidden: HashMap<usize, Vec<(Name, Slot)>>,
+    /// the cellvars before this index are the scope's own, the rest
+    /// belong to inlined comprehensions
+    own_cells: usize,
+    /// the kinds of the comprehensions being inlined now, innermost last
+    inl: Vec<u8>,
+}
+
+/// a variable of an inlined comprehension: a fast local or a cell of its host
+#[derive(Clone, Copy, PartialEq)]
+enum Slot {
+    Fast(u32),
+    Cell(u32),
 }
 
 pub struct Compiler<'a> {
@@ -907,8 +951,53 @@ impl<'a> Compiler<'a> {
             }
         }
         let mut cell_map = HashMap::new();
-        for (i, n) in cellvars.iter().chain(freevars.iter()).enumerate() {
+        for (i, n) in cellvars.iter().enumerate() {
             cell_map.insert(n.clone(), i as u32);
+        }
+        // The variables of the comprehensions inlined here: a fast local is
+        // the scope's own slot of the name, or one after them, which the
+        // comprehension saves and restores around its run. One that something
+        // captures is a cell of its own, which comprehensions that never run
+        // at the same time share.
+        let own_cells = cellvars.len();
+        let mut hidden: HashMap<usize, Vec<(Name, Slot)>> = HashMap::new();
+        let scopes = &self.st.scopes;
+        let encloses = |a: usize, mut b: usize| {
+            while let Some(p) = scopes[b].parent.filter(|_| scopes[b].inlined) {
+                if p == a {
+                    return true;
+                }
+                b = p;
+            }
+            false
+        };
+        let mut taken: Vec<(usize, Name, Slot)> = vec![];
+        for &c in self.st.inlined.get(&scope).into_iter().flatten() {
+            let cs = &scopes[c];
+            for n in cs.order.iter().filter(|n| cs.is_local(n)) {
+                let cell = cs.cells.contains(n);
+                let fast = var_map.get(n).filter(|_| !cell && !cell_map.contains_key(n));
+                // a slot of the name no comprehension around this one holds
+                let in_use = |slot: &Slot| matches!(slot, Slot::Cell(_)) && taken.iter().any(|(e, _, s2)| s2 == slot && encloses(*e, c));
+                let free = taken.iter().find(|(_, m, slot)| m == n && matches!(slot, Slot::Cell(_)) == cell && !in_use(slot));
+                let slot = match (fast, free) {
+                    (Some(&v), _) => Slot::Fast(v),
+                    (None, Some((_, _, slot))) => *slot,
+                    (None, None) if cell => {
+                        cellvars.push(n.clone());
+                        Slot::Cell(cellvars.len() as u32 - 1)
+                    }
+                    (None, None) => {
+                        varnames.push(n.clone());
+                        Slot::Fast(varnames.len() as u32 - 1)
+                    }
+                };
+                taken.push((c, n.clone(), slot));
+                hidden.entry(c).or_default().push((n.clone(), slot));
+            }
+        }
+        for (i, n) in freevars.iter().enumerate() {
+            cell_map.insert(n.clone(), (cellvars.len() + i) as u32);
         }
         let kind = s.kind;
         self.units.push(Unit {
@@ -929,6 +1018,9 @@ impl<'a> Compiler<'a> {
             pos: Pos { line: 1, col: 0, end_line: 1, end_col: 0 },
             qualname,
             tmp: 0,
+            hidden,
+            own_cells,
+            inl: vec![],
         });
     }
 
@@ -951,7 +1043,7 @@ impl<'a> Compiler<'a> {
             coroutine: s.coro && (s.is_comp || s.kind == ScopeKind::Module),
             iterable_coroutine: false,
             is_class: u.kind == ScopeKind::Class,
-            cell_from_arg: u.cellvars.iter().map(|c| u.var_map.get(c).copied()).collect(),
+            cell_from_arg: u.cellvars.iter().enumerate().map(|(i, c)| if i < u.own_cells { u.var_map.get(c).copied() } else { None }).collect(),
             varnames: u.varnames,
             cellvars: u.cellvars,
             freevars: u.freevars,
@@ -1075,6 +1167,10 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::LoadDeref(c));
                 } else if let Some(&v) = self.u().var_map.get(n) {
                     self.emit(Op::LoadFast(v));
+                } else if self.u().kind == ScopeKind::Module {
+                    // a comprehension inlined at module level looks names up as the module does
+                    let i = self.name_idx(n);
+                    self.emit(Op::LoadName(i));
                 } else {
                     let i = self.name_idx(n);
                     self.emit(Op::LoadGlobal(i));
@@ -1945,6 +2041,9 @@ impl<'a> Compiler<'a> {
 
     fn comprehension(&mut self, e: &'a Expr, comps: &'a [Comp], kind: u8, elt: &'a Expr, val: Option<&'a Expr>) -> CResult<()> {
         let scope = self.st.by_node[&key(e)];
+        if self.st.scopes[scope].inlined {
+            return self.inline_comprehension(scope, comps, kind, elt, val);
+        }
         let name = match kind {
             0 => "<listcomp>",
             1 => "<setcomp>",
@@ -1997,6 +2096,102 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// A list, set or dict comprehension run in the frame of its host, as
+    /// CPython does since 3.12: its variables are slots of the host that
+    /// nothing outside the comprehension sees, unbound again when it ends.
+    fn inline_comprehension(&mut self, scope: usize, comps: &'a [Comp], kind: u8, elt: &'a Expr, val: Option<&'a Expr>) -> CResult<()> {
+        let iter = &comps[0].iter;
+        self.expr(iter)?;
+        let pos = self.set_pos(iter.pos);
+        if comps[0].is_async {
+            self.call_dunder("__aiter__");
+        } else {
+            self.emit(Op::GetIter);
+        }
+        let own = self.u().hidden.get(&scope).cloned().unwrap_or_default();
+        // the values the fast locals had go under the iterator
+        let fasts: Vec<u32> = own.iter().filter_map(|(_, s)| if let Slot::Fast(v) = s { Some(*v) } else { None }).collect();
+        for &v in &fasts {
+            self.emit(Op::LoadFastAndClear(v));
+        }
+        if !fasts.is_empty() {
+            self.emit(Op::Swap(fasts.len() as u32 + 1));
+        }
+        let setup = self.emit(Op::SetupExcept(0));
+        self.emit(match kind {
+            0 => Op::BuildList(0),
+            1 => Op::BuildSet(0),
+            _ => Op::BuildMap(0),
+        });
+        self.emit(Op::Rot2);
+        // closures made in one run keep their cells
+        for (_, slot) in &own {
+            if let Slot::Cell(c) = slot {
+                self.emit(Op::MakeCell(*c));
+            }
+        }
+        // the comprehension's names over the host's while it is compiled
+        let mut saved = vec![];
+        {
+            let u = self.u();
+            for (n, slot) in &own {
+                saved.push((n.clone(), u.var_map.remove(n), u.cell_map.remove(n)));
+                match slot {
+                    Slot::Fast(v) => u.var_map.insert(n.clone(), *v),
+                    Slot::Cell(c) => u.cell_map.insert(n.clone(), *c),
+                };
+            }
+        }
+        let host = std::mem::replace(&mut self.u().scope, scope);
+        self.u().inl.push(kind);
+        let r = self.comp_loop(comps, 0, kind, elt, val);
+        self.u().inl.pop();
+        self.u().scope = host;
+        {
+            let u = self.u();
+            for (n, v, c) in saved.into_iter().rev() {
+                u.var_map.remove(&n);
+                u.cell_map.remove(&n);
+                if let Some(v) = v {
+                    u.var_map.insert(n.clone(), v);
+                }
+                if let Some(c) = c {
+                    u.cell_map.insert(n, c);
+                }
+            }
+        }
+        r?;
+        self.u().pos = pos;
+        self.emit(Op::PopBlock);
+        self.restore_slots(&own, &fasts);
+        let end = self.emit(Op::Jump(0));
+        // an exception leaving the comprehension restores them too
+        let h = self.here();
+        self.patch(setup, h);
+        self.emit(Op::Rot2);
+        self.emit(Op::Pop);
+        self.restore_slots(&own, &fasts);
+        self.emit(Op::Reraise);
+        let h = self.here();
+        self.patch(end, h);
+        Ok(())
+    }
+
+    /// [saved..., result] -> [result], the saved values back in their slots
+    fn restore_slots(&mut self, own: &[(Name, Slot)], fasts: &[u32]) {
+        for (_, slot) in own {
+            if let Slot::Cell(c) = slot {
+                self.emit(Op::MakeCell(*c));
+            }
+        }
+        if !fasts.is_empty() {
+            self.emit(Op::Swap(fasts.len() as u32 + 1));
+            for &v in fasts.iter().rev() {
+                self.emit(Op::StoreFast(v));
+            }
+        }
+    }
+
     /// [obj] -> [obj.<name>()]
     fn call_dunder(&mut self, name: &str) {
         let i = self.name_idx(&Rc::from(name));
@@ -2007,7 +2202,11 @@ impl<'a> Compiler<'a> {
     fn comp_loop(&mut self, comps: &'a [Comp], i: usize, kind: u8, elt: &'a Expr, val: Option<&'a Expr>) -> CResult<()> {
         let c = &comps[i];
         if i == 0 {
-            self.emit(Op::LoadFast(0));
+            // an inlined comprehension finds the iterator on the stack already
+            let scope = self.u().scope;
+            if !self.st.scopes[scope].inlined {
+                self.emit(Op::LoadFast(0));
+            }
         } else {
             self.expr(&c.iter)?;
             if c.is_async {
@@ -2466,7 +2665,8 @@ impl<'a> Compiler<'a> {
         const COMPS: [(&str, &str); 4] =
             [("<listcomp>", "list comprehension"), ("<setcomp>", "set comprehension"), ("<dictcomp>", "dict comprehension"), ("<genexpr>", "generator expression")];
         let u = self.u();
-        if let Some((_, what)) = COMPS.iter().find(|(s, _)| u.qualname.ends_with(s)) {
+        let inlined = u.inl.last().map(|&k| COMPS[k as usize].1);
+        if let Some(what) = inlined.or_else(|| COMPS.iter().find(|(s, _)| u.qualname.ends_with(s)).map(|(_, w)| *w)) {
             return Err(self.err(&format!("'yield' inside {}", what)));
         }
         if u.kind != ScopeKind::Function {

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 //! The in-memory filesystem a script runs in. The host puts files in
-//! before the run and reads the changed ones back after it.
+//! before the run and reads the changed ones back after it. Files hold
+//! bytes; text files are encoded and decoded by the file objects.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub struct Fs {
-    pub files: BTreeMap<String, String>,
+    pub files: BTreeMap<String, Vec<u8>>,
     pub dirs: BTreeSet<String>,
     changed: Vec<String>,
     changed_set: BTreeSet<String>,
@@ -73,8 +74,12 @@ impl Fs {
         self.is_file(path) || self.is_dir(path)
     }
 
-    pub fn read(&self, path: &str) -> Option<String> {
-        self.files.get(&self.normalize(path)).cloned()
+    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.get(path).map(<[u8]>::to_vec)
+    }
+
+    pub fn get(&self, path: &str) -> Option<&[u8]> {
+        self.files.get(&self.normalize(path)).map(Vec::as_slice)
     }
 
     pub fn mkdirs(&mut self, path: &str) {
@@ -85,10 +90,10 @@ impl Fs {
         }
     }
 
-    pub fn write(&mut self, path: &str, text: String) {
+    pub fn write(&mut self, path: &str, data: Vec<u8>) {
         let abs = self.normalize(path);
         self.mkdirs(&Self::parent_of(&abs));
-        self.files.insert(abs.clone(), text);
+        self.files.insert(abs.clone(), data);
         self.mark_changed(&abs);
     }
 
@@ -132,10 +137,10 @@ impl Fs {
     }
 
     /// a file the host provides; not reported as changed
-    pub fn put(&mut self, path: &str, text: String) {
+    pub fn put(&mut self, path: &str, data: Vec<u8>) {
         let abs = self.normalize(path);
         self.mkdirs(&Self::parent_of(&abs));
-        self.files.insert(abs.clone(), text);
+        self.files.insert(abs.clone(), data);
         self.host_files.insert(abs);
     }
 

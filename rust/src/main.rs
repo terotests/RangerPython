@@ -3,7 +3,7 @@
 //! and prints its output; the files it wrote are saved under outdir as
 //! a__b.txt for /a/b.txt.
 //!
-//!   --mount HOST=VFS   put HOST's text files (recursively) at VFS
+//!   --mount HOST=VFS   put HOST's files (recursively) at VFS
 //!   --path VFS         a folder imports look in after /
 //!   --arg X            append X to sys.argv
 //!   --echo             stream output as it is written
@@ -24,9 +24,8 @@ fn mount(rt: &mut rpy::Runtime, host: &std::path::Path, vfs: &str) {
         let target = format!("{}/{}", vfs.trim_end_matches('/'), name);
         if p.is_dir() {
             mount(rt, &p, &target);
-        } else if let Ok(t) = std::fs::read_to_string(&p) {
-            // modules and the data files tests read; the VFS holds text only
-            rt.write_file(&target, &t);
+        } else if let Ok(data) = std::fs::read(&p) {
+            rt.write_file(&target, data);
         }
     }
 }
@@ -46,7 +45,7 @@ fn run() -> i32 {
     // a child of an rpy script: its parent's sandbox
     let sandbox = std::env::var(SANDBOX_VAR).ok().filter(|p| !p.is_empty());
     if let Some(p) = &sandbox {
-        let sb = std::fs::read_to_string(p).ok().and_then(|t| Sandbox::decode(&t)).unwrap_or_default();
+        let sb = std::fs::read(p).ok().and_then(|t| Sandbox::decode(&t)).unwrap_or_default();
         for (h, v) in &sb.mounts {
             add_mount(&mut rt, h, v);
         }
@@ -107,7 +106,7 @@ fn run() -> i32 {
     let (src, name, outdir) = if let Some(c) = command {
         rt.argv = vec!["-c".into()];
         rt.argv.extend(args);
-        (c, "<string>".to_string(), None)
+        (c.into_bytes(), "<string>".to_string(), None)
     } else {
         let Some(script) = args.first().cloned() else {
             println!("usage: rpy [--mount HOST=VFS] [--path VFS] [--arg X] [--echo] script.py [outdir]");
@@ -115,7 +114,7 @@ fn run() -> i32 {
         };
         // a child's script is in the sandbox; the host's is on disk
         let text = if sandbox.is_some() { rt.read_file(&script) } else { None };
-        let src = match text.or_else(|| std::fs::read_to_string(&script).ok()) {
+        let src = match text.or_else(|| std::fs::read(&script).ok()) {
             Some(s) => s,
             None if sandbox.is_some() => {
                 eprintln!("{}: can't open file '{}': [Errno 2] No such file or directory", rt.host.executable, script);
@@ -136,7 +135,8 @@ fn run() -> i32 {
         (src, name, outdir)
     };
     rt.argv.extend(extra);
-    let r = rt.run(&src, &name);
+    // a -c command is text already; a script's coding comment says how to read it
+    let r = if name == "<string>" { rt.run(&String::from_utf8_lossy(&src), &name) } else { rt.run_bytes(&src, &name) };
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     if !r.stdout.is_empty() {

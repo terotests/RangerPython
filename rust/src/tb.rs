@@ -162,6 +162,11 @@ pub fn exc_extra(vm: &Vm, inst: &Instance, name: &str) -> Value {
 
 /// attributes of tracebacks, frames and members
 pub fn obj_attr(vm: &mut Vm, o: &NativeObj, name: &str) -> PyResult<Option<Value>> {
+    if name == "f_locals" {
+        if let Some(idx) = live_frame(vm, o) {
+            return live_f_locals(vm, idx).map(Some);
+        }
+    }
     Ok(match &*o.kind.borrow() {
         ObjKind::Traceback { frame, line, next, lasti } => match name {
             "tb_frame" => Some(frame.clone()),
@@ -525,4 +530,97 @@ pub fn warn(vm: &mut Vm, category: &str, msg: &str) -> PyResult<()> {
     let c = Value::Class(vm.exc_class(category));
     vm.call_vec(&f, vec![Value::Str(ps(msg)), c], &[])?;
     Ok(())
+}
+
+// -------------------------------------------------------------------------
+// f_locals of a running frame (PEP 667)
+
+/// the index in vm.frames of the running frame `o` stands for
+fn live_frame(vm: &Vm, o: &NativeObj) -> Option<usize> {
+    vm.frame_objs.iter().rposition(|v| matches!(v, Value::Obj(f) if std::ptr::eq(&**f, o)))
+}
+
+/// A module or class body's namespace itself; for a function, or a body
+/// running an inlined comprehension, a FrameLocalsProxy (pylib/_framelocals.py)
+/// that reads and writes the frame's variables as they are now.
+fn live_f_locals(vm: &mut Vm, idx: usize) -> PyResult<Value> {
+    // SAFETY: see Vm::current_frame
+    let f = unsafe { &*vm.frames[idx] };
+    let d = crate::builtins::frame_locals(f);
+    if f.ns.as_ref().is_some_and(|ns| Rc::ptr_eq(ns, &d)) {
+        return Ok(Value::Dict(d));
+    }
+    let frame = vm.frame_objs[idx].clone();
+    let g = vm.main_globals.clone();
+    let m = vm.import("_framelocals", &Value::None, 0, &g)?;
+    let cls = vm.getattr(&m, &ps("FrameLocalsProxy"))?;
+    vm.call_vec(&cls, vec![frame], &[])
+}
+
+pub fn frame_module() -> Value {
+    let (d, m) = crate::modules::module("_rpyframe");
+    crate::modules::put_fns(&d, &[("_rpyframe.locals", fl_locals), ("_rpyframe.set_local", fl_set_local)]);
+    m
+}
+
+fn frame_arg(vm: &mut Vm, a: &[Value]) -> PyResult<Rc<NativeObj>> {
+    match a.first() {
+        Some(Value::Obj(o)) if matches!(&*o.kind.borrow(), ObjKind::Frame { .. }) => Ok(o.clone()),
+        _ => Err(vm.type_error("a frame is required")),
+    }
+}
+
+/// locals(frame): the variables of the frame now, or as it left them
+fn fl_locals(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let o = frame_arg(vm, a)?;
+    if let Some(idx) = live_frame(vm, &o) {
+        // SAFETY: see Vm::current_frame
+        let f = unsafe { &*vm.frames[idx] };
+        return Ok(Value::Dict(crate::builtins::frame_locals(f)));
+    }
+    let locals = match &*o.kind.borrow() {
+        ObjKind::Frame { locals: l @ Value::Dict(_), .. } => l.clone(),
+        _ => Value::dict(Dict::new()),
+    };
+    Ok(locals)
+}
+
+/// set_local(frame, name, value): binds a variable of the running frame;
+/// false when the frame has no variable of that name to bind
+fn fl_set_local(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let o = frame_arg(vm, a)?;
+    let (Some(Value::Str(name)), Some(v)) = (a.get(1), a.get(2)) else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(idx) = live_frame(vm, &o) else {
+        return Ok(Value::Bool(false));
+    };
+    // SAFETY: see Vm::current_frame; nothing else uses the frame during the call
+    let f = unsafe { &mut *vm.frames[idx] };
+    let code = f.code.clone();
+    let n = &*name.s;
+    // a module or class body's variables are the bound ones of its inlined
+    // comprehensions; a function's slot of a running one, which comes after
+    // the others, goes first
+    let ns_frame = f.ns.is_some();
+    let slots: Vec<usize> = code.varnames.iter().enumerate().filter(|(_, x)| &***x == n).map(|(i, _)| i).collect();
+    let slot = slots.iter().rev().find(|&&i| !f.stack[i].is_undef()).or(slots.first().filter(|_| !ns_frame));
+    if let Some(&i) = slot {
+        match code.cell_from_arg.iter().position(|s| *s == Some(i as u32)) {
+            Some(ci) => *f.cells[ci].borrow_mut() = v.clone(),
+            None => f.stack[i] = v.clone(),
+        }
+        return Ok(Value::Bool(true));
+    }
+    let names = code.cellvars.iter().chain(code.freevars.iter());
+    let cells: Vec<usize> = names.enumerate().filter(|(_, x)| &***x == n).map(|(i, _)| i).collect();
+    if let Some(&ci) = cells.iter().rev().find(|&&i| !f.cells[i].borrow().is_undef()).or(cells.first().filter(|_| !ns_frame)) {
+        *f.cells[ci].borrow_mut() = v.clone();
+        return Ok(Value::Bool(true));
+    }
+    if let Some(ns) = &f.ns {
+        ns.borrow_mut().set_str(name.clone(), v.clone());
+        return Ok(Value::Bool(true));
+    }
+    Ok(Value::Bool(false))
 }

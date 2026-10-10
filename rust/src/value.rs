@@ -312,7 +312,9 @@ pub struct NativeObj {
 }
 
 pub enum ObjKind {
-    File { path: String, mode: String, buf: String, pos: usize, closed: bool, writable: bool, binary: bool },
+    /// an open file: its bytes and the byte position; a text file's
+    /// encoding and errors handler turn them into str and back
+    File { path: String, mode: String, buf: Vec<u8>, pos: usize, closed: bool, writable: bool, binary: bool, encoding: String, errors: String },
     StringIO { buf: Vec<char>, pos: usize, closed: bool },
     Deque(std::collections::VecDeque<Value>, Option<usize>),
     MatchPat(Rc<crate::ast::Pattern>),

@@ -2243,13 +2243,7 @@ fn bi_dir(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
     if a.is_empty() {
         let mut names: Vec<String> = match vm.current_frame() {
-            Some(f) => {
-                if let Some(ns) = &f.ns {
-                    ns.borrow().keys().iter().filter_map(|k| k.as_str().map(|s| s.to_string())).collect()
-                } else {
-                    f.code.varnames.iter().enumerate().filter(|(i, _)| !f.stack[*i].is_undef()).map(|(_, n)| n.to_string()).collect()
-                }
-            }
+            Some(f) => frame_locals(f).borrow().keys().iter().filter_map(|k| k.as_str().map(|s| s.to_string())).collect(),
             None => vec![],
         };
         names.sort();
@@ -3120,13 +3114,26 @@ fn bi_round(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 
 /// the local variables of a frame as a dict
 pub fn frame_locals(f: &Frame) -> Rc<RefCell<Dict>> {
+    let code = &f.code;
     if let Some(ns) = &f.ns {
+        // the slots of a module or class body are those of the comprehensions
+        // inlined there: while one runs, a copy of the namespace with them
+        let slots = code.varnames.iter().zip(f.stack.iter().cloned());
+        let cells = code.cellvars.iter().zip(f.cells.iter()).filter(|(n, _)| !n.starts_with("__class")).map(|(n, c)| (n, c.borrow().clone()));
+        let bound: Vec<(&Name, Value)> = slots.chain(cells).filter(|(_, v)| !v.is_undef()).collect();
+        if !bound.is_empty() {
+            let mut d = ns.borrow().copy();
+            for (n, v) in bound {
+                d.set_s(n, v);
+            }
+            return Rc::new(RefCell::new(d));
+        }
         return ns.clone();
     }
     let mut d = Dict::new();
-    let code = &f.code;
+    // a local that is a cell has both a slot and a cell; the cell holds it
     for (i, n) in code.varnames.iter().enumerate() {
-        if let Some(ci) = code.cellvars.iter().position(|c| c == n) {
+        if let Some(ci) = code.cell_from_arg.iter().position(|s| *s == Some(i as u32)) {
             let v = f.cells[ci].borrow().clone();
             if !v.is_undef() {
                 d.set_s(n, v);
@@ -3138,7 +3145,7 @@ pub fn frame_locals(f: &Frame) -> Rc<RefCell<Dict>> {
         }
     }
     for (ci, n) in code.cellvars.iter().enumerate() {
-        if code.varnames.iter().any(|x| x == n) {
+        if code.cell_from_arg.get(ci).is_some_and(Option::is_some) {
             continue;
         }
         let v = f.cells[ci].borrow().clone();
@@ -3310,6 +3317,36 @@ fn decode_source(vm: &mut Vm, b: &[u8]) -> PyResult<String> {
         Ok(s) => Ok(s.to_string()),
         Err(e) => Err(undecodable_source(vm, b, e.valid_up_to())),
     }
+}
+
+/// A source file's text as PEP 263 reads it. Bytes that are not UTF-8 in a
+/// file without a coding comment are the error CPython's tokenizer gives.
+pub fn decode_file_source(vm: &mut Vm, b: &[u8], file: &str) -> PyResult<String> {
+    let body = b.strip_prefix(b"\xef\xbb\xbf".as_slice()).unwrap_or(b);
+    if coding_cookie(body).is_none() {
+        if let Err(e) = std::str::from_utf8(body) {
+            let bad = e.valid_up_to();
+            let line = body[..bad].iter().filter(|c| **c == b'\n').count() + 1;
+            let msg = format!(
+                "Non-UTF-8 code starting with '\\x{:02x}' in file {} on line {}, but no encoding declared; see https://peps.python.org/pep-0263/ for details",
+                body[bad], file, line
+            );
+            return Err(vm.err("SyntaxError", msg));
+        }
+    }
+    decode_source(vm, b)
+}
+
+/// a module's source as the import system reads it: compile() of its bytes
+pub fn decode_module_source(vm: &mut Vm, b: &[u8], file: &str) -> PyResult<String> {
+    decode_source(vm, b).map_err(|e| {
+        if let Value::Instance(i) = &e.value {
+            if matches!(exc_field(i, "filename"), Value::Str(f) if &*f.s == "<string>") {
+                exc_set_field(&e.value, "filename", Value::str(file));
+            }
+        }
+        e
+    })
 }
 
 /// the encoding a `# coding: name` comment names on the first line, or on the

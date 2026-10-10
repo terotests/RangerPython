@@ -560,17 +560,19 @@ impl Vm {
                 Ok(x) => break Ok(x),
                 Err(e) => {
                     if let Err(e) = self.handle_exc(f, e) {
-                        // the traceback keeps the locals of the frames it leaves
-                        if let Some(Value::Obj(o)) = self.frame_objs.last() {
-                            if let ObjKind::Frame { locals: l @ Value::None, .. } = &mut *o.kind.borrow_mut() {
-                                *l = Value::Dict(crate::builtins::frame_locals(f));
-                            }
-                        }
                         break Err(e);
                     }
                 }
             }
         };
+        // a frame object (a traceback's, f_locals) keeps the locals the frame left
+        if let Some(Value::Obj(o)) = self.frame_objs.last() {
+            if let ObjKind::Frame { locals: l, .. } = &mut *o.kind.borrow_mut() {
+                if f.ns.is_none() {
+                    *l = Value::Dict(crate::builtins::frame_locals(f));
+                }
+            }
+        }
         self.frames.pop();
         self.frame_objs.pop();
         r
@@ -827,6 +829,18 @@ impl Vm {
                         return Err(self.err("UnboundLocalError", format!("cannot access local variable '{}' where it is not associated with a value", n)));
                     }
                     f.stack[i as usize] = Value::Undef;
+                    self.finalize_pending();
+                }
+                Op::LoadFastAndClear(i) => {
+                    let v = std::mem::replace(&mut f.stack[i as usize], Value::Undef);
+                    f.stack.push(v);
+                }
+                Op::Swap(n) => {
+                    let top = f.stack.len() - 1;
+                    f.stack.swap(top, top + 1 - n as usize);
+                }
+                Op::MakeCell(i) => {
+                    f.cells[i as usize] = Rc::new(RefCell::new(Value::Undef));
                     self.finalize_pending();
                 }
                 Op::LoadDeref(i) => {
@@ -3029,6 +3043,7 @@ impl Vm {
                 return Err(e);
             }
         };
+        let src = crate::builtins::decode_module_source(self, &src, &file)?;
         let globals = Rc::new(RefCell::new(Dict::new()));
         {
             let mut g = globals.borrow_mut();
@@ -3050,7 +3065,7 @@ impl Vm {
         Ok(self.modules.borrow().get_s(name).unwrap_or(m))
     }
 
-    fn find_source(&mut self, name: &str) -> Option<(String, String, bool)> {
+    fn find_source(&mut self, name: &str) -> Option<(Vec<u8>, String, bool)> {
         let path = name.replace('.', "/");
         let mut dirs = vec![String::new()];
         dirs.extend(self.search_path.iter().map(|d| d.trim_end_matches('/').to_string()));
@@ -3078,7 +3093,7 @@ impl Vm {
         }
         for (cand, pkg) in [(format!("{}.py", path), false), (format!("{}/__init__.py", path), true)] {
             if let Some(s) = crate::stdlib::source(&cand) {
-                return Some((s.to_string(), format!("<lib>/{}", cand), pkg));
+                return Some((s.as_bytes().to_vec(), format!("<lib>/{}", cand), pkg));
             }
         }
         None

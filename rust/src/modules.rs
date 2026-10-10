@@ -48,6 +48,7 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_rpycollections" => collections_module(vm),
         "_rpyinternal" => internal_module(),
         "_rpyprocess" => crate::process::module(),
+        "_rpyframe" => crate::tb::frame_module(),
         _ => return Ok(None),
     }))
 }
@@ -344,6 +345,11 @@ pub fn open_file(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         _ => "r".into(),
     };
     let binary = mode.contains('b');
+    let text_arg = |i: usize, name: &str, default: &str| match arg_or_kw(a, i, k, name) {
+        Some(Value::Str(s)) => s.s.clone(),
+        _ => default.to_string(),
+    };
+    let (encoding, errors) = (text_arg(3, "encoding", "UTF-8"), text_arg(4, "errors", "strict"));
     let path = vm.fs.normalize(&file);
     let not_found = |vm: &mut Vm| {
         let cls = vm.exc_class("FileNotFoundError");
@@ -360,17 +366,13 @@ pub fn open_file(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             Some(t) => t,
             None => return Err(not_found(vm)),
         };
-        if mode.contains('+') {
-            (t, 0, true)
-        } else {
-            (t, 0, false)
-        }
+        (t, 0, mode.contains('+'))
     } else if mode.contains('w') {
         if !vm.fs.is_dir(&parent(&path)) {
             return Err(not_found(vm));
         }
-        vm.fs.write(&path, String::new());
-        (String::new(), 0, true)
+        vm.fs.write(&path, vec![]);
+        (vec![], 0, true)
     } else if mode.contains('a') {
         if !vm.fs.is_dir(&parent(&path)) {
             return Err(not_found(vm));
@@ -385,12 +387,12 @@ pub fn open_file(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             let e = vm.new_exc(&cls, vec![Value::Int(17), Value::str("File exists"), Value::str(&file)]);
             return Err(Exc { value: e });
         }
-        vm.fs.write(&path, String::new());
-        (String::new(), 0, true)
+        vm.fs.write(&path, vec![]);
+        (vec![], 0, true)
     } else {
         return Err(vm.value_error(format!("invalid mode: '{}'", mode)));
     };
-    let kind = ObjKind::File { path: file.clone(), mode, buf, pos, closed: false, writable, binary };
+    let kind = ObjKind::File { path: file.clone(), mode, buf, pos, closed: false, writable, binary, encoding, errors };
     Ok(Value::Obj(Rc::new(NativeObj { class: vm.t.file.clone(), gc: Default::default(), kind: RefCell::new(kind) })))
 }
 
@@ -412,13 +414,63 @@ fn closed_err(vm: &mut Vm) -> Exc {
     vm.value_error("I/O operation on closed file.")
 }
 
-/// the text a read returns: str, or bytes for binary files
-fn file_text(binary: bool, s: &str) -> Value {
-    if binary {
-        Value::Bytes(Rc::new(s.chars().map(|c| c as u32 as u8).collect()))
-    } else {
-        Value::str(s)
+fn is_utf8(encoding: &str) -> bool {
+    matches!(encoding.to_ascii_lowercase().replace('_', "-").as_str(), "utf-8" | "utf8" | "u8")
+}
+
+/// Takes the next part of a file from `pos` on: everything, at most `max`
+/// characters (bytes for a binary file) when `max` >= 0, and only up to the
+/// end of the line when `line`. A text file's part is decoded.
+fn file_take(vm: &mut Vm, o: &NativeObj, max: i64, line: bool) -> PyResult<Value> {
+    let mut kind = o.kind.borrow_mut();
+    let ObjKind::File { buf, pos, closed, binary, mode, encoding, errors, .. } = &mut *kind else {
+        return Ok(Value::str(""));
+    };
+    if *closed {
+        drop(kind);
+        return Err(closed_err(vm));
     }
+    if !mode.contains('r') && !mode.contains('+') {
+        drop(kind);
+        return Err(vm.err("UnsupportedOperation", "not readable"));
+    }
+    let rest = &buf[(*pos).min(buf.len())..];
+    let line_end = |b: &[u8]| if line { b.iter().position(|c| *c == b'\n').map_or(b.len(), |i| i + 1) } else { b.len() };
+    if *binary {
+        let mut end = line_end(rest);
+        if max >= 0 {
+            end = end.min(max as usize);
+        }
+        *pos += end;
+        return Ok(Value::Bytes(Rc::new(rest[..end].to_vec())));
+    }
+    let (text, used) = if is_utf8(encoding) {
+        // a newline byte is a newline character; characters start at non-continuation bytes
+        let mut end = line_end(rest);
+        if max >= 0 {
+            if let Some((i, _)) = rest[..end].iter().enumerate().filter(|(_, c)| **c & 0xc0 != 0x80).nth(max as usize) {
+                end = i;
+            }
+        }
+        let text = match std::str::from_utf8(&rest[..end]) {
+            Ok(s) => s.to_string(),
+            Err(_) => crate::strmethods::decode_bytes(vm, &rest[..end], encoding, errors)?.into_string_lossy(),
+        };
+        (text, end)
+    } else {
+        let all = crate::strmethods::decode_bytes(vm, rest, encoding, errors)?.into_string_lossy();
+        let mut end = if line { all.find('\n').map_or(all.len(), |i| i + 1) } else { all.len() };
+        if max >= 0 {
+            if let Some((i, _)) = all[..end].char_indices().nth(max as usize) {
+                end = i;
+            }
+        }
+        let text = all[..end].to_string();
+        let used = if end == all.len() { rest.len() } else { crate::strmethods::encode_str(vm, &crate::builtins::ps(&text), encoding, errors)?.len() };
+        (text, used)
+    };
+    *pos += used;
+    Ok(Value::string(text))
 }
 
 fn f_read(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -427,51 +479,19 @@ fn f_read(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Some(Value::None) | None => -1,
         Some(v) => vm.to_index(v)?,
     };
-    let mut kind = o.kind.borrow_mut();
-    match &mut *kind {
-        ObjKind::File { buf, pos, closed, binary, mode, .. } => {
-            if *closed {
-                drop(kind);
-                return Err(closed_err(vm));
-            }
-            if !mode.contains('r') && !mode.contains('+') {
-                drop(kind);
-                return Err(vm.err("UnsupportedOperation", "not readable"));
-            }
-            let rest = &buf[*pos..];
-            let take = if n < 0 { rest.len() } else { rest.char_indices().nth(n as usize).map(|(i, _)| i).unwrap_or(rest.len()) };
-            let out = rest[..take].to_string();
-            *pos += take;
-            Ok(file_text(*binary, &out))
-        }
-        _ => Ok(Value::str("")),
-    }
+    file_take(vm, &o, n, false)
 }
 
-fn read_line(o: &NativeObj) -> Option<(String, bool)> {
-    read_line_max(o, -1)
+/// the next line, or an empty str or bytes at the end
+fn read_line(vm: &mut Vm, o: &NativeObj) -> PyResult<Value> {
+    file_take(vm, o, -1, true)
 }
 
-/// the next line, at most `max` characters of it when `max` >= 0
-fn read_line_max(o: &NativeObj, max: i64) -> Option<(String, bool)> {
-    let mut kind = o.kind.borrow_mut();
-    match &mut *kind {
-        ObjKind::File { buf, pos, binary, closed, .. } => {
-            if *closed {
-                return None;
-            }
-            let rest = &buf[*pos..];
-            let mut end = rest.find('\n').map(|i| i + 1).unwrap_or(rest.len());
-            if max >= 0 {
-                if let Some((i, _)) = rest[..end].char_indices().nth(max as usize) {
-                    end = i;
-                }
-            }
-            let line = rest[..end].to_string();
-            *pos += end;
-            Some((line, *binary))
-        }
-        _ => Some((String::new(), false)),
+fn is_empty_read(v: &Value) -> bool {
+    match v {
+        Value::Str(s) => s.s.is_empty(),
+        Value::Bytes(b) => b.is_empty(),
+        _ => true,
     }
 }
 
@@ -481,10 +501,7 @@ fn f_readline(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Some(Value::None) | None => -1,
         Some(v) => vm.to_index(v)?,
     };
-    match read_line_max(&o, n) {
-        Some((l, b)) => Ok(file_text(b, &l)),
-        None => Err(closed_err(vm)),
-    }
+    file_take(vm, &o, n, true)
 }
 
 fn f_readlines(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -492,100 +509,91 @@ fn f_readlines(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let o = file_of(vm, &a[0])?;
     let mut out = vec![];
     loop {
-        match read_line(&o) {
-            Some((l, b)) => {
-                if l.is_empty() {
-                    break;
-                }
-                out.push(file_text(b, &l));
-            }
-            None => return Err(closed_err(vm)),
+        let l = read_line(vm, &o)?;
+        if is_empty_read(&l) {
+            break;
         }
+        out.push(l);
     }
     Ok(Value::list(out))
 }
 
 fn f_next(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let o = file_of(vm, &a[0])?;
-    match read_line(&o) {
-        Some((l, b)) => {
-            if l.is_empty() {
-                return Err(vm.stop_iteration(Value::None));
-            }
-            Ok(file_text(b, &l))
-        }
-        None => Err(closed_err(vm)),
+    let l = read_line(vm, &o)?;
+    if is_empty_read(&l) {
+        return Err(vm.stop_iteration(Value::None));
     }
+    Ok(l)
 }
 
 fn f_write(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let o = file_of(vm, &a[0])?;
     margs(vm, "write", a, 1, 1)?;
-    let text: String = match &a[1] {
-        Value::Str(s) => {
-            crate::strmethods::check_utf8(vm, s)?;
-            s.s.clone()
-        }
-        Value::Bytes(_) | Value::ByteArray(_) => bytes_to_latin1(&a[1]),
+    let text: Option<Rc<PyStr>> = match &a[1] {
+        Value::Str(s) => Some(s.clone()),
+        Value::Bytes(_) | Value::ByteArray(_) => None,
         v => match vm.base_of(v) {
-            Value::Str(s) => {
-                crate::strmethods::check_utf8(vm, &s)?;
-                s.s.clone()
-            }
+            Value::Str(s) => Some(s),
             _ => {
                 let tn = vm.type_name(v);
                 return Err(vm.type_error(format!("write() argument must be str, not {}", tn)));
             }
         },
     };
-    let n = text.chars().count();
-    let target = {
-        let mut kind = o.kind.borrow_mut();
-        match &mut *kind {
-            ObjKind::File { path, buf, pos, closed, writable, binary, mode } => {
-                if *closed {
-                    drop(kind);
-                    return Err(closed_err(vm));
-                }
-                if !*writable {
-                    drop(kind);
-                    return Err(vm.err("UnsupportedOperation", "not writable"));
-                }
-                if *binary && matches!(a[1], Value::Str(_)) {
-                    drop(kind);
-                    return Err(vm.type_error("a bytes-like object is required, not 'str'"));
-                }
-                if !*binary && !matches!(a[1], Value::Str(_)) && !matches!(vm.base_of(&a[1]), Value::Str(_)) {
-                    drop(kind);
-                    return Err(vm.type_error("write() argument must be str, not bytes"));
-                }
-                if mode.contains('a') {
-                    *pos = buf.len();
-                }
-                if *pos >= buf.len() {
-                    buf.push_str(&text);
-                } else {
-                    let end = (*pos + text.len()).min(buf.len());
-                    buf.replace_range(*pos..end, &text);
-                }
-                *pos += text.len();
-                Some((path.clone(), buf.clone()))
-            }
-            ObjKind::Other(Value::Str(s)) => {
-                if &*s.s == "<stderr>" {
-                    vm.write_err(&text);
-                } else {
-                    vm.write_out(&text);
-                }
-                None
-            }
-            _ => None,
+    // a std stream
+    if let ObjKind::Other(Value::Str(s)) = &*o.kind.borrow() {
+        if let Some(t) = &text {
+            crate::strmethods::check_utf8(vm, t)?;
+        }
+        let text = text.map(|t| t.s.clone()).unwrap_or_else(|| bytes_to_latin1(&a[1]));
+        if &*s.s == "<stderr>" {
+            vm.write_err(&text);
+        } else {
+            vm.write_out(&text);
+        }
+        return Ok(Value::Int(text.chars().count() as i64));
+    }
+    let (closed, writable, binary, encoding, errors) = match &*o.kind.borrow() {
+        ObjKind::File { closed, writable, binary, encoding, errors, .. } => (*closed, *writable, *binary, encoding.clone(), errors.clone()),
+        _ => return Ok(Value::Int(0)),
+    };
+    if closed {
+        return Err(closed_err(vm));
+    }
+    if !writable {
+        return Err(vm.err("UnsupportedOperation", "not writable"));
+    }
+    // a text file writes its characters encoded; a binary one the bytes
+    let (data, n) = match (binary, text) {
+        (true, Some(_)) => return Err(vm.type_error("a bytes-like object is required, not 'str'")),
+        (false, None) => return Err(vm.type_error("write() argument must be str, not bytes")),
+        (false, Some(t)) => {
+            let n = t.char_len();
+            (crate::strmethods::encode_str(vm, &t, &encoding, &errors)?, n)
+        }
+        (true, None) => {
+            let b = crate::builtins::bytes_of(vm, &a[1])?;
+            let n = b.len();
+            (b, n)
         }
     };
-    if let Some((p, b)) = target {
-        vm.fs.write(&p, b);
-    }
+    let (path, buf) = {
+        let mut kind = o.kind.borrow_mut();
+        let ObjKind::File { path, buf, pos, mode, .. } = &mut *kind else { unreachable!() };
+        if mode.contains('a') {
+            *pos = buf.len();
+        }
+        if *pos > buf.len() {
+            buf.resize(*pos, 0);
+        }
+        let end = (*pos + data.len()).min(buf.len());
+        buf.splice(*pos..end, data.iter().copied());
+        *pos += data.len();
+        (path.clone(), buf.clone())
+    };
+    vm.fs.write(&path, buf);
     Ok(Value::Int(n as i64))
 }
 
@@ -710,11 +718,11 @@ fn f_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     let r = match &*o.kind.borrow() {
-        ObjKind::File { path, mode, binary, .. } => {
+        ObjKind::File { path, mode, binary, encoding, .. } => {
             if *binary {
                 format!("<_io.BufferedReader name='{}'>", path)
             } else {
-                format!("<_io.TextIOWrapper name='{}' mode='{}' encoding='UTF-8'>", path, mode)
+                format!("<_io.TextIOWrapper name='{}' mode='{}' encoding='{}'>", path, mode, encoding)
             }
         }
         ObjKind::Other(Value::Str(s)) => format!("<_io.TextIOWrapper name='{}' mode='w' encoding='utf-8'>", s.s),
@@ -726,12 +734,12 @@ fn f_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 /// attributes of native objects (files)
 pub fn obj_attr(_vm: &mut Vm, _obj: &Value, o: &Rc<NativeObj>, name: &str) -> PyResult<Option<Value>> {
     Ok(match &*o.kind.borrow() {
-        ObjKind::File { path, mode, closed, .. } => match name {
+        ObjKind::File { path, mode, closed, encoding, errors, .. } => match name {
             "name" => Some(Value::str(path)),
             "mode" => Some(Value::str(mode)),
             "closed" => Some(Value::Bool(*closed)),
-            "encoding" => Some(Value::str("UTF-8")),
-            "errors" => Some(Value::str("strict")),
+            "encoding" => Some(Value::str(encoding)),
+            "errors" => Some(Value::str(errors)),
             "newlines" => Some(Value::None),
             "line_buffering" => Some(Value::Bool(false)),
             _ => None,
