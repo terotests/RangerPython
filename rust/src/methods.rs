@@ -3155,8 +3155,11 @@ fn super_check(vm: &mut Vm, c: &Rc<Class>, obj: &Value) -> PyResult<()> {
         o => vm.isinstance(o, c),
     };
     if !ok {
-        let tn = vm.type_name(obj);
-        return Err(vm.type_error(format!("super(type, obj): obj (instance of {}) is not an instance or subtype of type ({}).", tn, c.name())));
+        let what = match obj {
+            Value::Class(k) => format!("type {}", k.name()),
+            o => format!("instance of {}", vm.type_name(o)),
+        };
+        return Err(vm.type_error(format!("super(type, obj): obj ({}) is not an instance or subtype of type ({}).", what, c.name())));
     }
     Ok(())
 }

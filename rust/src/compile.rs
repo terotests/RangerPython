@@ -1630,7 +1630,7 @@ impl<'a> Compiler<'a> {
         let kwd: Vec<&Param> = f.params.kwonly.iter().filter(|a| a.default.is_some()).collect();
         if !kwd.is_empty() {
             for p in &kwd {
-                let k = self.const_str(&p.name);
+                let k = self.const_str(&mangle(&self.class_name(), &p.name));
                 self.emit(Op::LoadConst(k));
                 self.expr(p.default.as_ref().unwrap())?;
             }

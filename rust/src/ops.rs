@@ -1592,6 +1592,11 @@ impl Vm {
     // ------------------------------------------------------------------
     // comparison
 
+    /// a class whose metaclass is user-defined compares through the metaclass
+    fn meta_cls(&self, v: &Value) -> bool {
+        matches!(v, Value::Class(_)) && !Rc::ptr_eq(&self.class_of(v), &self.t.type_)
+    }
+
     pub fn compare(&mut self, op: CmpOp, a: &Value, b: &Value) -> PyResult<Value> {
         Ok(match op {
             CmpOp::Is => Value::Bool(a.is(b)),
@@ -1600,7 +1605,7 @@ impl Vm {
             CmpOp::NotIn => Value::Bool(!self.contains(b, a)?),
             CmpOp::Eq => {
                 if let Some(r) = fast_eq(a, b) {
-                    if !matches!(a, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
+                    if !matches!(a, Value::Instance(_)) && !matches!(b, Value::Instance(_)) && !self.meta_cls(a) && !self.meta_cls(b) {
                         return Ok(Value::Bool(r));
                     }
                 }
@@ -1608,7 +1613,7 @@ impl Vm {
             }
             CmpOp::Ne => {
                 if let Some(r) = fast_eq(a, b) {
-                    if !matches!(a, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
+                    if !matches!(a, Value::Instance(_)) && !matches!(b, Value::Instance(_)) && !self.meta_cls(a) && !self.meta_cls(b) {
                         return Ok(Value::Bool(!r));
                     }
                 }
@@ -1620,7 +1625,7 @@ impl Vm {
 
     pub fn eq(&mut self, a: &Value, b: &Value) -> PyResult<bool> {
         if let Some(r) = fast_eq(a, b) {
-            if !matches!(a, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
+            if !matches!(a, Value::Instance(_)) && !matches!(b, Value::Instance(_)) && !self.meta_cls(a) && !self.meta_cls(b) {
                 return Ok(r);
             }
             if r {
@@ -1635,28 +1640,31 @@ impl Vm {
         let (name, rname) = if negate { (self.n.ne.clone(), self.n.ne.clone()) } else { (self.n.eq.clone(), self.n.eq.clone()) };
         // native objects whose class defines __eq__ compare like instances
         let native_eq = |v: &Value| matches!(v, Value::Obj(o) if o.class.dict.borrow().get_s("__eq__").is_some());
-        let a_inst = matches!(a, Value::Instance(_)) || native_eq(a);
-        let b_inst = matches!(b, Value::Instance(_)) || native_eq(b);
+        let a_inst = matches!(a, Value::Instance(_)) || native_eq(a) || self.meta_cls(a);
+        let b_inst = matches!(b, Value::Instance(_)) || native_eq(b) || self.meta_cls(b);
         if a_inst || b_inst {
             let ca = self.class_of(a);
             let cb = self.class_of(b);
             let b_first = b_inst && !Rc::ptr_eq(&ca, &cb) && cb.is_subclass(&ca);
             if b_first {
-                if let Some(r) = self.try_user_cmp(b, &rname, a)? {
+                let r = if negate { self.try_user_ne(b, a)? } else { self.try_user_cmp(b, &rname, a)? };
+                if let Some(r) = r {
                     return Ok(r);
                 }
             }
             if a_inst {
-                if let Some(r) = self.try_user_cmp(a, &name, b)? {
+                let r = if negate { self.try_user_ne(a, b)? } else { self.try_user_cmp(a, &name, b)? };
+                if let Some(r) = r {
                     return Ok(r);
                 }
             }
             if b_inst && !b_first {
-                if let Some(r) = self.try_user_cmp(b, &rname, a)? {
+                let r = if negate { self.try_user_ne(b, a)? } else { self.try_user_cmp(b, &rname, a)? };
+                if let Some(r) = r {
                     return Ok(r);
                 }
             }
-            if negate {
+            if false {
                 // __ne__ falls back to the inverse of __eq__
                 let eqn = self.n.eq.clone();
                 if a_inst {
@@ -1674,7 +1682,7 @@ impl Vm {
             }
             let ab = self.base_of(a);
             let bb = self.base_of(b);
-            if !matches!(ab, Value::Instance(_)) && !matches!(bb, Value::Instance(_)) {
+            if !matches!(ab, Value::Instance(_) | Value::Class(_)) && !matches!(bb, Value::Instance(_) | Value::Class(_)) {
                 let r = self.eq_builtin(&ab, &bb)?;
                 return Ok(Value::Bool(r != negate));
             }
@@ -1719,8 +1727,28 @@ impl Vm {
                     Ok(Some(r))
                 }
             }
-            Some(Value::None) => Ok(None),
+            // `__eq__ = None` blocks the comparison
+            Some(Value::None) => Err(self.type_error("'NoneType' object is not callable")),
             _ => Ok(None),
+        }
+    }
+
+    /// `obj.__ne__(other)`: object's default inverts `__eq__`
+    fn try_user_ne(&mut self, obj: &Value, other: &Value) -> PyResult<Option<Value>> {
+        let cls = self.class_of(obj);
+        let ne = self.n.ne.clone();
+        match cls.lookup(&ne) {
+            Some(Value::Native(n)) if n.name.starts_with("object.") => {}
+            None => {}
+            Some(_) => return self.try_user_cmp(obj, &ne, other),
+        }
+        let eqn = self.n.eq.clone();
+        match self.try_user_cmp(obj, &eqn, other)? {
+            Some(r) => {
+                let t = self.truthy(&r)?;
+                Ok(Some(Value::Bool(!t)))
+            }
+            None => Ok(None),
         }
     }
 
@@ -1872,8 +1900,8 @@ impl Vm {
         };
         // native objects whose class defines __eq__ compare like instances
         let native_eq = |v: &Value| matches!(v, Value::Obj(o) if o.class.dict.borrow().get_s("__eq__").is_some());
-        let a_inst = matches!(a, Value::Instance(_)) || native_eq(a);
-        let b_inst = matches!(b, Value::Instance(_)) || native_eq(b);
+        let a_inst = matches!(a, Value::Instance(_)) || native_eq(a) || self.meta_cls(a);
+        let b_inst = matches!(b, Value::Instance(_)) || native_eq(b) || self.meta_cls(b);
         if a_inst || b_inst {
             let ca = self.class_of(a);
             let cb = self.class_of(b);
@@ -1895,7 +1923,7 @@ impl Vm {
             }
             let ab = self.base_of(a);
             let bb = self.base_of(b);
-            if !matches!(ab, Value::Instance(_)) && !matches!(bb, Value::Instance(_)) {
+            if !matches!(ab, Value::Instance(_) | Value::Class(_)) && !matches!(bb, Value::Instance(_) | Value::Class(_)) {
                 return self.rich_order(op, &ab, &bb);
             }
             return Err(self.order_error(op, a, b));
