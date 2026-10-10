@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: MIT
+//! A Python interpreter for the Ranger Python runtime, written in Rust.
+//!
+//! ```ignore
+//! let mut rt = rpy::Runtime::new();
+//! rt.write_file("/data/in.csv", text);
+//! let r = rt.run(source, "main.py");
+//! r.stdout; r.traceback; rt.changed_files();
+//! ```
+//!
+//! The filesystem is in memory: the host puts files in before the run and
+//! reads the ones the script changed after it (Sliqtly's deck is the sandbox).
+
+pub mod ast;
+pub mod bigint;
+pub mod builtins;
+pub mod code;
+pub mod compile;
+pub mod format;
+pub mod fs;
+pub mod lexer;
+pub mod matching;
+pub mod methods;
+pub mod modules;
+pub mod ops;
+pub mod parser;
+pub mod stdlib;
+pub mod strmethods;
+pub mod value;
+pub mod vm;
+
+use value::Value;
+
+/// the deepest Python call nesting sys.setrecursionlimit may allow
+pub const MAX_DEPTH: u32 = 20000;
+
+static UNICODE_NAMES: &str = include_str!(concat!(env!("OUT_DIR"), "/unames.txt"));
+
+/// the character a \N{NAME} escape names
+pub fn unicode_name(name: &str) -> Option<char> {
+    let key = format!(";{}=", name.to_uppercase());
+    let at = UNICODE_NAMES.find(&key)? + key.len();
+    let rest = &UNICODE_NAMES[at..];
+    let end = rest.find(';').unwrap_or(rest.len());
+    char::from_u32(u32::from_str_radix(&rest[..end], 16).ok()?)
+}
+
+/// the name of a character (unicodedata.name), when the table has it
+pub fn unicode_name_of(c: char) -> Option<&'static str> {
+    let key = format!("={:X};", c as u32);
+    let at = UNICODE_NAMES.find(&key)?;
+    let start = UNICODE_NAMES[..at].rfind(';')? + 1;
+    Some(&UNICODE_NAMES[start..at])
+}
+
+pub struct RunResult {
+    pub ok: bool,
+    pub stdout: String,
+    pub stderr: String,
+    /// "ZeroDivisionError" when the script raised
+    pub error_type: String,
+    /// the last line of the traceback
+    pub error: String,
+    pub error_line: u32,
+    /// CPython style, last line = error
+    pub traceback: String,
+}
+
+pub struct Runtime {
+    pub fs: fs::Fs,
+    pub argv: Vec<String>,
+    pub max_steps: u64,
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Runtime {
+    pub fn new() -> Runtime {
+        Runtime { fs: fs::Fs::new(), argv: vec![], max_steps: 0 }
+    }
+
+    pub fn write_file(&mut self, path: &str, text: &str) {
+        self.fs.put(path, text.to_string());
+    }
+
+    pub fn read_file(&self, path: &str) -> Option<String> {
+        self.fs.read(path)
+    }
+
+    pub fn changed_files(&self) -> Vec<String> {
+        self.fs.changed_files()
+    }
+
+    pub fn removed_files(&self) -> Vec<String> {
+        self.fs.removed_files()
+    }
+
+    /// runs a script; the filesystem keeps what it wrote
+    pub fn run(&mut self, source: &str, filename: &str) -> RunResult {
+        let fs = std::mem::replace(&mut self.fs, fs::Fs::new());
+        let mut vm = vm::Vm::new(fs);
+        vm.argv = self.argv.clone();
+        vm.max_steps = self.max_steps;
+        let globals = vm.main_globals.clone();
+        globals.borrow_mut().set_s("__file__", Value::str(filename));
+        let r = vm.run_source(source, filename, globals);
+        let mut res = RunResult {
+            ok: true,
+            stdout: String::new(),
+            stderr: String::new(),
+            error_type: String::new(),
+            error: String::new(),
+            error_line: 0,
+            traceback: String::new(),
+        };
+        if let Err(e) = r {
+            report(&mut vm, &e.value, &mut res);
+        }
+        res.stdout = std::mem::take(&mut vm.out);
+        res.stderr = std::mem::take(&mut vm.err_out);
+        self.fs = std::mem::replace(&mut vm.fs, fs::Fs::new());
+        res
+    }
+}
+
+fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
+    let cls = vm.class_of(exc);
+    if cls.is_subclass(&vm.exc_class("SystemExit")) {
+        let args = vm.exc_args(exc);
+        match args.first() {
+            None | Some(Value::None) => return,
+            Some(Value::Int(0)) => return,
+            Some(Value::Int(_)) | Some(Value::Bool(_)) => {}
+            Some(v) => {
+                let s = vm.str_of(v).unwrap_or_default();
+                vm.err_out.push_str(&s);
+                vm.err_out.push('\n');
+            }
+        }
+        res.ok = false;
+        res.error_type = "SystemExit".into();
+        return;
+    }
+    res.ok = false;
+    let mut lines = vec!["Traceback (most recent call last):".to_string()];
+    let tb = vm.getattr(exc, &builtins::ps("__traceback__")).unwrap_or(Value::None);
+    let mut entries: Vec<(String, i64, String)> = vec![];
+    if let Value::List(l) = &tb {
+        for e in l.borrow().iter().rev() {
+            if let Value::Tuple(t) = e {
+                let file = match &t[0] {
+                    Value::Str(s) => s.s.clone(),
+                    _ => String::new(),
+                };
+                let line = match &t[1] {
+                    Value::Int(i) => *i,
+                    _ => 0,
+                };
+                let name = match &t[2] {
+                    Value::Str(s) => s.s.clone(),
+                    _ => String::new(),
+                };
+                entries.push((file, line, name));
+            }
+        }
+    }
+    let mut prev = String::new();
+    let mut run = 0;
+    for (file, line, name) in &entries {
+        let w = format!("  File \"{}\", line {}, in {}", file, line, name);
+        if w == prev {
+            run += 1;
+            if run >= 3 {
+                continue;
+            }
+        } else {
+            if run >= 3 {
+                lines.push(format!("  [Previous line repeated {} more time{}]", run - 2, if run - 2 == 1 { "" } else { "s" }));
+            }
+            run = 0;
+        }
+        lines.push(w.clone());
+        prev = w;
+    }
+    if run >= 3 {
+        lines.push(format!("  [Previous line repeated {} more time{}]", run - 2, if run - 2 == 1 { "" } else { "s" }));
+    }
+    res.error_line = entries.last().map(|e| e.1 as u32).unwrap_or(0);
+    let mut name = cls.name().to_string();
+    if let Some(Value::Str(m)) = cls.dict.borrow().get_s("__module__") {
+        if m.s != "builtins" && m.s != "__main__" {
+            name = format!("{}.{}", m.s, name);
+        }
+    }
+    res.error_type = cls.name().to_string();
+    let msg = builtins::exc_str(vm, exc).unwrap_or_default();
+    res.error = if msg.is_empty() { name } else { format!("{}: {}", name, msg) };
+    lines.push(res.error.clone());
+    res.traceback = lines.join("\n");
+}

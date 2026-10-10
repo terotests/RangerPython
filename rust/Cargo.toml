@@ -1,0 +1,20 @@
+[package]
+name = "rpy"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Python interpreter in Rust for the Ranger Python runtime"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "rpy"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
