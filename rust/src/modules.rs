@@ -228,6 +228,11 @@ fn f_read(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn read_line(o: &NativeObj) -> Option<(String, bool)> {
+    read_line_max(o, -1)
+}
+
+/// the next line, at most `max` characters of it when `max` >= 0
+fn read_line_max(o: &NativeObj, max: i64) -> Option<(String, bool)> {
     let mut kind = o.kind.borrow_mut();
     match &mut *kind {
         ObjKind::File { buf, pos, binary, closed, .. } => {
@@ -235,7 +240,12 @@ fn read_line(o: &NativeObj) -> Option<(String, bool)> {
                 return None;
             }
             let rest = &buf[*pos..];
-            let end = rest.find('\n').map(|i| i + 1).unwrap_or(rest.len());
+            let mut end = rest.find('\n').map(|i| i + 1).unwrap_or(rest.len());
+            if max >= 0 {
+                if let Some((i, _)) = rest[..end].char_indices().nth(max as usize) {
+                    end = i;
+                }
+            }
             let line = rest[..end].to_string();
             *pos += end;
             Some((line, *binary))
@@ -246,7 +256,11 @@ fn read_line(o: &NativeObj) -> Option<(String, bool)> {
 
 fn f_readline(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let o = file_of(vm, &a[0])?;
-    match read_line(&o) {
+    let n = match a.get(1) {
+        Some(Value::None) | None => -1,
+        Some(v) => vm.to_index(v)?,
+    };
+    match read_line_max(&o, n) {
         Some((l, b)) => Ok(file_text(b, &l)),
         None => Err(closed_err(vm)),
     }

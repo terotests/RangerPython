@@ -16,7 +16,7 @@ def hook(*args, **kws):
     try:
         module = __import__(modulepath, fromlist=[funcname])
         hook = getattr(module, funcname)
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError, ValueError):
         warnings.warn('Ignoring unimportable $PYTHONBREAKPOINT: "{}"'.format(hookname), RuntimeWarning)
         return None
     return hook(*args, **kws)

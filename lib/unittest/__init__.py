@@ -53,10 +53,19 @@ def _safe_repr(obj):
 
 
 def _matches(pattern, text):
-    # a regular expression is matched as text with its escapes removed
-    # (there is no re module yet); a pattern with other syntax matches
     if pattern is None:
         return True
+    try:
+        import re
+    except ImportError:
+        re = None
+    if re is not None:
+        try:
+            return re.search(pattern, text) is not None
+        except re.error:
+            pass
+    # without a usable re module a pattern is matched as text with its
+    # escapes removed; a pattern with other syntax matches
     if not isinstance(pattern, str):
         pattern = getattr(pattern, "pattern", str(pattern))
     special = "^$*+?{}[]|()"

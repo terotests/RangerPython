@@ -496,6 +496,8 @@ pub fn install_types(vm: &mut Vm) {
     def(&n, "NoneType.__bool__", false_fn);
     def(&n, "NoneType.__repr__", d_repr);
     def(&n, "NotImplementedType.__repr__", d_repr);
+    def(&t.notimpl, "NotImplementedType.__new__", notimpl_new);
+    def(&t.ellipsis, "ellipsis.__new__", ellipsis_new);
     let f = t.function.clone();
     def(&f, "function.__get__", function_get);
     def(&f, "function.__repr__", d_repr);
@@ -1864,17 +1866,9 @@ fn dict_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 /// dict.update semantics: a mapping or pairs, then keywords
 pub fn dict_merge_into(vm: &mut Vm, target: &Value, d: &Rc<RefCell<Dict>>, src: Option<&Value>, k: Kw) -> PyResult<()> {
-    let set = |vm: &mut Vm, key: Value, v: Value| -> PyResult<()> {
-        if let Value::Instance(_) = target {
-            // a subclass's own __setitem__ sees each item
-            let cls = vm.class_of(target);
-            if let Some(f @ Value::Func(_)) = cls.lookup(&vm.n.setitem.clone()) {
-                vm.call_vec(&f, vec![target.clone(), key, v], &[])?;
-                return Ok(());
-            }
-        }
-        vm.dict_set(d, key, v)
-    };
+    let _ = target;
+    // like CPython, a subclass's __setitem__ is not consulted
+    let set = |vm: &mut Vm, key: Value, v: Value| -> PyResult<()> { vm.dict_set(d, key, v) };
     if let Some(src) = src {
         let is_map = match src {
             Value::Dict(_) => true,
@@ -2369,8 +2363,20 @@ fn slice_indices_m(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 
-fn none_new(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
-    Ok(Value::None)
+fn none_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    singleton_new(vm, a, k, "NoneType", Value::None)
+}
+fn notimpl_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    singleton_new(vm, a, k, "NotImplementedType", Value::NotImplemented)
+}
+fn ellipsis_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    singleton_new(vm, a, k, "ellipsis", Value::Ellipsis)
+}
+fn singleton_new(vm: &mut Vm, a: &[Value], k: Kw, name: &str, v: Value) -> PyResult<Value> {
+    if a.len() > 1 || !k.is_empty() {
+        return Err(vm.type_error(format!("{} takes no arguments", name)));
+    }
+    Ok(v)
 }
 
 // -------------------------------------------------------------------------
@@ -2684,11 +2690,18 @@ macro_rules! iter_class_new {
     ($( $fname:ident, $bi:ident, $field:ident );* $(;)?) => {
         $(
             fn $fname(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
-                let v = crate::builtins::$bi(vm, &a[1..], k)?;
+                crate::builtins::need(vm, a, 1)?;
                 let c = vm.t.$field.clone();
+                let mut k = k;
                 if !k.is_empty() && matches!(&a[0], Value::Class(x) if !Rc::ptr_eq(x, &c)) && stringify!($field) != "zip" && stringify!($field) != "enumerate" {
-                    return Err(vm.type_error(format!("{}() takes no keyword arguments", stringify!($field))));
+                    // a subclass that defines __init__ takes the keywords there
+                    let own_init = matches!(&a[0], Value::Class(x) if matches!(x.lookup(&ps("__init__")), Some(Value::Func(_))));
+                    if !own_init {
+                        return Err(vm.type_error(format!("{}() takes no keyword arguments", stringify!($field))));
+                    }
+                    k = &[];
                 }
+                let v = crate::builtins::$bi(vm, &a[1..], k)?;
                 Ok(wrap_new(vm, &a[0], &c, v))
             }
         )*

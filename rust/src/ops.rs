@@ -1822,6 +1822,10 @@ impl Vm {
                             Value::Int(i) => Ok(hash_int(i)),
                             Value::Big(b) => Ok(hash_big(&b)),
                             Value::Bool(b) => Ok(b as u64),
+                            Value::Instance(ref i) if matches!(&*i.base.borrow(), Value::Int(_) | Value::Big(_)) => {
+                                let b = i.base.borrow().clone();
+                                self.hash(&b)
+                            }
                             _ => Err(self.type_error("__hash__ method should return an integer")),
                         }
                     }
@@ -1872,6 +1876,11 @@ impl Vm {
             Value::Instance(_) | Value::Obj(_) => {
                 if let Some(f) = self.lookup_special(v, &self.n.len.clone()) {
                     let r = self.call_vec(&f, vec![], &[])?;
+                    if let Value::Big(b) = &r {
+                        if b.neg {
+                            return Err(self.value_error("__len__() should return >= 0"));
+                        }
+                    }
                     let n = self.to_index(&r)?;
                     if n < 0 {
                         return Err(self.value_error("__len__() should return >= 0"));

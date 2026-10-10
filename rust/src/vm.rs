@@ -33,6 +33,18 @@ pub struct Frame {
     /// the namespace LoadName/StoreName use (module globals or class body)
     pub ns: Option<Rc<RefCell<Dict>>>,
     pub reraise_line: Option<u32>,
+    /// exec/eval namespaces that are not plain dicts
+    pub ext: Option<Rc<FrameExt>>,
+}
+
+/// namespaces handed to exec()/eval() that need item protocol access
+pub struct FrameExt {
+    /// a dict subclass instance used as globals
+    pub globals: Option<Value>,
+    /// any mapping used as locals
+    pub locals: Option<Value>,
+    /// a `__builtins__` mapping other than the builtins module
+    pub builtins: Option<Value>,
 }
 
 pub enum Exit {
@@ -447,6 +459,7 @@ impl Vm {
             globals: globals.clone(),
             ns: Some(globals),
             reraise_line: None,
+            ext: None,
         };
         match self.run_frame(&mut f)? {
             Exit::Return(v) | Exit::Yield(v) => Ok(v),
@@ -455,6 +468,10 @@ impl Vm {
 
     /// code with separate globals and a locals namespace (eval/exec)
     pub fn run_code_ns(&mut self, code: Rc<Code>, globals: Rc<RefCell<Dict>>, ns: Rc<RefCell<Dict>>) -> PyResult<Value> {
+        self.run_code_ext(code, globals, ns, None)
+    }
+
+    pub fn run_code_ext(&mut self, code: Rc<Code>, globals: Rc<RefCell<Dict>>, ns: Rc<RefCell<Dict>>, ext: Option<Rc<FrameExt>>) -> PyResult<Value> {
         let n = code.varnames.len();
         let mut stack = Vec::with_capacity(16 + n);
         stack.resize(n, Value::Undef);
@@ -467,6 +484,7 @@ impl Vm {
             globals,
             ns: Some(ns),
             reraise_line: None,
+            ext,
         };
         match self.run_frame(&mut f)? {
             Exit::Return(v) | Exit::Yield(v) => Ok(v),
@@ -490,6 +508,34 @@ impl Vm {
     }
 
     /// the innermost running frame
+    /// `m[name]`, None on KeyError
+    pub fn map_get(&mut self, m: &Value, name: &Rc<PyStr>) -> PyResult<Option<Value>> {
+        if let Value::Dict(d) = m {
+            return Ok(d.borrow().get_str(name).cloned());
+        }
+        match self.getitem(m, &Value::Str(name.clone())) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if self.exc_is(&e, "KeyError") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// global then builtin lookup for an exec/eval frame
+    fn ext_global(&mut self, f: &Frame, ext: &FrameExt, name: &Rc<PyStr>) -> PyResult<Value> {
+        let v = match &ext.globals {
+            Some(g) => self.map_get(g, name)?,
+            None => f.globals.borrow().get_str(name).cloned(),
+        };
+        if let Some(v) = v {
+            return Ok(v);
+        }
+        let v = match &ext.builtins {
+            Some(b) => self.map_get(b, name)?,
+            None => self.builtins.borrow().get_str(name).cloned(),
+        };
+        v.ok_or_else(|| self.name_error(name))
+    }
+
     pub fn current_frame(&self) -> Option<&Frame> {
         // SAFETY: frames are pushed by run_frame and popped before it
         // returns, so every pointer refers to a live frame further up the
@@ -616,6 +662,12 @@ impl Vm {
                         }
                     }
                 }
+                Op::LoadGlobal(i) if f.ext.is_some() => {
+                    let name = &code.names[i as usize];
+                    let ext = f.ext.clone().unwrap();
+                    let v = self.ext_global(f, &ext, name)?;
+                    f.stack.push(v);
+                }
                 Op::LoadGlobal(i) => {
                     let name = &code.names[i as usize];
                     let v = f.globals.borrow().get_str(name).cloned();
@@ -631,6 +683,11 @@ impl Vm {
                     };
                     f.stack.push(v);
                 }
+                Op::StoreGlobal(i) if f.ext.as_ref().map(|x| x.globals.is_some()).unwrap_or(false) => {
+                    let v = Self::pop(f);
+                    let g = f.ext.as_ref().unwrap().globals.clone().unwrap();
+                    self.setitem(&g, Value::Str(code.names[i as usize].clone()), v)?;
+                }
                 Op::StoreGlobal(i) => {
                     let v = Self::pop(f);
                     f.globals.borrow_mut().set_str(code.names[i as usize].clone(), v);
@@ -640,6 +697,19 @@ impl Vm {
                     if f.globals.borrow_mut().remove_str(name).is_none() {
                         return Err(self.name_error(name));
                     }
+                }
+                Op::LoadName(i) if f.ext.is_some() => {
+                    let name = &code.names[i as usize];
+                    let ext = f.ext.clone().unwrap();
+                    let v = match &ext.locals {
+                        Some(m) => self.map_get(m, name)?,
+                        None => f.ns.as_ref().and_then(|ns| ns.borrow().get_str(name).cloned()),
+                    };
+                    let v = match v {
+                        Some(v) => v,
+                        None => self.ext_global(f, &ext, name)?,
+                    };
+                    f.stack.push(v);
                 }
                 Op::LoadName(i) => {
                     let name = &code.names[i as usize];
@@ -665,12 +735,24 @@ impl Vm {
                         }
                     }
                 }
+                Op::StoreName(i) if f.ext.as_ref().map(|x| x.locals.is_some()).unwrap_or(false) => {
+                    let v = Self::pop(f);
+                    let m = f.ext.as_ref().unwrap().locals.clone().unwrap();
+                    self.setitem(&m, Value::Str(code.names[i as usize].clone()), v)?;
+                }
                 Op::StoreName(i) => {
                     let v = Self::pop(f);
                     let name = code.names[i as usize].clone();
                     match &f.ns {
                         Some(ns) => ns.borrow_mut().set_str(name, v),
                         None => f.globals.borrow_mut().set_str(name, v),
+                    }
+                }
+                Op::DelName(i) if f.ext.as_ref().map(|x| x.locals.is_some()).unwrap_or(false) => {
+                    let m = f.ext.as_ref().unwrap().locals.clone().unwrap();
+                    let name = &code.names[i as usize];
+                    if let Err(e) = self.delitem(&m, &Value::Str(name.clone())) {
+                        return Err(if self.exc_is(&e, "KeyError") { self.name_error(name) } else { e });
                     }
                 }
                 Op::DelName(i) => {
@@ -1409,6 +1491,23 @@ impl Vm {
                         _ => 0,
                     };
                     let name = code.names[i as usize].s.clone();
+                    if let Some(b) = f.ext.as_ref().and_then(|x| x.builtins.clone()) {
+                        let imp = match self.map_get(&b, &crate::builtins::ps("__import__"))? {
+                            Some(v) => v,
+                            None => {
+                                return Err(self.err("ImportError", "__import__ not found"));
+                            }
+                        };
+                        let g = f.ext.as_ref().unwrap().globals.clone().unwrap_or_else(|| Value::Dict(f.globals.clone()));
+                        let l = match (&f.ext.as_ref().unwrap().locals, &f.ns) {
+                            (Some(l), _) => l.clone(),
+                            (None, Some(ns)) => Value::Dict(ns.clone()),
+                            _ => Value::None,
+                        };
+                        let m = self.call_vec(&imp, vec![Value::Str(crate::builtins::ps(&name)), g, l, fromlist, Value::Int(level)], &[])?;
+                        f.stack.push(m);
+                        continue;
+                    }
                     let m = self.import(&name, &fromlist, level, &f.globals)?;
                     f.stack.push(m);
                 }
@@ -1423,7 +1522,15 @@ impl Vm {
                     self.import_star(&m, f)?;
                 }
                 Op::LoadBuildClass => {
-                    let v = self.builtins.borrow().get_s("__build_class__").unwrap();
+                    let v = match f.ext.as_ref().and_then(|x| x.builtins.clone()) {
+                        Some(b) => match self.map_get(&b, &crate::builtins::ps("__build_class__"))? {
+                            Some(v) => v,
+                            None => {
+                                return Err(self.err("NameError", "__build_class__ not found"));
+                            }
+                        },
+                        None => self.builtins.borrow().get_s("__build_class__").unwrap(),
+                    };
                     f.stack.push(v);
                 }
                 Op::SetupAnnotations => {
@@ -1742,7 +1849,7 @@ impl Vm {
         let code = func.code.clone();
         let n = code.varnames.len();
         args.resize(n, Value::Undef);
-        let mut f = Frame { code, ip: 0, stack: args, cells: func.closure.clone(), blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None };
+        let mut f = Frame { code, ip: 0, stack: args, cells: func.closure.clone(), blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         self.depth += 1;
         if self.depth > self.max_depth {
             self.depth -= 1;
@@ -1773,7 +1880,7 @@ impl Vm {
             cells.push(Rc::new(RefCell::new(init)));
         }
         cells.extend(func.closure.iter().cloned());
-        let f = Frame { code: code.clone(), ip: 0, stack: locals, cells, blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None };
+        let f = Frame { code: code.clone(), ip: 0, stack: locals, cells, blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         if code.generator || code.coroutine {
             let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator };
             return Ok(Value::Gen(Rc::new(RefCell::new(g))));
@@ -2329,7 +2436,7 @@ impl Vm {
                 stack.resize(n, Value::Undef);
                 let mut cells: Vec<Cellv> = code.cellvars.iter().map(|_| Rc::new(RefCell::new(Value::Undef))).collect();
                 cells.extend(f.closure.iter().cloned());
-                let mut fr = Frame { code, ip: 0, stack, cells, blocks: vec![], globals: f.globals.clone(), ns: Some(ns.clone()), reraise_line: None };
+                let mut fr = Frame { code, ip: 0, stack, cells, blocks: vec![], globals: f.globals.clone(), ns: Some(ns.clone()), reraise_line: None, ext: None };
                 match self.run_frame(&mut fr)? {
                     Exit::Return(v) | Exit::Yield(v) => v,
                 }

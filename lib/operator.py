@@ -17,7 +17,17 @@ def abs(a): return __builtins_abs(a)
 def add(a, b): return a + b
 def and_(a, b): return a & b
 def floordiv(a, b): return a // b
-def index(a): return a.__index__() if hasattr(a, "__index__") else int(a)
+def index(a):
+    if type(a) is int:
+        return a
+    try:
+        m = type(a).__index__
+    except AttributeError:
+        raise TypeError(f"'{type(a).__name__}' object cannot be interpreted as an integer") from None
+    r = m(a)
+    if not isinstance(r, int):
+        raise TypeError(f"__index__ returned non-int (type {type(r).__name__})")
+    return r
 def inv(a): return ~a
 invert = inv
 def lshift(a, b): return a << b
@@ -49,10 +59,27 @@ def indexOf(a, b):
     raise ValueError("sequence.index(x): x not in sequence")
 def setitem(a, b, c): a[b] = c
 def length_hint(obj, default=0):
+    if not isinstance(default, int):
+        raise TypeError(f"'{type(default).__name__}' object cannot be interpreted as an integer")
     try:
         return len(obj)
     except TypeError:
+        pass
+    try:
+        hint = type(obj).__length_hint__
+    except AttributeError:
         return default
+    try:
+        val = hint(obj)
+    except TypeError:
+        return default
+    if val is NotImplemented:
+        return default
+    if not isinstance(val, int):
+        raise TypeError(f"__length_hint__ must be an integer, not {type(val).__name__}")
+    if val < 0:
+        raise ValueError("__length_hint__() should return >= 0")
+    return val
 def iadd(a, b):
     a += b
     return a

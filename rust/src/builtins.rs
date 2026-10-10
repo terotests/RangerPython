@@ -1503,7 +1503,6 @@ fn install_functions(vm: &mut Vm) {
         ("__build_class__", bi_build_class),
         ("aiter", bi_aiter),
         ("anext", bi_anext),
-        ("breakpoint", bi_noop),
         ("help", bi_noop),
     ];
     let mut b = vm.builtins.borrow_mut();
@@ -1736,7 +1735,11 @@ fn bi_chr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "chr", a, 1, 1)?;
     let i = match &a[0] {
         Value::Float(_) => return Err(vm.type_error("'float' object cannot be interpreted as an integer")),
-        v => vm.to_index(v)?,
+        v => match vm.to_index(v) {
+            Ok(i) => i,
+            Err(e) if vm.exc_is(&e, "OverflowError") => -1,
+            Err(e) => return Err(e),
+        },
     };
     match u32::try_from(i).ok().and_then(char::from_u32) {
         Some(c) => Ok(char_value(c)),
@@ -1857,6 +1860,15 @@ pub fn dir_of(vm: &mut Vm, v: &Value) -> PyResult<Vec<String>> {
 
 fn bi_dir(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "dir", a, 0, 1)?;
+    if let Some(l) = a.is_empty().then(|| vm.current_frame().and_then(|f| f.ext.as_ref()).and_then(|x| x.locals.clone())).flatten() {
+        let km = vm.getattr(&l, &ps("keys"))?;
+        let keys = vm.call(&km, &[])?;
+        let v = vm.to_vec(&keys)?;
+        let r = Value::list(v);
+        let sm = vm.getattr(&r, &ps("sort"))?;
+        vm.call(&sm, &[])?;
+        return Ok(r);
+    }
     if a.is_empty() {
         let mut names: Vec<String> = match vm.current_frame() {
             Some(f) => {
@@ -1928,20 +1940,17 @@ pub fn bi_enumerate(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 pub fn bi_zip(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if let Some((name, _)) = k.iter().find(|(n, _)| &*n.s != "strict") {
+        return Err(vm.type_error(format!("zip() got an unexpected keyword argument '{}'", name.s)));
+    }
     let strict = match kwarg(k, "strict") {
         Some(v) => vm.truthy(&v)?,
         None => false,
     };
     let mut its = Vec::with_capacity(a.len());
     for (i, x) in a.iter().enumerate() {
-        match vm.iter(x) {
-            Ok(it) => its.push(it),
-            Err(e) if vm.exc_is(&e, "TypeError") => {
-                let tn = vm.type_name(x);
-                return Err(vm.type_error(format!("'{}' object is not iterable", tn)).with_note(i));
-            }
-            Err(e) => return Err(e),
-        }
+        let _ = i;
+        its.push(vm.iter(x)?);
     }
     Ok(mk_iter(Iter::Zip(its, strict)))
 }
@@ -2033,6 +2042,9 @@ pub fn bi_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn bi_iter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "iter", a, 1, 2)?;
     if a.len() == 2 {
+        if !is_callable(vm, &a[0]) {
+            return Err(vm.type_error("iter(v, w): v must be callable"));
+        }
         return Ok(mk_iter(Iter::Callable(a[0].clone(), a[1].clone())));
     }
     vm.iter(&a[0])
@@ -2065,6 +2077,7 @@ fn bi_format(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "format", a, 1, 2)?;
     let spec = match a.get(1) {
         Some(Value::Str(s)) => s.s.clone(),
+        Some(Value::Instance(i)) if matches!(&*i.base.borrow(), Value::Str(_)) => i.base.borrow().as_str().unwrap().to_string(),
         Some(v) => {
             let tn = vm.type_name(v);
             return Err(vm.type_error(format!("format() argument 2 must be str, not {}", tn)));
@@ -2257,6 +2270,12 @@ fn bi_sum(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     if let Value::Str(_) = start {
         return Err(vm.type_error("sum() can't sum strings [use ''.join(seq) instead]"));
     }
+    if let Value::Bytes(_) = start {
+        return Err(vm.type_error("sum() can't sum bytes [use b''.join(seq) instead]"));
+    }
+    if let Value::ByteArray(_) = start {
+        return Err(vm.type_error("sum() can't sum bytearray [use b''.join(seq) instead]"));
+    }
     let it = vm.iter(&a[0])?;
     let mut acc = start;
     // floats: compensated (Neumaier) summation like CPython 3.12
@@ -2297,13 +2316,13 @@ fn bi_sum(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             _ => {}
         }
         if let Some((s, c)) = fsum.take() {
-            acc = Value::Float(s + c);
+            acc = Value::Float(if c != 0.0 && c.is_finite() { s + c } else { s });
         }
         acc = vm.binop(BinOp::Add, &acc, &x)?;
     }
     if let Some((s, c)) = fsum {
-        let r = s + c;
-        return Ok(Value::Float(if r.is_nan() && !s.is_nan() { s } else if s.is_infinite() { s } else { r }));
+        // like CPython, the compensation is only added when it is non-zero
+        return Ok(Value::Float(if c != 0.0 && c.is_finite() { s + c } else { s }));
     }
     Ok(acc)
 }
@@ -2529,6 +2548,7 @@ fn index_clamped(vm: &mut Vm, v: &Value) -> PyResult<i64> {
 }
 
 fn bi_round(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "round", a, 0, 2)?;
     let x = match arg_or_kw(a, 0, k, "number") {
         Some(x) => x,
         None => return Err(vm.type_error("round() missing required argument 'number' (pos 1)")),
@@ -2634,6 +2654,9 @@ pub fn frame_locals(f: &Frame) -> Rc<RefCell<Dict>> {
 }
 
 fn bi_locals(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
+    if let Some(l) = vm.current_frame().and_then(|f| f.ext.as_ref()).and_then(|x| x.locals.clone()) {
+        return Ok(l);
+    }
     match vm.current_frame() {
         Some(f) => Ok(Value::Dict(frame_locals(f))),
         None => Ok(Value::Dict(vm.main_globals.clone())),
@@ -2641,6 +2664,9 @@ fn bi_locals(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn bi_globals(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
+    if let Some(g) = vm.current_frame().and_then(|f| f.ext.as_ref()).and_then(|x| x.globals.clone()) {
+        return Ok(g);
+    }
     match vm.current_frame() {
         Some(f) => Ok(Value::Dict(f.globals.clone())),
         None => Ok(Value::Dict(vm.main_globals.clone())),
@@ -2648,7 +2674,7 @@ fn bi_globals(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn bi_vars(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 1)?;
+    check_nargs(vm, "vars", a, 0, 1)?;
     if a.is_empty() {
         return bi_locals(vm, a, k);
     }
@@ -2658,52 +2684,112 @@ fn bi_vars(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     }
 }
 
-fn eval_scopes(vm: &mut Vm, a: &[Value]) -> PyResult<(Rc<RefCell<Dict>>, Rc<RefCell<Dict>>)> {
-    let (g, l) = match vm.current_frame() {
-        Some(f) => (f.globals.clone(), frame_locals(f)),
-        None => (vm.main_globals.clone(), vm.main_globals.clone()),
+type Scopes = (Rc<RefCell<Dict>>, Rc<RefCell<Dict>>, Option<Rc<crate::vm::FrameExt>>);
+
+fn eval_scopes(vm: &mut Vm, a: &[Value], k: Kw, what: &str) -> PyResult<Scopes> {
+    let (cg, cl, cext) = match vm.current_frame() {
+        Some(f) => (f.globals.clone(), frame_locals(f), f.ext.clone()),
+        None => (vm.main_globals.clone(), vm.main_globals.clone(), None),
     };
-    let g = match a.get(1) {
+    let ga = arg_or_kw(a, 1, k, "globals").filter(|v| !v.is_none());
+    let la = arg_or_kw(a, 2, k, "locals").filter(|v| !v.is_none());
+    let mut gobj = None;
+    let g = match &ga {
         Some(Value::Dict(d)) => d.clone(),
-        Some(Value::None) | None => g,
-        Some(v) => {
-            let tn = vm.type_name(v);
-            return Err(vm.type_error(format!("globals must be a dict, not {}", tn)));
-        }
-    };
-    let l = match a.get(2) {
-        Some(Value::Dict(d)) => d.clone(),
-        Some(Value::Instance(i)) => match &*i.base.borrow() {
-            Value::Dict(d) => d.clone(),
-            _ => l,
-        },
-        _ => {
-            if a.get(1).map(|v| !v.is_none()).unwrap_or(false) {
-                g.clone()
-            } else {
-                l
+        Some(v @ Value::Instance(i)) if matches!(&*i.base.borrow(), Value::Dict(_)) => {
+            gobj = Some(v.clone());
+            match &*i.base.borrow() {
+                Value::Dict(d) => d.clone(),
+                _ => unreachable!(),
             }
         }
+        Some(v) => {
+            let tn = vm.type_name(v);
+            let msg = if what == "exec" { format!("exec() globals must be a dict, not {}", tn) } else { format!("globals must be a dict, not {}", tn) };
+            return Err(vm.type_error(msg));
+        }
+        None => cg.clone(),
     };
-    if g.borrow().get_s("__builtins__").is_none() {
-        let bm = Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() }));
-        g.borrow_mut().set_s("__builtins__", bm);
+    let mut lobj = None;
+    let l = match &la {
+        Some(Value::Dict(d)) => d.clone(),
+        Some(v) => {
+            let has = match v {
+                Value::Instance(_) => vm.getattr_opt(v, &ps("__getitem__"))?.is_some(),
+                Value::Obj(_) => vm.getattr_opt(v, &ps("__getitem__"))?.is_some(),
+                _ => false,
+            };
+            if !has {
+                let tn = vm.type_name(v);
+                return Err(vm.type_error(format!("locals must be a mapping, not {}", tn)));
+            }
+            lobj = Some(v.clone());
+            match v {
+                Value::Instance(i) => match &*i.base.borrow() {
+                    Value::Dict(d) => d.clone(),
+                    _ => Rc::new(RefCell::new(Dict::new())),
+                },
+                _ => Rc::new(RefCell::new(Dict::new())),
+            }
+        }
+        None if ga.is_some() => {
+            lobj = gobj.clone();
+            g.clone()
+        }
+        None => {
+            if let Some(x) = &cext {
+                lobj = x.locals.clone();
+            }
+            cl
+        }
+    };
+    if ga.is_none() {
+        if let Some(x) = &cext {
+            gobj = x.globals.clone();
+        }
     }
-    Ok((g, l))
+    let bv = g.borrow().get_s("__builtins__");
+    let bobj = match bv {
+        None => {
+            let bm = Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() }));
+            g.borrow_mut().set_s("__builtins__", bm);
+            None
+        }
+        Some(Value::Module(m)) if Rc::ptr_eq(&m.dict, &vm.builtins) => None,
+        Some(Value::Dict(d)) if Rc::ptr_eq(&d, &vm.builtins) => None,
+        Some(Value::Module(m)) => Some(Value::Dict(m.dict.clone())),
+        Some(v) => Some(v),
+    };
+    let ext = if gobj.is_some() || lobj.is_some() || bobj.is_some() {
+        Some(Rc::new(crate::vm::FrameExt { globals: gobj, locals: lobj, builtins: bobj }))
+    } else {
+        None
+    };
+    Ok((g, l, ext))
 }
 
 fn source_of(vm: &mut Vm, v: &Value, what: &str) -> PyResult<Option<String>> {
     match v {
         Value::Str(s) => Ok(Some(s.s.clone())),
-        Value::Bytes(b) => Ok(Some(String::from_utf8_lossy(b).into_owned())),
+        Value::Bytes(b) => {
+            let b: &[u8] = b.strip_prefix(b"\xef\xbb\xbf".as_slice()).unwrap_or(b);
+            match std::str::from_utf8(b) {
+                Ok(s) => Ok(Some(s.to_string())),
+                Err(_) => Err(vm.err("SyntaxError", "source code cannot be decoded as UTF-8")),
+            }
+        }
         Value::Code(_) => Ok(None),
+        Value::ByteArray(_) | Value::Obj(_) | Value::Instance(_) => match bytes_of(vm, v) {
+            Ok(b) => source_of(vm, &Value::Bytes(Rc::new(b)), what),
+            Err(_) => Err(vm.type_error(format!("{}() arg 1 must be a string, bytes or code object", what))),
+        },
         _ => Err(vm.type_error(format!("{}() arg 1 must be a string, bytes or code object", what))),
     }
 }
 
-fn bi_eval(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn bi_eval(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     check_nargs(vm, "eval", a, 1, 3)?;
-    let (g, l) = eval_scopes(vm, a)?;
+    let (g, l, ext) = eval_scopes(vm, a, k, "eval")?;
     let code = match source_of(vm, &a[0], "eval")? {
         Some(src) => {
             let src = src.trim_start_matches([' ', '\t']).to_string();
@@ -2726,12 +2812,12 @@ fn bi_eval(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             _ => unreachable!(),
         },
     };
-    vm.run_code_ns(code, g, l)
+    vm.run_code_ext(code, g, l, ext)
 }
 
-fn bi_exec(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn bi_exec(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     check_nargs(vm, "exec", a, 1, 3)?;
-    let (g, l) = eval_scopes(vm, a)?;
+    let (g, l, ext) = eval_scopes(vm, a, k, "exec")?;
     let code = match source_of(vm, &a[0], "exec")? {
         Some(src) => {
             let body = match crate::parser::parse_module(&src) {
@@ -2753,7 +2839,7 @@ fn bi_exec(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             _ => unreachable!(),
         },
     };
-    vm.run_code_ns(code, g, l)?;
+    vm.run_code_ext(code, g, l, ext)?;
     Ok(Value::None)
 }
 
@@ -2799,6 +2885,9 @@ fn bi_import(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         Some(Value::Str(s)) => s.s.clone(),
         _ => return Err(vm.type_error("__import__() argument 1 must be str")),
     };
+    if name.is_empty() {
+        return Err(vm.value_error("Empty module name"));
+    }
     let fromlist = arg_or_kw(a, 3, k, "fromlist").unwrap_or(Value::None);
     let level = match arg_or_kw(a, 4, k, "level") {
         Some(Value::Int(i)) => i,

@@ -670,6 +670,11 @@ pub fn compile_eval(e: &Expr, filename: &str) -> CResult<Rc<Code>> {
     let st = SymTable::build(&body)?;
     let mut c = Compiler { st, units: vec![], filename: Rc::from(filename) };
     c.push_unit(0, "<module>".into());
+    // the symbol table is keyed by node address: compile the copy it saw
+    let e = match &body[0].kind {
+        StmtKind::Return(Some(e)) => e,
+        _ => unreachable!(),
+    };
     c.expr(e)?;
     c.emit(Op::Return);
     let code = c.pop_unit("<module>", 1, None, Value::None);
@@ -861,8 +866,10 @@ impl<'a> Compiler<'a> {
                 }
             }
             ScopeKind::Module => {
+                let g = s.globals.contains(n);
                 let i = self.name_idx(n);
-                self.emit(Op::LoadName(i));
+                // a module's `global` matters when exec runs it with separate locals
+                self.emit(if g { Op::LoadGlobal(i) } else { Op::LoadName(i) });
             }
         }
     }
@@ -898,8 +905,9 @@ impl<'a> Compiler<'a> {
                 }
             }
             ScopeKind::Module => {
+                let g = s.globals.contains(n);
                 let i = self.name_idx(n);
-                self.emit(Op::StoreName(i));
+                self.emit(if g { Op::StoreGlobal(i) } else { Op::StoreName(i) });
             }
         }
     }
