@@ -1723,13 +1723,12 @@ fn seq_items_of(vm: &mut Vm, v: &Value) -> PyResult<Vec<Value>> {
 fn seq_index(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     margs(vm, "index", a, 1, 3)?;
     let me = this(vm, a);
-    if let Value::Range(r) = &me {
-        if let Value::Int(x) = &a[1] {
-            if vm.contains(&me, &a[1])? {
-                return Ok(Value::Int((x - r.0) / r.2));
-            }
-            return Err(vm.value_error(format!("{} is not in range", x)));
+    if let Value::Range(_) | Value::BigRange(_) = &me {
+        if let Some(i) = crate::range::find(vm, &me, &a[1], false)? {
+            return Ok(Value::from_big(i));
         }
+        let r = vm.repr(&a[1])?;
+        return Err(vm.value_error(format!("{} is not in range", r)));
     }
     let items = seq_items_of(vm, &a[0])?;
     let n = items.len() as i64;
@@ -1764,6 +1763,11 @@ fn seq_index(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn seq_count(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     margs(vm, "count", a, 1, 1)?;
+    let me = this(vm, a);
+    if let Value::Range(_) | Value::BigRange(_) = &me {
+        let n = crate::range::find(vm, &me, &a[1], true)?.unwrap_or_else(BigInt::zero);
+        return Ok(Value::from_big(n));
+    }
     let items = seq_items_of(vm, &a[0])?;
     let mut n = 0;
     for x in &items {
@@ -2309,25 +2313,28 @@ fn range_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     if !k.is_empty() {
         return Err(vm.type_error("range() takes no keyword arguments"));
     }
+    let n = a.len().saturating_sub(1);
+    if n == 0 {
+        return Err(vm.type_error("range expected at least 1 argument, got 0"));
+    }
+    if n > 3 {
+        return Err(vm.type_error(format!("range expected at most 3 arguments, got {}", n)));
+    }
     let mut ints = vec![];
     for x in &a[1..] {
-        match x {
-            Value::Float(_) => return Err(vm.type_error("'float' object cannot be interpreted as an integer")),
-            Value::Big(_) => return Err(vm.err("OverflowError", "Python int too large to convert to C ssize_t")),
-            _ => ints.push(vm.to_index(x)?),
-        }
+        ints.push(crate::mathmod::index_big(vm, x)?);
     }
-    let (start, stop, step) = match ints.len() {
-        1 => (0, ints[0], 1),
-        2 => (ints[0], ints[1], 1),
-        3 => (ints[0], ints[1], ints[2]),
-        0 => return Err(vm.type_error("range expected at least 1 argument, got 0")),
-        n => return Err(vm.type_error(format!("range expected at most 3 arguments, got {}", n))),
+    let one = BigInt::from_i64(1);
+    let (start, stop, step) = match ints.as_slice() {
+        [e] => (BigInt::zero(), e.clone(), one),
+        [s, e] => (s.clone(), e.clone(), one),
+        [s, e, st] => (s.clone(), e.clone(), st.clone()),
+        _ => return Err(vm.type_error("range expected at least 1 argument, got 0")),
     };
-    if step == 0 {
+    if step.is_zero() {
         return Err(vm.value_error("range() arg 3 must not be zero"));
     }
-    Ok(Value::Range(Rc::new((start, stop, step))))
+    Ok(crate::range::make(start, stop, step))
 }
 
 fn range_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
@@ -2419,12 +2426,26 @@ fn iter_next(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 
-fn iter_length_hint(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn iter_length_hint(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     if let Value::Iter(it) = &a[0] {
+        let rev = match &*it.borrow() {
+            Iter::SeqRev(obj, i) => Some((obj.clone(), *i)),
+            _ => None,
+        };
+        if let Some((obj, i)) = rev {
+            if i < 0 {
+                return Ok(Value::Int(0));
+            }
+            let n = vm.len(&obj)? as i64;
+            return Ok(Value::Int(if n < i + 1 { 0 } else { i + 1 }));
+        }
         let n = match &*it.borrow() {
             Iter::List(l, i) => l.borrow().len().saturating_sub(*i),
             Iter::Tuple(t, i) => t.len().saturating_sub(*i),
-            Iter::Range(c, s, st) => range_len(&Rc::new((*c, *s, *st))),
+            Iter::ListRev(l, i) => (*i).min(l.borrow().len()),
+            Iter::Range(_, left, _) => (*left).max(0) as usize,
+            Iter::BigRange(st) => return Ok(Value::from_big(st.2.clone())),
             Iter::Vec(v) => v.len(),
             _ => 0,
         };
@@ -2725,15 +2746,25 @@ fn iter_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Value::Iter(it) => it.clone(),
         _ => return object_reduce(vm, a, &[]),
     };
-    let iter_fn = vm.builtins.borrow().get_s("iter").unwrap();
+    let bd = vm.builtins.clone();
+    let iter_fn = match vm.dict_get(&bd, &Value::str("iter"))? {
+        Some(f) => f,
+        None => return Err(vm.err("RuntimeError", "lost builtins.iter")),
+    };
     let own = Value::Class(vm.class_of(&a[0]));
-    let rev = Value::Class(vm.t.reversed.clone());
+    let mut rev = Value::Class(vm.t.reversed.clone());
+    if matches!(&*it.borrow(), Iter::ListRev(..)) {
+        if let Some(f) = vm.dict_get(&bd, &Value::str("reversed"))? {
+            rev = f;
+        }
+    }
     let tn = vm.type_name(&a[0]);
     let t3 = |f: Value, args: Vec<Value>, state: Option<Value>| match state {
         Some(s) => Value::tuple(vec![f, Value::tuple(args), s]),
         None => Value::tuple(vec![f, Value::tuple(args)]),
     };
     let empty = |f: Value| Value::tuple(vec![f, Value::tuple(vec![Value::list(vec![])])]);
+    let empty_t = |f: Value| Value::tuple(vec![f, Value::tuple(vec![Value::tuple(vec![])])]);
     let b = it.borrow();
     Ok(match &*b {
         Iter::List(l, i) => {
@@ -2745,24 +2776,33 @@ fn iter_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
         Iter::ListRev(l, i) => {
             if *i == 0 || *i > l.borrow().len() {
-                empty(iter_fn)
+                empty(rev)
             } else {
                 t3(rev, vec![Value::List(l.clone())], Some(Value::Int(*i as i64 - 1)))
             }
         }
         Iter::Tuple(t, i) => {
             if *i >= t.len() {
-                Value::tuple(vec![iter_fn, Value::tuple(vec![Value::tuple(vec![])])])
+                empty_t(iter_fn)
             } else {
                 t3(iter_fn, vec![Value::Tuple(t.clone())], Some(Value::Int(*i as i64)))
             }
         }
+        Iter::Str(s, i) if *i >= s.s.len() => t3(iter_fn, vec![Value::str("")], None),
         Iter::Str(s, i) => {
             let n = s.s[..(*i).min(s.s.len())].chars().count();
             t3(iter_fn, vec![Value::Str(s.clone())], Some(Value::Int(n as i64)))
         }
+        Iter::Bytes(bs, i) if *i >= bs.len() => empty_t(iter_fn),
         Iter::Bytes(bs, i) => t3(iter_fn, vec![Value::Bytes(bs.clone())], Some(Value::Int(*i as i64))),
-        Iter::Range(cur, stop, step) => t3(iter_fn, vec![Value::Range(Rc::new((*cur, *stop, *step)))], Some(Value::Int(0))),
+        Iter::Range(cur, left, step) => {
+            let (c, s) = (*cur as i128, *step as i128);
+            t3(iter_fn, vec![crate::range::make_i128(c, c + (*left).max(0) as i128 * s, s)], Some(Value::Int(0)))
+        }
+        Iter::BigRange(st) => {
+            let stop = st.0.add(&st.2.mul(&st.1));
+            t3(iter_fn, vec![crate::range::make(st.0.clone(), stop, st.1.clone())], Some(Value::Int(0)))
+        }
         Iter::Dict(d, pos, kind, _) => {
             let db = d.borrow();
             let mut rest = vec![];
@@ -2778,8 +2818,9 @@ fn iter_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             t3(iter_fn, vec![Value::list(rest)], None)
         }
         Iter::Vec(v) => t3(iter_fn, vec![Value::list(v.as_slice().to_vec())], None),
-        Iter::Empty => empty(iter_fn),
+        Iter::Empty => empty_t(iter_fn),
         Iter::Seq(obj, i) => t3(iter_fn, vec![obj.clone()], Some(Value::Int(*i))),
+        Iter::SeqRev(obj, i) => t3(rev, vec![obj.clone()], Some(Value::Int(*i))),
         Iter::Callable(f, s) => t3(iter_fn, vec![f.clone(), s.clone()], None),
         Iter::Enumerate(inner, count) => {
             let (inner, count) = (inner.clone(), count.clone());
@@ -2821,6 +2862,38 @@ fn iter_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         *strict = vm.truthy(&a[1])?;
         return Ok(Value::None);
     }
+    if matches!(&*it.borrow(), Iter::Range(..) | Iter::BigRange(_)) {
+        let n = crate::mathmod::index_big(vm, &a[1])?;
+        let mut b = it.borrow_mut();
+        let st = match &*b {
+            Iter::Range(cur, left, step) => (BigInt::from_i64(*cur), BigInt::from_i64(*step), BigInt::from_i64(*left)),
+            Iter::BigRange(st) => (**st).clone(),
+            _ => return Ok(Value::None),
+        };
+        let n = if n.neg { BigInt::zero() } else if n.cmp(&st.2) == std::cmp::Ordering::Greater { st.2.clone() } else { n };
+        let start = st.0.add(&n.mul(&st.1));
+        let left = st.2.sub(&n);
+        *b = match &*b {
+            Iter::Range(..) => match (start.to_i64(), left.to_i64()) {
+                (Some(c), Some(l)) => Iter::Range(c, l, st.1.to_i64().unwrap_or(1)),
+                _ => Iter::BigRange(Box::new((start, st.1, left))),
+            },
+            _ => Iter::BigRange(Box::new((start, st.1, left))),
+        };
+        return Ok(Value::None);
+    }
+    let seq = match &*it.borrow() {
+        Iter::SeqRev(obj, _) => Some(obj.clone()),
+        _ => None,
+    };
+    if let Some(obj) = seq {
+        let n = vm.to_index(&a[1])?;
+        let len = vm.len(&obj)? as i64;
+        if let Iter::SeqRev(_, i) = &mut *it.borrow_mut() {
+            *i = n.max(-1).min(len - 1);
+        }
+        return Ok(Value::None);
+    }
     let n = vm.to_index(&a[1])?.max(0);
     let mut b = it.borrow_mut();
     match &mut *b {
@@ -2830,10 +2903,6 @@ fn iter_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Iter::Bytes(bs, i) => *i = (n as usize).min(bs.len()),
         Iter::Str(s, i) => *i = s.s.char_indices().nth(n as usize).map(|(p, _)| p).unwrap_or(s.s.len()),
         Iter::Seq(_, i) => *i = n,
-        Iter::Range(cur, stop, step) => {
-            let len = crate::builtins::range_len(&Rc::new((*cur, *stop, *step))) as i64;
-            *cur += n.min(len) * *step;
-        }
         _ => {}
     }
     Ok(Value::None)
@@ -2860,6 +2929,11 @@ fn range_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Value::Range(r) => {
             let c = Value::Class(vm.t.range.clone());
             Ok(Value::tuple(vec![c, Value::tuple(vec![Value::Int(r.0), Value::Int(r.1), Value::Int(r.2)])]))
+        }
+        Value::BigRange(r) => {
+            let c = Value::Class(vm.t.range.clone());
+            let args = vec![Value::from_big(r.start.clone()), Value::from_big(r.stop.clone()), Value::from_big(r.step.clone())];
+            Ok(Value::tuple(vec![c, Value::tuple(args)]))
         }
         _ => Err(vm.type_error("descriptor '__reduce__' requires a 'range' object")),
     }

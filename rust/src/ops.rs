@@ -125,7 +125,7 @@ impl Vm {
             Value::Dict(_) => t.dict.clone(),
             Value::Set(_) => t.set.clone(),
             Value::FrozenSet(_) => t.frozenset.clone(),
-            Value::Range(_) => t.range.clone(),
+            Value::Range(_) | Value::BigRange(_) => t.range.clone(),
             Value::Slice(_) => t.slice.clone(),
             Value::Func(_) => t.function.clone(),
             Value::Native(_) => t.builtin_function.clone(),
@@ -144,7 +144,7 @@ impl Vm {
                 Iter::Zip(..) => t.zip.clone(),
                 Iter::Map(..) => t.map.clone(),
                 Iter::Filter(_, _, false) => t.filter.clone(),
-                Iter::ListRev(..) => t.reversed.clone(),
+                Iter::ListRev(..) | Iter::SeqRev(..) => t.reversed.clone(),
                 _ => t.iterator.clone(),
             },
             Value::Gen(g) => {
@@ -1570,11 +1570,7 @@ impl Vm {
                 let sa = crate::builtins::to_set(self, a)?;
                 self.eq_builtin(&sa, b)
             }
-            (Value::Range(x), Value::Range(y)) => {
-                let xv = crate::builtins::range_items(x);
-                let yv = crate::builtins::range_items(y);
-                Ok(xv.len() == yv.len() && (xv.is_empty() || (xv[0] == yv[0] && (xv.len() == 1 || xv[1] == yv[1]))))
-            }
+            (Value::Range(_) | Value::BigRange(_), Value::Range(_) | Value::BigRange(_)) => Ok(crate::range::eq(a, b)),
             (Value::Slice(x), Value::Slice(y)) => Ok(self.eq(&x.0, &y.0)? && self.eq(&x.1, &y.1)? && self.eq(&x.2, &y.2)?),
             (Value::ByteArray(x), Value::ByteArray(y)) => Ok(*x.borrow() == *y.borrow()),
             (Value::ByteArray(x), Value::Bytes(y)) | (Value::Bytes(y), Value::ByteArray(x)) => Ok(*x.borrow() == **y),
@@ -1784,6 +1780,7 @@ impl Vm {
             Value::Tuple(t) => !t.is_empty(),
             Value::Dict(d) | Value::Set(d) | Value::FrozenSet(d) => !d.borrow().is_empty(),
             Value::Range(r) => crate::builtins::range_len(r) > 0,
+            Value::BigRange(r) => !r.len.is_zero(),
             Value::DictView(d) => !d.0.borrow().is_empty(),
             Value::Instance(_) => {
                 if let Some(f) = self.lookup_special(v, &self.n.bool_.clone()) {
@@ -1879,6 +1876,7 @@ impl Vm {
             Value::Bytes(b) => b.len(),
             Value::ByteArray(b) => b.borrow().len(),
             Value::Range(r) => crate::builtins::range_len(r),
+            Value::BigRange(r) => crate::range::len(self, r)?,
             Value::DictView(d) => d.0.borrow().len(),
             Value::Instance(_) | Value::Obj(_) => {
                 if let Some(f) = self.lookup_special(v, &self.n.len.clone()) {
@@ -1913,7 +1911,9 @@ impl Vm {
 
     pub fn dict_get(&mut self, d: &Rc<RefCell<Dict>>, k: &Value) -> PyResult<Option<Value>> {
         if let Value::Str(s) = k {
-            return Ok(d.borrow().get_str(s).cloned());
+            if let Some(v) = d.borrow().get_str(s) {
+                return Ok(Some(v.clone()));
+            }
         }
         let h = self.hash(k)?;
         let r = d.borrow().lookup(h, k);
@@ -2059,7 +2059,8 @@ impl Vm {
             Value::Str(s) => Iter::Str(s.clone(), 0),
             Value::Bytes(b) => Iter::Bytes(b.clone(), 0),
             Value::ByteArray(b) => Iter::Bytes(Rc::new(b.borrow().clone()), 0),
-            Value::Range(r) => Iter::Range(r.0, r.1, r.2),
+            Value::Range(r) => crate::range::iter_i128(r.0 as i128, r.2 as i128, crate::builtins::range_len(r) as i128),
+            Value::BigRange(r) => crate::range::iter(r),
             Value::Dict(d) | Value::Set(d) | Value::FrozenSet(d) => {
                 let n = d.borrow().len();
                 Iter::Dict(d.clone(), 0, 0, n)
@@ -2194,15 +2195,17 @@ impl Vm {
                     Ok(None)
                 }
             }
-            Iter::Range(cur, stop, step) => {
-                if (*step > 0 && *cur < *stop) || (*step < 0 && *cur > *stop) {
+            Iter::Range(cur, left, step) => {
+                if *left > 0 {
                     let v = *cur;
-                    *cur += *step;
+                    *left -= 1;
+                    *cur = cur.wrapping_add(*step);
                     Ok(Some(Value::Int(v)))
                 } else {
                     Ok(None)
                 }
             }
+            Iter::BigRange(st) => Ok(crate::range::iter_next(st)),
             Iter::Dict(d, pos, kind, size) => {
                 let db = d.borrow();
                 if db.len() != *size {
@@ -2344,11 +2347,32 @@ impl Vm {
                     Err(e) => Err(e),
                 }
             }
+            Iter::SeqRev(obj, i) => {
+                if *i < 0 {
+                    return Ok(None);
+                }
+                let obj = obj.clone();
+                let idx = *i;
+                *i -= 1;
+                drop(b);
+                match self.getitem(&obj, &Value::Int(idx)) {
+                    Ok(v) => Ok(Some(v)),
+                    Err(e) if self.exc_is(&e, "IndexError") || self.exc_is(&e, "StopIteration") => {
+                        *r.borrow_mut() = Iter::Empty;
+                        Ok(None)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             Iter::Callable(f, sentinel) => {
                 let f = f.clone();
                 let s = sentinel.clone();
                 drop(b);
                 let v = self.call_vec(&f, vec![], &[])?;
+                // exhausted by a reentrant call while f ran
+                if matches!(&*r.borrow(), Iter::Empty) {
+                    return Ok(None);
+                }
                 if self.eq(&v, &s)? {
                     *r.borrow_mut() = Iter::Empty;
                     Ok(None)
@@ -2391,6 +2415,10 @@ impl Vm {
             Value::Tuple(t) => Ok(t.to_vec()),
             Value::Dict(d) | Value::Set(d) | Value::FrozenSet(d) => Ok(d.borrow().keys()),
             Value::Range(r) => Ok(crate::builtins::range_items(r).into_iter().map(Value::Int).collect()),
+            Value::BigRange(r) => {
+                crate::range::len(self, r)?;
+                Ok(crate::range::items(r))
+            }
             Value::Str(s) => Ok(s.s.chars().map(crate::builtins::char_value).collect()),
             _ => {
                 let it = self.iter(v)?;
@@ -2434,7 +2462,7 @@ impl Vm {
                 Some(v) => Ok(v),
                 None => Err(self.key_error(idx.clone())),
             },
-            Value::List(_) | Value::Tuple(_) | Value::Str(_) | Value::Bytes(_) | Value::ByteArray(_) | Value::Range(_) => crate::builtins::seq_getitem(self, obj, idx),
+            Value::List(_) | Value::Tuple(_) | Value::Str(_) | Value::Bytes(_) | Value::ByteArray(_) | Value::Range(_) | Value::BigRange(_) => crate::builtins::seq_getitem(self, obj, idx),
             Value::Instance(inst) => {
                 let cls = inst.class.borrow().clone();
                 match cls.lookup(&self.n.getitem) {
@@ -2622,21 +2650,15 @@ impl Vm {
                     Ok(false)
                 }
             },
-            Value::Range(r) => match item {
-                Value::Int(i) => {
-                    let (start, stop, step) = (r.0, r.1, r.2);
-                    Ok(if step > 0 { *i >= start && *i < stop && (i - start) % step == 0 } else { *i <= start && *i > stop && (start - i) % (-step) == 0 })
-                }
-                _ => {
-                    let items = crate::builtins::range_items(r);
-                    for x in items {
-                        if self.eq(&Value::Int(x), item)? {
-                            return Ok(true);
-                        }
-                    }
-                    Ok(false)
-                }
-            },
+            Value::Range(r) if matches!(item, Value::Int(_)) => {
+                let i = match item {
+                    Value::Int(i) => *i as i128,
+                    _ => 0,
+                };
+                let (start, stop, step) = (r.0 as i128, r.1 as i128, r.2 as i128);
+                Ok(if step > 0 { i >= start && i < stop && (i - start) % step == 0 } else { i <= start && i > stop && (start - i) % (-step) == 0 })
+            }
+            Value::Range(_) | Value::BigRange(_) => Ok(crate::range::find(self, container, item, false)?.is_some()),
             Value::Bytes(b) => match item {
                 Value::Int(i) => Ok(b.contains(&(*i as u8))),
                 Value::Bytes(sub) => Ok(sub.is_empty() || b.windows(sub.len()).any(|w| w == &sub[..])),

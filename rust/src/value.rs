@@ -29,7 +29,9 @@ impl PyStr {
         }
         let mut f = FxHasher::default();
         f.write(self.s.as_bytes());
-        let h = f.finish() | 1;
+        // already reduced as hash_int would, so an object whose __hash__
+        // returns hash(some_str) collides with that str
+        let h = (f.finish() % MODULUS).max(1);
         self.hash.set(h);
         h
     }
@@ -96,6 +98,8 @@ pub enum Value {
     Set(Rc<RefCell<Dict>>),
     FrozenSet(Rc<RefCell<Dict>>),
     Range(Rc<(i64, i64, i64)>),
+    /// a range whose bounds or length need big integers
+    BigRange(Rc<crate::range::BigRange>),
     Slice(Rc<(Value, Value, Value)>),
     Func(Rc<Function>),
     Native(Rc<NativeFn>),
@@ -267,7 +271,10 @@ pub enum Iter {
     Tuple(Rc<Vec<Value>>, usize),
     Str(Rc<PyStr>, usize),
     Bytes(Rc<Vec<u8>>, usize),
+    /// current, remaining count, step
     Range(i64, i64, i64),
+    /// current, step, remaining count
+    BigRange(Box<(crate::bigint::BigInt, crate::bigint::BigInt, crate::bigint::BigInt)>),
     Dict(Rc<RefCell<Dict>>, usize, u8, usize),
     Enumerate(Value, Value),
     Zip(Vec<Value>, bool),
@@ -275,6 +282,8 @@ pub enum Iter {
     Filter(Value, Value, bool),
     /// a sequence driven by __getitem__
     Seq(Value, i64),
+    /// reversed() over __len__ and __getitem__: the next index to fetch
+    SeqRev(Value, i64),
     Callable(Value, Value),
     Count(Value, Value),
     Repeat(Value, i64),
@@ -686,6 +695,7 @@ pub fn fast_hash(v: &Value) -> Option<u64> {
             acc
         }
         Value::Complex(c) => hash_float(c.0) ^ hash_float(c.1).wrapping_mul(1000003),
+        Value::Range(_) | Value::BigRange(_) => crate::range::hash(v),
         Value::Instance(_) => return None,
         Value::List(_) | Value::Dict(_) | Value::Set(_) | Value::ByteArray(_) => return None,
         other => (ptr_id(other) as u64) >> 4,
@@ -710,6 +720,7 @@ pub fn ptr_id(v: &Value) -> usize {
         Value::Bytes(r) => Rc::as_ptr(r) as *const u8 as usize,
         Value::ByteArray(r) => Rc::as_ptr(r) as *const u8 as usize,
         Value::Range(r) => Rc::as_ptr(r) as *const u8 as usize,
+        Value::BigRange(r) => Rc::as_ptr(r) as *const u8 as usize,
         Value::Slice(r) => Rc::as_ptr(r) as *const u8 as usize,
         Value::DictView(r) => Rc::as_ptr(r) as *const u8 as usize,
         Value::Property(r) => Rc::as_ptr(r) as *const u8 as usize,
@@ -765,6 +776,8 @@ pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
         (Instance(_), _) | (_, Instance(_)) => return Option::None,
         (List(_), List(_)) | (Dict(_), Dict(_)) | (Set(_), Set(_)) | (FrozenSet(_), FrozenSet(_)) | (Set(_), FrozenSet(_)) | (FrozenSet(_), Set(_)) => return Option::None,
         (Complex(x), Complex(y)) => x.0 == y.0 && x.1 == y.1,
+        (Complex(c), o @ (Int(_) | Bool(_) | Float(_) | Big(_))) | (o @ (Int(_) | Bool(_) | Float(_) | Big(_)), Complex(c)) => c.1 == 0.0 && fast_eq(&Float(c.0), o)?,
+        (Range(_) | BigRange(_), Range(_) | BigRange(_)) => crate::range::eq(a, b),
         (Str(_), _) | (_, Str(_)) => false,
         (Int(_), _) | (_, Int(_)) | (Float(_), _) | (_, Float(_)) => false,
         _ => ptr_id(a) == ptr_id(b) && std::mem::discriminant(a) == std::mem::discriminant(b),

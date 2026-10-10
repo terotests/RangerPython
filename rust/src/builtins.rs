@@ -302,13 +302,11 @@ pub fn seq_getitem(vm: &mut Vm, obj: &Value, idx: &Value) -> PyResult<Value> {
                 let (a, b, st) = slice_indices(vm, sl, by.len())?;
                 Ok(Value::ByteArray(Rc::new(RefCell::new(slice_positions(a, b, st).into_iter().map(|i| by[i]).collect()))))
             }
-            Value::Range(r) => {
-                let n = range_len(r);
-                let (a, b, st) = slice_indices(vm, sl, n)?;
-                let start = r.0 + a * r.2;
-                let stop = r.0 + b * r.2;
-                Ok(Value::Range(Rc::new((start, stop, r.2 * st))))
-            }
+            Value::Range(_) => match crate::range::parts(obj) {
+                Some((start, stop, step, len)) => crate::range::getitem(vm, &crate::range::BigRange { start, stop, step, len }, idx),
+                None => Err(vm.type_error("unsliceable")),
+            },
+            Value::BigRange(r) => crate::range::getitem(vm, r, idx),
             _ => Err(vm.type_error("unsliceable")),
         };
     }
@@ -352,6 +350,7 @@ pub fn seq_getitem(vm: &mut Vm, obj: &Value, idx: &Value) -> PyResult<Value> {
             let i = norm_index(vm, idx, n, "range object")?;
             Ok(Value::Int(r.0 + r.2 * i as i64))
         }
+        Value::BigRange(r) => crate::range::getitem(vm, r, idx),
         _ => Err(vm.type_error("not subscriptable")),
     }
 }
@@ -646,6 +645,7 @@ pub fn alias_class(vm: &mut Vm, name: &str) -> Rc<Class> {
     if name == "GenericAlias" {
         def(&c, "GenericAlias.__call__", alias_call);
         def(&c, "GenericAlias.__getitem__", alias_getitem);
+        def(&c, "GenericAlias.__iter__", alias_iter);
     }
     def(&c, "alias.__eq__", alias_eq);
     def(&c, "alias.__hash__", alias_hash);
@@ -702,7 +702,8 @@ fn alias_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         return Ok(Value::string(parts.join(" | ")));
     }
     let o = type_repr_short(vm, &origin)?;
-    Ok(Value::string(format!("{}[{}]", o, if args.is_empty() { "()".to_string() } else { parts.join(", ") })))
+    let star = if alias_unpacked(&a[0]) { "*" } else { "" };
+    Ok(Value::string(format!("{}{}[{}]", star, o, if args.is_empty() { "()".to_string() } else { parts.join(", ") })))
 }
 
 fn alias_call(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
@@ -715,6 +716,25 @@ fn alias_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let (origin, _) = alias_parts(&a[0]);
     generic_alias(vm, &origin, &a[1])
+}
+
+fn alias_unpacked(v: &Value) -> bool {
+    if let Value::Obj(o) = v {
+        if let ObjKind::Other(Value::Tuple(t)) = &*o.kind.borrow() {
+            return matches!(t.get(2), Some(Value::Bool(true)));
+        }
+    }
+    false
+}
+
+/// iterating an alias yields its unpacked form, *tuple[int]
+fn alias_iter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let (origin, args) = alias_parts(&a[0]);
+    let c = alias_class(vm, "GenericAlias");
+    let kind = ObjKind::Other(Value::tuple(vec![origin, Value::tuple(args), Value::Bool(true)]));
+    let star = Value::Obj(Rc::new(NativeObj { class: c, kind: RefCell::new(kind) }));
+    vm.iter(&Value::tuple(vec![star]))
 }
 
 fn alias_eq(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -896,6 +916,12 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
             "start" => Some(Value::Int(r.0)),
             "stop" => Some(Value::Int(r.1)),
             "step" => Some(Value::Int(r.2)),
+            _ => None,
+        },
+        Value::BigRange(r) => match name {
+            "start" => Some(Value::from_big(r.start.clone())),
+            "stop" => Some(Value::from_big(r.stop.clone())),
+            "step" => Some(Value::from_big(r.step.clone())),
             _ => None,
         },
         Value::Native(n) => match name {
@@ -1926,6 +1952,14 @@ fn bi_divmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 pub fn bi_enumerate(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if a.len() + k.len() > 2 {
+        return Err(vm.type_error(format!("enumerate() takes at most 2 arguments ({} given)", a.len() + k.len())));
+    }
+    for (name, _) in k {
+        if &*name.s != "iterable" && &*name.s != "start" {
+            return Err(vm.type_error(format!("'{}' is an invalid keyword argument for enumerate()", name.s)));
+        }
+    }
     let it = match arg_or_kw(a, 0, k, "iterable") {
         Some(v) => v,
         None => return Err(vm.type_error("enumerate() missing required argument 'iterable'")),
@@ -1978,7 +2012,10 @@ pub fn bi_filter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(mk_iter(Iter::Filter(a[0].clone(), it, false)))
 }
 
-pub fn bi_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+pub fn bi_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if !k.is_empty() {
+        return Err(vm.type_error("reversed() takes no keyword arguments"));
+    }
     check_nargs(vm, "reversed", a, 1, 1)?;
     let v = &a[0];
     match v {
@@ -1989,13 +2026,11 @@ pub fn bi_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Value::Tuple(t) => Ok(mk_iter(Iter::Vec(t.iter().rev().cloned().collect::<Vec<_>>().into_iter()))),
         Value::Str(s) => Ok(mk_iter(Iter::Vec(s.s.chars().rev().map(char_value).collect::<Vec<_>>().into_iter()))),
         Value::Range(r) => {
-            let n = range_len(r) as i64;
-            if n == 0 {
-                return Ok(mk_iter(Iter::Empty));
-            }
-            let last = r.0 + (n - 1) * r.2;
-            Ok(mk_iter(Iter::Range(last, r.0 - r.2, -r.2)))
+            let n = range_len(r) as i128;
+            let last = r.0 as i128 + (n - 1).max(0) * r.2 as i128;
+            Ok(mk_iter(crate::range::iter_i128(last, -(r.2 as i128), n)))
         }
+        Value::BigRange(r) => Ok(mk_iter(crate::range::reversed(r))),
         Value::Bytes(b) => Ok(mk_iter(Iter::Vec(b.iter().rev().map(|&x| Value::Int(x as i64)).collect::<Vec<_>>().into_iter()))),
         Value::Dict(d) => {
             let keys = d.borrow().keys();
@@ -2027,11 +2062,7 @@ pub fn bi_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             }
             if vm.lookup_special(v, &vm.n.len.clone()).is_some() && vm.lookup_special(v, &vm.n.getitem.clone()).is_some() {
                 let n = vm.len(v)?;
-                let mut out = Vec::with_capacity(n);
-                for i in (0..n).rev() {
-                    out.push(vm.getitem(v, &Value::Int(i as i64))?);
-                }
-                return Ok(mk_iter(Iter::Vec(out.into_iter())));
+                return Ok(mk_iter(Iter::SeqRev(v.clone(), n as i64 - 1)));
             }
             let tn = vm.type_name(v);
             Err(vm.type_error(format!("'{}' object is not reversible", tn)))
@@ -2092,7 +2123,7 @@ fn bi_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let h = vm.hash(&a[0])?;
     Ok(Value::Int(match &a[0] {
         Value::Int(_) | Value::Bool(_) | Value::Big(_) | Value::Float(_) => h as i64,
-        Value::Instance(_) => h as i64,
+        Value::Instance(_) | Value::Str(_) => h as i64,
         _ => (h >> 1) as i64,
     }))
 }

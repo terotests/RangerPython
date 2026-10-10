@@ -677,7 +677,14 @@ impl Vm {
                             let b = self.builtins.borrow().get_str(name).cloned();
                             match b {
                                 Some(v) => v,
-                                None => return Err(self.name_error(name)),
+                                None => {
+                                    // a key that is not a str but equals one
+                                    let bd = self.builtins.clone();
+                                    match self.dict_get(&bd, &Value::Str(name.clone()))? {
+                                        Some(v) => v,
+                                        None => return Err(self.name_error(name)),
+                                    }
+                                }
                             }
                         }
                     };
@@ -1184,10 +1191,11 @@ impl Vm {
                         Value::Iter(r) => {
                             let mut b = r.borrow_mut();
                             match &mut *b {
-                                Iter::Range(cur, stop, step) => {
-                                    if (*step > 0 && *cur < *stop) || (*step < 0 && *cur > *stop) {
+                                Iter::Range(cur, left, step) => {
+                                    if *left > 0 {
                                         let v = *cur;
-                                        *cur += *step;
+                                        *left -= 1;
+                                        *cur = cur.wrapping_add(*step);
                                         Some(Some(Value::Int(v)))
                                     } else {
                                         Some(None)

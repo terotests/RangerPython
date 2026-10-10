@@ -25,6 +25,7 @@ pub mod methods;
 pub mod modules;
 pub mod ops;
 pub mod parser;
+pub mod range;
 pub mod stdlib;
 pub mod strmethods;
 pub mod value;

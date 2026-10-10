@@ -276,6 +276,7 @@ fn iter_kind(it: &Iter) -> &'static str {
         Iter::Str(..) => "str_ascii_iterator",
         Iter::Bytes(..) => "bytes_iterator",
         Iter::Range(..) => "range_iterator",
+        Iter::BigRange(..) => "longrange_iterator",
         Iter::Dict(_, _, k, _) => match k {
             0 => "dict_keyiterator",
             1 => "dict_valueiterator",
@@ -286,6 +287,7 @@ fn iter_kind(it: &Iter) -> &'static str {
         Iter::Map(..) => "map",
         Iter::Filter(..) => "filter",
         Iter::Seq(..) => "iterator",
+        Iter::SeqRev(..) => "reversed",
         Iter::Callable(..) => "callable_iterator",
         Iter::Count(..) => "itertools.count",
         Iter::Repeat(..) => "itertools.repeat",
@@ -404,6 +406,7 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
                 format!("range({}, {}, {})", r.0, r.1, r.2)
             }
         }
+        Value::BigRange(_) => crate::range::repr(v),
         Value::Slice(s) => format!("slice({}, {}, {})", repr(vm, &s.0)?, repr(vm, &s.1)?, repr(vm, &s.2)?),
         Value::Func(f) => format!("<function {} at {}>", f.qualname.borrow().s, addr(v)),
         Value::Native(n) => format!("<built-in function {}>", n.name.rsplit('.').next().unwrap_or(n.name)),
@@ -994,6 +997,9 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
             if w < 0 {
                 left = true;
             }
+            if w.unsigned_abs() as usize > MAX_WIDTH {
+                return Err(vm.value_error("width too big"));
+            }
             sp.width = w.unsigned_abs() as usize;
             i += 1;
         } else {
@@ -1013,7 +1019,11 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
             i += 1;
             if i < c.len() && c[i] == '*' {
                 let p = next_arg(vm)?;
-                sp.prec = Some(vm.to_index(&p)?.max(0) as usize);
+                let p = vm.to_index(&p)?.max(0);
+                if p > i32::MAX as i64 {
+                    return Err(vm.value_error("precision too large"));
+                }
+                sp.prec = Some(p as usize);
                 i += 1;
             } else {
                 let st = i;

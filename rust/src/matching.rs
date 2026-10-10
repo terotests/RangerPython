@@ -73,6 +73,7 @@ fn seq_items(vm: &Vm, v: &Value) -> Option<Vec<Value>> {
         Value::List(l) => Some(l.borrow().clone()),
         Value::Tuple(t) => Some(t.to_vec()),
         Value::Range(r) => Some(crate::builtins::range_items(r).into_iter().map(Value::Int).collect()),
+        Value::BigRange(r) => Some(crate::range::items(r)),
         Value::Obj(o) => match &*o.kind.borrow() {
             ObjKind::Deque(d, _) => Some(d.iter().cloned().collect()),
             _ => None,

@@ -195,7 +195,7 @@ fn as_double(vm: &mut Vm, v: &Value) -> PyResult<f64> {
 }
 
 /// PyNumber_Index as a big integer
-fn index_big(vm: &mut Vm, v: &Value) -> PyResult<BigInt> {
+pub fn index_big(vm: &mut Vm, v: &Value) -> PyResult<BigInt> {
     if let Some(b) = crate::ops::big_of(&vm.base_of(v)) {
         return Ok(b);
     }
