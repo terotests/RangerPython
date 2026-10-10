@@ -277,9 +277,13 @@ fn iter_kind(it: &Iter) -> &'static str {
         Iter::Bytes(..) => "bytes_iterator",
         Iter::Range(..) => "range_iterator",
         Iter::BigRange(..) => "longrange_iterator",
-        Iter::Dict(_, _, k, _) => match k {
+        Iter::Dict(_, _, k, _, _) => match k {
             0 => "dict_keyiterator",
             1 => "dict_valueiterator",
+            3 => "set_iterator",
+            4 => "dict_reversekeyiterator",
+            5 => "dict_reversevalueiterator",
+            6 => "dict_reverseitemiterator",
             _ => "dict_itemiterator",
         },
         Iter::Enumerate(..) => "enumerate",
@@ -329,9 +333,16 @@ fn join_reprs(vm: &mut Vm, items: &[Value]) -> PyResult<String> {
     Ok(out)
 }
 
+/// how deeply container reprs may nest: the C recursion limit that
+/// test.support's get_c_recursion_limit() reports
+const C_RECURSION_LIMIT: usize = 150;
+
 pub fn repr(vm: &mut Vm, v: &Value) -> PyResult<String> {
     match v {
         Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_) | Value::FrozenSet(_) | Value::DictView(_) | Value::Instance(_) => {
+            if vm.repr_stack.len() > C_RECURSION_LIMIT {
+                return Err(vm.err("RecursionError", "maximum recursion depth exceeded while getting the repr of an object"));
+            }
             vm.enter(" while getting the repr of an object")?;
             let r = repr_inner(vm, v);
             vm.depth -= 1;
@@ -378,27 +389,8 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
             leave(vm);
             format!("{{{}}}", r?)
         }
-        Value::Set(d) => {
-            let keys = d.borrow().keys();
-            if keys.is_empty() {
-                "set()".into()
-            } else {
-                if !enter(vm, v) {
-                    return Ok("{...}".into());
-                }
-                let r = join_reprs(vm, &keys);
-                leave(vm);
-                format!("{{{}}}", r?)
-            }
-        }
-        Value::FrozenSet(d) => {
-            let keys = d.borrow().keys();
-            if keys.is_empty() {
-                "frozenset()".into()
-            } else {
-                format!("frozenset({{{}}})", join_reprs(vm, &keys)?)
-            }
-        }
+        Value::Set(_) => set_repr(vm, v, "set")?,
+        Value::FrozenSet(_) => set_repr(vm, v, "frozenset")?,
         Value::Range(r) => {
             if r.2 == 1 {
                 format!("range({}, {})", r.0, r.1)
@@ -459,7 +451,12 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
                 1 => ("dict_values", dv.0.borrow().values()),
                 _ => ("dict_items", dv.0.borrow().items().into_iter().map(|(k, v)| Value::tuple(vec![k, v])).collect()),
             };
-            format!("{}([{}])", name, join_reprs(vm, &items)?)
+            if !enter(vm, v) {
+                return Ok("...".into());
+            }
+            let r = join_reprs(vm, &items);
+            leave(vm);
+            format!("{}([{}])", name, r?)
         }
         Value::Property(_) => format!("<property object at {}>", addr(v)),
         Value::StaticMethod(f) => format!("<staticmethod({})>", repr(vm, f)?),
@@ -476,6 +473,21 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
             format!("<{} object at {}>", o.class.name(), addr(v))
         }
     })
+}
+
+/// a set or frozenset (`v` is the built-in value) shown as type `name`
+pub fn set_repr(vm: &mut Vm, v: &Value, name: &str) -> PyResult<String> {
+    let (Value::Set(d) | Value::FrozenSet(d)) = v else { return repr(vm, v) };
+    let keys = d.borrow().keys();
+    if keys.is_empty() {
+        return Ok(format!("{}()", name));
+    }
+    if !enter(vm, v) {
+        return Ok(format!("{}(...)", name));
+    }
+    let r = join_reprs(vm, &keys);
+    leave(vm);
+    Ok(if name == "set" { format!("{{{}}}", r?) } else { format!("{}({{{}}})", name, r?) })
 }
 
 fn dict_body(vm: &mut Vm, d: &Rc<std::cell::RefCell<Dict>>) -> PyResult<String> {

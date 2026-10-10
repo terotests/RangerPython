@@ -433,7 +433,7 @@ pub fn install_types(vm: &mut Vm) {
         def_seq(&c, n);
         def(&c, leak("__eq__"), d_eq);
         def(&c, leak("__ne__"), d_ne);
-        def(&c, leak("__repr__"), d_repr);
+        def(&c, leak("__repr__"), set_repr);
         def(&c, leak("__or__"), d_or);
         def(&c, leak("__and__"), d_and);
         def(&c, leak("__sub__"), d_sub);
@@ -454,6 +454,7 @@ pub fn install_types(vm: &mut Vm) {
         def(&c, leak("issubset"), set_issubset);
         def(&c, leak("issuperset"), set_issuperset);
         def(&c, leak("isdisjoint"), set_isdisjoint);
+        def(&c, leak("__reduce__"), set_reduce);
     }
     let s = t.set.clone();
     s.dict.borrow_mut().set_s("__hash__", Value::None);
@@ -475,6 +476,44 @@ pub fn install_types(vm: &mut Vm) {
     let fs = t.frozenset.clone();
     def(&fs, "frozenset.__new__", frozenset_new);
     def(&fs, "frozenset.__hash__", d_hash);
+    for (c, n) in [(t.list.clone(), "list"), (t.tuple.clone(), "tuple"), (t.dict.clone(), "dict"), (t.set.clone(), "set"), (t.frozenset.clone(), "frozenset")] {
+        def_class(&c, Box::leak(format!("{}.__class_getitem__", n).into_boxed_str()), class_getitem);
+    }
+    // the positional arguments each container method takes
+    let seq0: &[&str] = &["__len__", "__reduce__", "__iter__", "__reversed__", "__repr__", "__hash__", "__getnewargs__", "clear", "copy", "reverse", "keys", "values", "items", "popitem"];
+    let seq1: &[&str] = &["__contains__", "__getitem__", "__delitem__", "__add__", "__mul__", "__rmul__", "__iadd__", "__imul__", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__", "__or__", "__ror__", "__ior__", "__and__", "__rand__", "__iand__", "__sub__", "__rsub__", "__isub__", "__xor__", "__rxor__", "__ixor__", "append", "extend", "remove", "count", "add", "discard", "isdisjoint", "issubset", "issuperset"];
+    let other: &[(&str, u8, u8)] = &[("__setitem__", 2, 2), ("insert", 2, 2), ("index", 1, 3), ("get", 1, 2), ("setdefault", 1, 2), ("update", 0, 1)];
+    for c in [t.list.clone(), t.tuple.clone(), t.dict.clone(), t.set.clone(), t.frozenset.clone()] {
+        let is_dict = Rc::ptr_eq(&c, &t.dict);
+        let mut d = c.dict.borrow_mut();
+        let names: Vec<(Rc<PyStr>, Value)> = d
+            .iter()
+            .filter_map(|e| match &e.key {
+                Value::Str(s) => Some((s.clone(), e.value.clone())),
+                _ => None,
+            })
+            .collect();
+        for (k, v) in names {
+            let Value::Native(n) = v else { continue };
+            let ar = if seq0.contains(&&*k.s) {
+                (0, 0)
+            } else if seq1.contains(&&*k.s) {
+                (1, 1)
+            } else if &*k.s == "update" && !is_dict {
+                continue;
+            } else if &*k.s == "pop" {
+                if is_dict { (1, 2) } else if Rc::ptr_eq(&c, &t.set) { (0, 0) } else { (0, 1) }
+            } else if let Some((_, lo, hi)) = other.iter().find(|x| x.0 == &*k.s) {
+                (*lo, *hi)
+            } else {
+                continue;
+            };
+            let mut f = NativeFn::new(n.name, n.f, n.data.clone());
+            f.bind = n.bind;
+            f.arity = Some(ar);
+            d.set_str(k, Value::Native(Rc::new(f)));
+        }
+    }
     let r = t.range.clone();
     def(&r, "range.__new__", range_new);
     def(&r, "range.__reduce__", range_reduce);
@@ -543,13 +582,26 @@ pub fn install_types(vm: &mut Vm) {
         def(&c, leak("__contains__"), d_contains);
         def(&c, leak("__reversed__"), view_reversed);
         def(&c, leak("__repr__"), d_repr);
+        def(&c, leak("__new__"), cannot_create);
+        def(&c, leak("__reduce_ex__"), cannot_pickle);
+        def(&c, leak("__reduce__"), cannot_pickle);
         if nm != "dict_values" {
             def(&c, leak("isdisjoint"), set_isdisjoint);
             def(&c, leak("__eq__"), d_eq);
+            def(&c, leak("__ne__"), d_ne);
+            def(&c, leak("__le__"), set_le);
+            def(&c, leak("__lt__"), set_lt);
+            def(&c, leak("__ge__"), set_ge);
+            def(&c, leak("__gt__"), set_gt);
             def(&c, leak("__or__"), d_or);
             def(&c, leak("__and__"), d_and);
             def(&c, leak("__sub__"), d_sub);
             def(&c, leak("__xor__"), d_xor);
+            def(&c, leak("__ror__"), d_ror);
+            def(&c, leak("__rand__"), d_rand);
+            def(&c, leak("__rsub__"), d_rsub);
+            def(&c, leak("__rxor__"), d_rxor);
+            c.dict.borrow_mut().set_s("__hash__", Value::None);
         }
     }
     let p = t.property.clone();
@@ -745,6 +797,45 @@ fn object_reduce_ex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         return Err(vm.type_error(format!("cannot pickle '{}' object", tn)));
     }
     reduce_helper(vm, "reduce_ex", vec![a[0].clone(), Value::Int(proto)])
+}
+
+fn set_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let x = this(vm, a);
+    let name = match &a[0] {
+        Value::Instance(i) => i.class.borrow().name(),
+        _ => vm.type_name(&a[0]),
+    };
+    vm.enter(" while getting the repr of an object")?;
+    let r = crate::format::set_repr(vm, &x, &name);
+    vm.depth -= 1;
+    Ok(Value::string(r?))
+}
+
+fn class_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__class_getitem__", a, 1, 1)?;
+    crate::builtins::generic_alias(vm, &a[0], &a[1])
+}
+
+fn cannot_create(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let tn = match a.first() {
+        Some(Value::Class(c)) => c.name(),
+        _ => "object".into(),
+    };
+    Err(vm.type_error(format!("cannot create '{}' instances", tn)))
+}
+
+fn cannot_pickle(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let tn = match a.first() {
+        Some(v) => vm.type_name(v),
+        None => "object".into(),
+    };
+    Err(vm.type_error(format!("cannot pickle '{}' object", tn)))
+}
+
+fn set_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    reduce_helper(vm, "set_reduce", vec![a[0].clone()])
 }
 
 fn object_sizeof(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -1652,7 +1743,7 @@ fn list_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 fn list_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
-    if !k.is_empty() {
+    if !k.is_empty() && native_slot(vm, &a[0], "__new__", "list.__new__") {
         return Err(vm.type_error("list() takes no keyword arguments"));
     }
     if a.len() > 2 {
@@ -1753,16 +1844,18 @@ fn seq_index(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let items = seq_items_of(vm, &a[0])?;
     let n = items.len() as i64;
     let norm = |i: i64| -> usize { (if i < 0 { (i + n).max(0) } else { i.min(n) }) as usize };
-    let start = match a.get(2) {
-        Some(v) => norm(vm.to_index(v)?),
-        None => 0,
+    let bound = |vm: &mut Vm, v: Option<&Value>, dflt: usize| -> PyResult<usize> {
+        let Some(v) = v else { return Ok(dflt) };
+        match crate::builtins::clamp_index(vm, v)? {
+            Some(i) => Ok(norm(i.clamp(-(1 << 62), 1 << 62))),
+            None => Err(vm.type_error("slice indices must be integers or have an __index__ method")),
+        }
     };
-    let stop = match a.get(3) {
-        Some(v) => norm(vm.to_index(v)?),
-        None => n as usize,
-    };
+    let start = bound(vm, a.get(2), 0)?;
+    let stop = bound(vm, a.get(3), n as usize)?;
     for i in start..stop.max(start) {
-        if items[i].is(&a[1]) || vm.eq(&items[i], &a[1])? {
+        let Some(x) = items.get(i) else { break };
+        if x.is(&a[1]) || vm.eq(x, &a[1])? {
             return Ok(Value::Int(i as i64));
         }
     }
@@ -1839,7 +1932,8 @@ fn list_sort(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     // sorting works on a copy; the list reads as empty meanwhile
     let mut items = std::mem::take(&mut *l.borrow_mut());
     let r = sort_values(vm, &mut items, &key, rev);
-    let modified = !l.borrow().is_empty();
+    // a list that grew, even if emptied again, has a buffer
+    let modified = l.borrow().capacity() != 0;
     *l.borrow_mut() = items;
     r?;
     if modified {
@@ -1851,9 +1945,18 @@ fn list_sort(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 // -------------------------------------------------------------------------
 // tuple
 
+/// whether `cls` (a class, or an instance's class) resolves `name` to the native `native`
+fn native_slot(vm: &Vm, cls: &Value, name: &str, native: &str) -> bool {
+    let c = match cls {
+        Value::Class(c) => c.clone(),
+        v => vm.class_of(v),
+    };
+    matches!(c.lookup_s(name), Some(Value::Native(n)) if n.name == native)
+}
+
 fn tuple_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
-    if !k.is_empty() {
+    if !k.is_empty() && native_slot(vm, &a[0], "__init__", "object.__init__") {
         return Err(vm.type_error("tuple() takes no keyword arguments"));
     }
     if a.len() > 2 {
@@ -1893,6 +1996,27 @@ pub fn dict_merge_into(vm: &mut Vm, target: &Value, d: &Rc<RefCell<Dict>>, src: 
     let _ = target;
     // like CPython, a subclass's __setitem__ is not consulted
     let set = |vm: &mut Vm, key: Value, v: Value| -> PyResult<()> { vm.dict_set(d, key, v) };
+    if let (Some(Value::Dict(o)), false) = (src, matches!(target, Value::Instance(_))) {
+        // an exact dict: its stored hashes are reused, and it must not change meanwhile
+        let n = o.borrow().len();
+        let mut pos = 0;
+        loop {
+            let e = o.borrow().next_from(pos).map(|(p, e)| (p, e.hash, e.key.clone(), e.value.clone()));
+            let Some((p, h, key, v)) = e else { break };
+            pos = p + 1;
+            match vm.dict_find_h(d, h, &key)?.1 {
+                Some(i) => d.borrow_mut().set_at(i, v),
+                None => d.borrow_mut().push_new(h, key, v),
+            }
+            if o.borrow().len() != n {
+                return Err(vm.err("RuntimeError", "dict mutated during update"));
+            }
+        }
+        for (key, v) in k {
+            vm.dict_set(d, Value::Str(key.clone()), v.clone())?;
+        }
+        return Ok(());
+    }
     if let Some(src) = src {
         let is_map = match src {
             Value::Dict(_) => true,
@@ -1982,11 +2106,14 @@ fn dict_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn dict_setdefault(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     margs(vm, "setdefault", a, 1, 2)?;
     let d = dict_of(vm, &a[0], "setdefault")?;
-    if let Some(v) = vm.dict_get(&d, &a[1])? {
-        return Ok(v);
+    let (h, i) = vm.dict_find(&d, &a[1])?;
+    if let Some(i) = i {
+        if let Some(Some(e)) = d.borrow().entries.get(i) {
+            return Ok(e.value.clone());
+        }
     }
     let v = a.get(2).cloned().unwrap_or(Value::None);
-    vm.dict_set(&d, a[1].clone(), v.clone())?;
+    d.borrow_mut().push_new(h, a[1].clone(), v.clone());
     Ok(v)
 }
 
@@ -2031,9 +2158,20 @@ fn dict_fromkeys(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     if a.len() < 2 {
         return Err(vm.type_error("fromkeys expected at least 1 argument, got 0"));
     }
-    let keys = vm.to_vec(&a[1])?;
     let v = a.get(2).cloned().unwrap_or(Value::None);
     let r = vm.call_vec(&a[0], vec![], &[])?;
+    if let (Value::Dict(d), Value::Dict(_) | Value::Set(_) | Value::FrozenSet(_)) = (&r, &a[1]) {
+        if let Some(keys) = vm.hashed_keys(&a[1]) {
+            for (h, k) in keys {
+                match vm.dict_find_h(d, h, &k)?.1 {
+                    Some(i) => d.borrow_mut().set_at(i, v.clone()),
+                    None => d.borrow_mut().push_new(h, k, v.clone()),
+                }
+            }
+            return Ok(r);
+        }
+    }
+    let keys = vm.to_vec(&a[1])?;
     for key in keys {
         vm.setitem(&r, key, v.clone())?;
     }
@@ -2043,8 +2181,7 @@ fn dict_fromkeys(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn dict_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let d = dict_of(vm, &a[0], "__reversed__")?;
-    let keys = d.borrow().keys();
-    Ok(mk_iter(Iter::Vec(keys.into_iter().rev().collect::<Vec<_>>().into_iter())))
+    Ok(crate::builtins::dict_rev_iter(&d, 0))
 }
 
 fn view_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
@@ -2088,15 +2225,23 @@ fn set_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let d = set_of(vm, &a[0], "__init__")?;
     d.borrow_mut().clear();
     if let Some(src) = a.get(1) {
-        let items = vm.to_vec(src)?;
-        for x in items {
-            vm.set_add(&d, x)?;
-        }
+        vm.set_extend(&d, src)?;
     }
     Ok(Value::None)
 }
 
-fn frozenset_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn frozenset_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let name = match &a[0] {
+        Value::Class(c) => c.name(),
+        _ => "frozenset".into(),
+    };
+    if !k.is_empty() && native_slot(vm, &a[0], "__init__", "object.__init__") {
+        return Err(vm.type_error("frozenset() takes no keyword arguments"));
+    }
+    if a.len() > 2 {
+        return Err(vm.type_error(format!("{} expected at most 1 argument, got {}", name, a.len() - 1)));
+    }
     let d = new_dict();
     if let Some(src) = a.get(1) {
         if let Value::FrozenSet(_) = src {
@@ -2104,10 +2249,7 @@ fn frozenset_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
                 return Ok(src.clone());
             }
         }
-        let items = vm.to_vec(src)?;
-        for x in items {
-            vm.set_add(&d, x)?;
-        }
+        vm.set_extend(&d, src)?;
     }
     let t = vm.t.frozenset.clone();
     Ok(wrap_new(vm, &a[0], &t, Value::FrozenSet(d)))
@@ -2132,10 +2274,7 @@ fn set_discard(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     margs(vm, "set.discard", a, 1, 1)?;
     let d = set_of(vm, &a[0], "discard")?;
-    let key = match &a[1] {
-        Value::Set(s) => Value::FrozenSet(s.clone()),
-        o => o.clone(),
-    };
+    let key = Vm::set_key(&a[1]).unwrap_or_else(|| a[1].clone());
     vm.dict_del(&d, &key)?;
     Ok(Value::None)
 }
@@ -2144,10 +2283,7 @@ fn set_remove(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     margs(vm, "set.remove", a, 1, 1)?;
     let d = set_of(vm, &a[0], "remove")?;
-    let key = match &a[1] {
-        Value::Set(s) => Value::FrozenSet(s.clone()),
-        o => o.clone(),
-    };
+    let key = Vm::set_key(&a[1]).unwrap_or_else(|| a[1].clone());
     if vm.dict_del(&d, &key)?.is_none() {
         return Err(vm.key_error(a[1].clone()));
     }
@@ -2175,6 +2311,10 @@ fn set_clear(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn set_copy(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    if let Value::FrozenSet(_) = &a[0] {
+        return Ok(a[0].clone());
+    }
     let me = this(vm, a);
     let d = set_of(vm, &a[0], "copy")?;
     let c = d.borrow().copy();
@@ -2223,10 +2363,7 @@ fn set_update(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let d = set_of(vm, &a[0], "update")?;
     for o in &a[1..] {
-        let items = vm.to_vec(o)?;
-        for x in items {
-            vm.set_add(&d, x)?;
-        }
+        vm.set_extend(&d, o)?;
     }
     Ok(Value::None)
 }
@@ -2462,11 +2599,13 @@ fn iter_length_hint(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
         let n = match &*it.borrow() {
             Iter::List(l, i) => l.borrow().len().saturating_sub(*i),
+            Iter::ListRev(l, i) => if *i <= l.borrow().len() { *i } else { 0 },
             Iter::Tuple(t, i) => t.len().saturating_sub(*i),
             Iter::ListRev(l, i) => (*i).min(l.borrow().len()),
             Iter::Range(_, left, _) => (*left).max(0) as usize,
             Iter::BigRange(st) => return Ok(Value::from_big(st.2.clone())),
             Iter::Vec(v) => v.len(),
+            Iter::Dict(d, _, _, size, left) => if d.borrow().len() == *size { *left } else { 0 },
             _ => 0,
         };
         return Ok(Value::Int(n as i64));
@@ -2796,14 +2935,14 @@ fn iter_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let b = it.borrow();
     Ok(match &*b {
         Iter::List(l, i) => {
-            if *i >= l.borrow().len() {
+            if *i == usize::MAX / 2 {
                 empty(iter_fn)
             } else {
                 t3(iter_fn, vec![Value::List(l.clone())], Some(Value::Int(*i as i64)))
             }
         }
         Iter::ListRev(l, i) => {
-            if *i == 0 || *i > l.borrow().len() {
+            if *i == usize::MAX || *i == 0 || *i > l.borrow().len() {
                 empty(rev)
             } else {
                 t3(rev, vec![Value::List(l.clone())], Some(Value::Int(*i as i64 - 1)))
@@ -2831,17 +2970,18 @@ fn iter_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             let stop = st.0.add(&st.2.mul(&st.1));
             t3(iter_fn, vec![crate::range::make(st.0.clone(), stop, st.1.clone())], Some(Value::Int(0)))
         }
-        Iter::Dict(d, pos, kind, _) => {
+        Iter::Dict(d, pos, kind, _, _) => {
             let db = d.borrow();
             let mut rest = vec![];
             let mut p = *pos;
-            while let Some((q, e)) = db.next_from(p) {
-                rest.push(match kind {
-                    0 => e.key.clone(),
+            let back = *kind & 4 != 0;
+            while let Some((q, e)) = if back { db.prev_from(p) } else { db.next_from(p) } {
+                rest.push(match *kind & 3 {
+                    0 | 3 => e.key.clone(),
                     1 => e.value.clone(),
                     _ => Value::tuple(vec![e.key.clone(), e.value.clone()]),
                 });
-                p = q + 1;
+                p = if back { q } else { q + 1 };
             }
             t3(iter_fn, vec![Value::list(rest)], None)
         }
@@ -2922,11 +3062,12 @@ fn iter_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
         return Ok(Value::None);
     }
-    let n = vm.to_index(&a[1])?.max(0);
+    let raw = vm.to_index(&a[1])?;
+    let n = raw.max(0);
     let mut b = it.borrow_mut();
     match &mut *b {
         Iter::List(l, i) => *i = (n as usize).min(l.borrow().len()),
-        Iter::ListRev(l, i) => *i = ((n + 1) as usize).min(l.borrow().len()),
+        Iter::ListRev(l, i) => *i = if raw < 0 { 0 } else { ((n + 1) as usize).min(l.borrow().len()) },
         Iter::Tuple(t, i) => *i = (n as usize).min(t.len()),
         Iter::Bytes(bs, i) => *i = (n as usize).min(bs.len()),
         Iter::Str(s, i) => *i = s.s.char_indices().nth(n as usize).map(|(p, _)| p).unwrap_or(s.s.len()),

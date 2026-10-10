@@ -184,6 +184,7 @@ pub fn norm_index(vm: &mut Vm, idx: &Value, len: usize, what: &str) -> PyResult<
                 if what == "string" {
                     return Err(vm.type_error(format!("string indices must be integers, not '{}'", tn)));
                 }
+                let what = what.trim_end_matches(" assignment");
                 return Err(vm.type_error(format!("{} indices must be integers or slices, not {}", what, tn)));
             }
         },
@@ -195,10 +196,52 @@ pub fn norm_index(vm: &mut Vm, idx: &Value, len: usize, what: &str) -> PyResult<
     Ok(j as usize)
 }
 
+/// reversed() of a dict or one of its views
+pub fn dict_rev_iter(d: &Rc<RefCell<Dict>>, kind: u8) -> Value {
+    let (n, end) = {
+        let db = d.borrow();
+        (db.len(), db.entries.len())
+    };
+    mk_iter(Iter::Dict(d.clone(), end, kind | 4, n, n))
+}
+
+/// an index clipped to i64 instead of overflowing (CPython's _PyEval_SliceIndex);
+/// None when `v` has no __index__
+pub fn clamp_index(vm: &mut Vm, v: &Value) -> PyResult<Option<i64>> {
+    match v {
+        Value::Int(i) => Ok(Some(*i)),
+        Value::Bool(b) => Ok(Some(*b as i64)),
+        Value::Big(b) => Ok(Some(if b.neg { i64::MIN } else { i64::MAX })),
+        Value::Instance(_) => {
+            if let Value::Int(i) = vm.base_of(v) {
+                return Ok(Some(i));
+            }
+            match vm.lookup_special(v, &vm.n.index.clone()) {
+                Some(f) => {
+                    let r = vm.call_vec(&f, vec![], &[])?;
+                    match r {
+                        Value::Int(_) | Value::Bool(_) | Value::Big(_) => clamp_index(vm, &r),
+                        _ => vm.to_index(&r).map(Some),
+                    }
+                }
+                None => Ok(None),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
 /// start, stop, step of a slice over `len` items (CPython's PySlice_AdjustIndices)
 pub fn slice_indices(vm: &mut Vm, s: &(Value, Value, Value), len: usize) -> PyResult<(i64, i64, i64)> {
     let len = len as i64;
-    let step = if s.2.is_none() { 1 } else { vm.to_index(&s.2).or_else(|_| Err(vm.type_error("slice indices must be integers or None or have an __index__ method")))? };
+    let step = if s.2.is_none() {
+        1
+    } else {
+        match clamp_index(vm, &s.2)? {
+            Some(i) => i.max(-i64::MAX),
+            None => return Err(vm.type_error("slice indices must be integers or None or have an __index__ method")),
+        }
+    };
     if step == 0 {
         return Err(vm.value_error("slice step cannot be zero"));
     }
@@ -206,9 +249,9 @@ pub fn slice_indices(vm: &mut Vm, s: &(Value, Value, Value), len: usize) -> PyRe
         if v.is_none() {
             return Ok(dflt);
         }
-        match v {
-            Value::Big(b) => Ok(if b.neg { i64::MIN / 2 } else { i64::MAX / 2 }),
-            _ => vm.to_index(v).or_else(|_| Err(vm.type_error("slice indices must be integers or None or have an __index__ method"))),
+        match clamp_index(vm, v)? {
+            Some(i) => Ok(i.clamp(i64::MIN / 2, i64::MAX / 2)),
+            None => Err(vm.type_error("slice indices must be integers or None or have an __index__ method")),
         }
     };
     let (lo_d, hi_d) = if step < 0 { (len - 1, -1) } else { (0, len) };
@@ -359,7 +402,11 @@ pub fn seq_setitem(vm: &mut Vm, obj: &Value, idx: &Value, v: Value) -> PyResult<
     match obj {
         Value::List(l) => {
             if let Value::Slice(sl) = idx {
-                let items = vm.to_vec(&v)?;
+                let items = match vm.to_vec(&v) {
+                    Ok(items) => items,
+                    Err(e) if vm.exc_is(&e, "TypeError") && vm.iter(&v).is_err() => return Err(vm.type_error("must assign iterable to extended slice")),
+                    Err(e) => return Err(e),
+                };
                 let n = l.borrow().len();
                 let (a, b, st) = slice_indices(vm, sl, n)?;
                 if st == 1 {
@@ -469,14 +516,19 @@ pub fn to_set(vm: &mut Vm, v: &Value) -> PyResult<Value> {
     match v {
         Value::Set(_) | Value::FrozenSet(_) => Ok(v.clone()),
         _ => {
-            let items = vm.to_vec(v)?;
             let d = new_dict();
-            for x in items {
-                vm.set_add(&d, x)?;
-            }
+            vm.set_extend(&d, v)?;
             Ok(Value::Set(d))
         }
     }
+}
+
+fn keyed(d: &Rc<RefCell<Dict>>) -> Vec<(u64, Value)> {
+    d.borrow().iter().map(|e| (e.hash, e.key.clone())).collect()
+}
+
+fn set_has(vm: &mut Vm, d: &Rc<RefCell<Dict>>, h: u64, k: &Value) -> PyResult<bool> {
+    Ok(vm.dict_find_h(d, h, k)?.1.is_some())
 }
 
 fn set_dict(v: &Value) -> Rc<RefCell<Dict>> {
@@ -493,38 +545,33 @@ pub fn set_op(vm: &mut Vm, op: BinOp, a: &Value, b: &Value) -> PyResult<Value> {
     match op {
         BinOp::BitOr => {
             *out.borrow_mut() = da.borrow().copy();
-            let snapshot = db.borrow().keys();
-            for e in snapshot {
-                vm.set_add(&out, e)?;
+            for (h, e) in keyed(&db) {
+                vm.set_add_h(&out, h, e)?;
             }
         }
         BinOp::BitAnd => {
-            let snapshot = da.borrow().keys();
-            for e in snapshot {
-                if vm.set_contains(&db, &e)? {
-                    vm.set_add(&out, e)?;
+            for (h, e) in keyed(&da) {
+                if set_has(vm, &db, h, &e)? {
+                    vm.set_add_h(&out, h, e)?;
                 }
             }
         }
         BinOp::Sub => {
-            let snapshot = da.borrow().keys();
-            for e in snapshot {
-                if !vm.set_contains(&db, &e)? {
-                    vm.set_add(&out, e)?;
+            for (h, e) in keyed(&da) {
+                if !set_has(vm, &db, h, &e)? {
+                    vm.set_add_h(&out, h, e)?;
                 }
             }
         }
         _ => {
-            let snapshot = da.borrow().keys();
-            for e in snapshot {
-                if !vm.set_contains(&db, &e)? {
-                    vm.set_add(&out, e)?;
+            for (h, e) in keyed(&da) {
+                if !set_has(vm, &db, h, &e)? {
+                    vm.set_add_h(&out, h, e)?;
                 }
             }
-            let snapshot = db.borrow().keys();
-            for e in snapshot {
-                if !vm.set_contains(&da, &e)? {
-                    vm.set_add(&out, e)?;
+            for (h, e) in keyed(&db) {
+                if !set_has(vm, &da, h, &e)? {
+                    vm.set_add_h(&out, h, e)?;
                 }
             }
         }
@@ -539,9 +586,8 @@ pub fn is_subset(vm: &mut Vm, a: &Rc<RefCell<Dict>>, b: &Rc<RefCell<Dict>>) -> P
     if a.borrow().len() > b.borrow().len() {
         return Ok(false);
     }
-    let snapshot = a.borrow().keys();
-    for k in snapshot {
-        if !vm.set_contains(b, &k)? {
+    for (h, k) in keyed(a) {
+        if !set_has(vm, b, h, &k)? {
             return Ok(false);
         }
     }
@@ -549,6 +595,9 @@ pub fn is_subset(vm: &mut Vm, a: &Rc<RefCell<Dict>>, b: &Rc<RefCell<Dict>>) -> P
 }
 
 pub fn set_compare(vm: &mut Vm, op: CmpOp, a: &Value, b: &Value) -> PyResult<Value> {
+    if crate::ops::set_view_pair(a, b) {
+        return Ok(Value::Bool(vm.view_cmp(op, a, b)?));
+    }
     let sa = to_set(vm, a)?;
     let sb = to_set(vm, b)?;
     let (da, db) = (set_dict(&sa), set_dict(&sb));
@@ -2329,18 +2378,8 @@ pub fn bi_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         }
         Value::BigRange(r) => Ok(mk_iter(crate::range::reversed(r))),
         Value::Bytes(b) => Ok(mk_iter(Iter::Vec(b.iter().rev().map(|&x| Value::Int(x as i64)).collect::<Vec<_>>().into_iter()))),
-        Value::Dict(d) => {
-            let keys = d.borrow().keys();
-            Ok(mk_iter(Iter::Vec(keys.into_iter().rev().collect::<Vec<_>>().into_iter())))
-        }
-        Value::DictView(dv) => {
-            let items: Vec<Value> = match dv.1 {
-                0 => dv.0.borrow().keys(),
-                1 => dv.0.borrow().values(),
-                _ => dv.0.borrow().items().into_iter().map(|(k, v)| Value::tuple(vec![k, v])).collect(),
-            };
-            Ok(mk_iter(Iter::Vec(items.into_iter().rev().collect::<Vec<_>>().into_iter())))
-        }
+        Value::Dict(d) => Ok(dict_rev_iter(d, 0)),
+        Value::DictView(dv) => Ok(dict_rev_iter(&dv.0, dv.1)),
         _ => {
             if let Some(f) = vm.lookup_special(v, &vm.n.reversed.clone()) {
                 let is_native = matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)));
@@ -2418,11 +2457,7 @@ fn bi_format(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn bi_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "hash", a, 1, 1)?;
     let h = vm.hash(&a[0])?;
-    Ok(Value::Int(match &a[0] {
-        Value::Int(_) | Value::Bool(_) | Value::Big(_) | Value::Float(_) => h as i64,
-        Value::Instance(_) | Value::Str(_) => h as i64,
-        _ => (h >> 1) as i64,
-    }))
+    Ok(Value::Int(h as i64))
 }
 
 fn bi_id(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {

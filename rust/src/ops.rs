@@ -1207,6 +1207,9 @@ impl Vm {
                 Value::tuple(v)
             }
             (Tuple(x), Int(n)) | (Int(n), Tuple(x)) if op == BinOp::Mul => {
+                if *n == 1 {
+                    return Ok(Some(Value::Tuple(x.clone())));
+                }
                 let n = self.repeat_count(x.len(), *n)?;
                 let mut v = Vec::with_capacity(x.len() * n);
                 for _ in 0..n {
@@ -1217,14 +1220,15 @@ impl Vm {
             (Set(_) | FrozenSet(_), Set(_) | FrozenSet(_)) if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::Sub | BinOp::BitXor) => {
                 crate::builtins::set_op(self, op, a, b)?
             }
-            (DictView(x), _) if x.1 != 1 && matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::Sub | BinOp::BitXor) => {
-                let sa = crate::builtins::to_set(self, a)?;
+            (DictView(x), _) | (_, DictView(x)) if x.1 != 1 && matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::Sub | BinOp::BitXor) => {
+                // a view acts as set(view); the result is always a set
+                let thaw = |v: Value| match v {
+                    FrozenSet(d) => Set(Rc::new(RefCell::new(d.borrow().copy()))),
+                    v => v,
+                };
+                let sa = thaw(crate::builtins::to_set(self, a)?);
                 let sb = crate::builtins::to_set(self, b)?;
                 crate::builtins::set_op(self, op, &sa, &sb)?
-            }
-            (Set(_) | FrozenSet(_), DictView(_)) if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::Sub | BinOp::BitXor) => {
-                let sb = crate::builtins::to_set(self, b)?;
-                crate::builtins::set_op(self, op, a, &sb)?
             }
             (Dict(x), Dict(y)) if op == BinOp::BitOr => {
                 let d = Rc::new(RefCell::new(x.borrow().copy()));
@@ -1358,10 +1362,7 @@ impl Vm {
                 }
             }
             (Value::Dict(d), BinOp::BitOr) => {
-                let pairs = self.mapping_items(b)?;
-                for (k, v) in pairs {
-                    self.dict_set(d, k, v)?;
-                }
+                crate::methods::dict_merge_into(self, a, d, Some(b), &[])?;
                 return Ok(a.clone());
             }
             (Value::ByteArray(x), BinOp::Add) => {
@@ -1572,8 +1573,10 @@ impl Vm {
                 if Rc::ptr_eq(x, y) {
                     return Ok(true);
                 }
-                let (xv, yv) = (x.borrow().clone(), y.borrow().clone());
-                self.seq_eq(&xv, &yv)
+                self.enter(" in comparison")?;
+                let r = self.list_eq(x, y);
+                self.depth -= 1;
+                r
             }
             (Value::Tuple(x), Value::Tuple(y)) => {
                 let (xv, yv) = (x.to_vec(), y.to_vec());
@@ -1611,15 +1614,7 @@ impl Vm {
                 }
                 Ok(true)
             }
-            (Value::DictView(x), Value::DictView(y)) if x.1 == 0 && y.1 == 0 => {
-                let sa = crate::builtins::to_set(self, a)?;
-                let sb = crate::builtins::to_set(self, b)?;
-                self.eq_builtin(&sa, &sb)
-            }
-            (Value::DictView(x), Value::Set(_) | Value::FrozenSet(_)) if x.1 != 1 => {
-                let sa = crate::builtins::to_set(self, a)?;
-                self.eq_builtin(&sa, b)
-            }
+            _ if set_view_pair(a, b) => self.view_cmp(CmpOp::Eq, a, b),
             (Value::Range(_) | Value::BigRange(_), Value::Range(_) | Value::BigRange(_)) => Ok(crate::range::eq(a, b)),
             (Value::Slice(x), Value::Slice(y)) => Ok(self.eq(&x.0, &y.0)? && self.eq(&x.1, &y.1)? && self.eq(&x.2, &y.2)?),
             (Value::ByteArray(x), Value::ByteArray(y)) => Ok(*x.borrow() == *y.borrow()),
@@ -1644,6 +1639,52 @@ impl Vm {
             return Err(self.err("RecursionError", format!("maximum recursion depth exceeded{}", what)));
         }
         Ok(())
+    }
+
+    /// comparisons where a keys or items view meets a set or another view:
+    /// sizes, then containment of the smaller side's items (CPython's dictview_richcompare)
+    pub fn view_cmp(&mut self, op: CmpOp, a: &Value, b: &Value) -> PyResult<bool> {
+        let (la, lb) = (self.len(a)?, self.len(b)?);
+        let (ok, inner, outer) = match op {
+            CmpOp::Eq => (la == lb, a, b),
+            CmpOp::Lt => (la < lb, a, b),
+            CmpOp::Le => (la <= lb, a, b),
+            CmpOp::Gt => (la > lb, b, a),
+            _ => (la >= lb, b, a),
+        };
+        if !ok {
+            return Ok(false);
+        }
+        let items = self.to_vec(inner)?;
+        for x in items {
+            if !self.contains(outer, &x)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// list equality over the live lists, which __eq__ may change (CPython's list_richcompare)
+    fn list_eq(&mut self, x: &Rc<RefCell<Vec<Value>>>, y: &Rc<RefCell<Vec<Value>>>) -> PyResult<bool> {
+        if x.borrow().len() != y.borrow().len() {
+            return Ok(false);
+        }
+        let mut i = 0;
+        loop {
+            let (p, q) = match (x.borrow().get(i), y.borrow().get(i)) {
+                (Some(p), Some(q)) => (p.clone(), q.clone()),
+                _ => break,
+            };
+            if !p.is(&q) && !self.eq(&p, &q)? {
+                break;
+            }
+            i += 1;
+        }
+        let (lx, ly) = (x.borrow().len(), y.borrow().len());
+        if i >= lx || i >= ly {
+            return Ok(lx == ly);
+        }
+        Ok(false)
     }
 
     fn seq_eq_inner(&mut self, x: &[Value], y: &[Value]) -> PyResult<bool> {
@@ -1873,7 +1914,7 @@ impl Vm {
                         let f = self.bind(f, v, &cls);
                         let r = self.call_vec(&f, vec![], &[])?;
                         match r {
-                            Value::Int(i) => Ok(hash_int(i)),
+                            Value::Int(i) => Ok(if i == -1 { -2i64 as u64 } else { i as u64 }),
                             Value::Big(b) => Ok(hash_big(&b)),
                             Value::Bool(b) => Ok(b as u64),
                             Value::Instance(ref i) if matches!(&*i.base.borrow(), Value::Int(_) | Value::Big(_)) => {
@@ -1908,7 +1949,8 @@ impl Vm {
                     acc = acc.rotate_left(31);
                     acc = acc.wrapping_mul(0x9E3779B185EBCA87);
                 }
-                Ok(acc.wrapping_add((items.len() as u64) ^ (0x27D4EB2F165667C5 ^ 3527539)))
+                let acc = acc.wrapping_add((items.len() as u64) ^ (0x27D4EB2F165667C5 ^ 3527539));
+                Ok(if acc == u64::MAX { 1546275796 } else { acc })
             }
             _ => {
                 let tn = self.type_name(v);
@@ -1961,8 +2003,12 @@ impl Vm {
 
     pub fn dict_get(&mut self, d: &Rc<RefCell<Dict>>, k: &Value) -> PyResult<Option<Value>> {
         if let Value::Str(s) = k {
-            if let Some(v) = d.borrow().get_str(s) {
+            let db = d.borrow();
+            if let Some(v) = db.get_str(s) {
                 return Ok(Some(v.clone()));
+            }
+            if !db.str_clash(s) {
+                return Ok(None);
             }
         }
         let h = self.hash(k)?;
@@ -1995,6 +2041,11 @@ impl Vm {
     /// the entry index of `k`
     pub fn dict_find(&mut self, d: &Rc<RefCell<Dict>>, k: &Value) -> PyResult<(u64, Option<usize>)> {
         let h = self.hash(k)?;
+        self.dict_find_h(d, h, k)
+    }
+
+    /// dict_find for a key whose hash is known
+    pub fn dict_find_h(&mut self, d: &Rc<RefCell<Dict>>, h: u64, k: &Value) -> PyResult<(u64, Option<usize>)> {
         let r = d.borrow().lookup(h, k);
         match r {
             Lookup::Found(i) => Ok((h, Some(i))),
@@ -2009,7 +2060,7 @@ impl Vm {
                         // __eq__ may have changed the dict: look again
                         let same = matches!(d.borrow().entries.get(i), Some(Some(e)) if e.key.is(&key));
                         if !same {
-                            return self.dict_find(d, k);
+                            return self.dict_find_h(d, h, k);
                         }
                         return Ok((h, Some(i)));
                     }
@@ -2021,9 +2072,11 @@ impl Vm {
 
     pub fn dict_set(&mut self, d: &Rc<RefCell<Dict>>, k: Value, v: Value) -> PyResult<()> {
         if let Value::Str(s) = &k {
-            let s = s.clone();
-            d.borrow_mut().set_str(s, v);
-            return Ok(());
+            if !d.borrow().str_clash(s) {
+                let s = s.clone();
+                d.borrow_mut().set_str(s, v);
+                return Ok(());
+            }
         }
         let (h, i) = self.dict_find(d, &k)?;
         match i {
@@ -2042,21 +2095,64 @@ impl Vm {
     }
 
     pub fn set_add(&mut self, s: &Rc<RefCell<Dict>>, k: Value) -> PyResult<()> {
-        let (h, i) = self.dict_find(s, &k)?;
+        let h = self.hash(&k)?;
+        self.set_add_h(s, h, k)
+    }
+
+    pub fn set_add_h(&mut self, s: &Rc<RefCell<Dict>>, h: u64, k: Value) -> PyResult<()> {
+        let (_, i) = self.dict_find_h(s, h, &k)?;
         if i.is_none() {
             s.borrow_mut().push_new(h, k, Value::None);
         }
         Ok(())
     }
 
-    pub fn set_contains(&mut self, s: &Rc<RefCell<Dict>>, k: &Value) -> PyResult<bool> {
-        match k {
-            Value::Set(inner) => {
-                // a set is looked up as the equal frozenset
-                let f = Value::FrozenSet(inner.clone());
-                Ok(self.dict_find(s, &f)?.1.is_some())
+    /// the keys of a set, a set subclass or an exact dict with their stored
+    /// hashes, so building a set from them needs no __hash__ calls
+    pub fn hashed_keys(&self, v: &Value) -> Option<Vec<(u64, Value)>> {
+        let d = match v {
+            Value::Dict(d) | Value::Set(d) | Value::FrozenSet(d) => d.clone(),
+            Value::Instance(i) => match &*i.base.borrow() {
+                Value::Set(d) | Value::FrozenSet(d) => d.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let d = d.borrow();
+        Some(d.iter().map(|e| (e.hash, e.key.clone())).collect())
+    }
+
+    /// add the items of an iterable to a set
+    pub fn set_extend(&mut self, s: &Rc<RefCell<Dict>>, src: &Value) -> PyResult<()> {
+        if let Some(keys) = self.hashed_keys(src) {
+            for (h, k) in keys {
+                self.set_add_h(s, h, k)?;
             }
-            _ => Ok(self.dict_find(s, k)?.1.is_some()),
+            return Ok(());
+        }
+        let items = self.to_vec(src)?;
+        for x in items {
+            self.set_add(s, x)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_contains(&mut self, s: &Rc<RefCell<Dict>>, k: &Value) -> PyResult<bool> {
+        match Self::set_key(k) {
+            Some(f) => Ok(self.dict_find(s, &f)?.1.is_some()),
+            None => Ok(self.dict_find(s, k)?.1.is_some()),
+        }
+    }
+
+    /// an unhashable set is looked up in a set as the equal frozenset
+    pub fn set_key(k: &Value) -> Option<Value> {
+        match k {
+            Value::Set(inner) => Some(Value::FrozenSet(inner.clone())),
+            Value::Instance(i) => match &*i.base.borrow() {
+                Value::Set(inner) if matches!(i.class.borrow().lookup_s("__hash__"), Some(Value::None)) => Some(Value::FrozenSet(inner.clone())),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -2066,9 +2162,9 @@ impl Vm {
             Value::Dict(d) => Ok(d.borrow().items()),
             Value::Instance(i) => {
                 if let Value::Dict(d) = &*i.base.borrow() {
-                    // a dict subclass, unless it overrides keys()
+                    // a dict subclass is read directly unless it overrides __iter__
                     let cls = i.class.borrow().clone();
-                    if !matches!(cls.lookup(&ps("keys")), Some(Value::Func(_))) {
+                    if matches!(cls.lookup(&self.n.iter), Some(Value::Native(n)) if n.name == "dict.__iter__") {
                         return Ok(d.borrow().items());
                     }
                 }
@@ -2111,13 +2207,17 @@ impl Vm {
             Value::ByteArray(b) => Iter::Bytes(Rc::new(b.borrow().clone()), 0),
             Value::Range(r) => crate::range::iter_i128(r.0 as i128, r.2 as i128, crate::builtins::range_len(r) as i128),
             Value::BigRange(r) => crate::range::iter(r),
-            Value::Dict(d) | Value::Set(d) | Value::FrozenSet(d) => {
+            Value::Dict(d) => {
                 let n = d.borrow().len();
-                Iter::Dict(d.clone(), 0, 0, n)
+                Iter::Dict(d.clone(), 0, 0, n, n)
+            }
+            Value::Set(d) | Value::FrozenSet(d) => {
+                let n = d.borrow().len();
+                Iter::Dict(d.clone(), 0, 3, n, n)
             }
             Value::DictView(dv) => {
                 let n = dv.0.borrow().len();
-                Iter::Dict(dv.0.clone(), 0, dv.1, n)
+                Iter::Dict(dv.0.clone(), 0, dv.1, n, n)
             }
             Value::Iter(_) | Value::Gen(_) => return Ok(v.clone()),
             Value::Instance(_) | Value::Obj(_) | Value::Class(_) => {
@@ -2217,7 +2317,7 @@ impl Vm {
                     *i -= 1;
                     Ok(Some(lb[*i].clone()))
                 } else {
-                    *i = 0;
+                    *i = usize::MAX;
                     Ok(None)
                 }
             }
@@ -2256,23 +2356,33 @@ impl Vm {
                 }
             }
             Iter::BigRange(st) => Ok(crate::range::iter_next(st)),
-            Iter::Dict(d, pos, kind, size) => {
+            Iter::Dict(d, pos, kind, size, left) => {
                 let db = d.borrow();
+                if *pos == usize::MAX / 2 {
+                    return Ok(None);
+                }
                 if db.len() != *size {
-                    let changed = db.len();
-                    let was = *size;
-                    *size = changed;
+                    let set = *kind == 3;
+                    *size = usize::MAX;
                     drop(db);
                     drop(b);
-                    let what = "dictionary";
-                    let _ = was;
+                    let what = if set { "Set" } else { "dictionary" };
                     return Err(self.err("RuntimeError", format!("{} changed size during iteration", what)));
                 }
-                match db.next_from(*pos) {
+                let back = *kind & 4 != 0;
+                match if back { db.prev_from(*pos) } else { db.next_from(*pos) } {
                     Some((p, e)) => {
-                        *pos = p + 1;
-                        Ok(Some(match kind {
-                            0 => e.key.clone(),
+                        if *left == 0 {
+                            *size = usize::MAX;
+                            let what = if *kind == 3 { "Set changed size" } else { "dictionary keys changed" };
+                            drop(db);
+                            drop(b);
+                            return Err(self.err("RuntimeError", format!("{} during iteration", what)));
+                        }
+                        *left -= 1;
+                        *pos = if back { p } else { p + 1 };
+                        Ok(Some(match *kind & 3 {
+                            0 | 3 => e.key.clone(),
                             1 => e.value.clone(),
                             _ => Value::tuple(vec![e.key.clone(), e.value.clone()]),
                         }))
@@ -2795,7 +2905,7 @@ impl Vm {
                     return crate::builtins::exc_str(self, v);
                 }
                 let b = self.base_of(v);
-                if !matches!(b, Value::Instance(_)) && cls.lookup(&self.n.repr).map(|r| matches!(r, Value::Native(_))).unwrap_or(true) {
+                if !matches!(b, Value::Instance(_) | Value::Set(_) | Value::FrozenSet(_)) && cls.lookup(&self.n.repr).map(|r| matches!(r, Value::Native(_))).unwrap_or(true) {
                     return self.str_of(&b);
                 }
                 self.repr(v)
@@ -2857,4 +2967,11 @@ pub fn has_dict(cls: &Rc<Class>) -> bool {
         }
     }
     false
+}
+
+/// a keys or items view with a set or another such view
+pub fn set_view_pair(a: &Value, b: &Value) -> bool {
+    let view = |v: &Value| matches!(v, Value::DictView(d) if d.1 != 1);
+    let setlike = |v: &Value| matches!(v, Value::Set(_) | Value::FrozenSet(_)) || view(v);
+    (view(a) && setlike(b)) || (view(b) && setlike(a))
 }

@@ -1231,6 +1231,7 @@ impl Vm {
                                         *i += 1;
                                         Some(Some(v))
                                     } else {
+                                        *i = usize::MAX / 2;
                                         Some(None)
                                     }
                                 }
@@ -1812,6 +1813,8 @@ impl Vm {
             format!("{}() takes no arguments ({} given)", name, got)
         } else if lo == hi && hi == 1 {
             format!("{}() takes exactly one argument ({} given)", name, got)
+        } else if lo == hi {
+            format!("{} expected {} arguments, got {}", short, lo, got)
         } else if got < lo as usize {
             format!("{} expected at least {} argument{}, got {}", short, lo, if lo == 1 { "" } else { "s" }, got)
         } else {

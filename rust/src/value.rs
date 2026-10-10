@@ -283,7 +283,8 @@ pub enum Iter {
     Range(i64, i64, i64),
     /// current, step, remaining count
     BigRange(Box<(crate::bigint::BigInt, crate::bigint::BigInt, crate::bigint::BigInt)>),
-    Dict(Rc<RefCell<Dict>>, usize, u8, usize),
+    /// dict, position, kind (keys, values, items, set; +4 reversed), size seen, entries left
+    Dict(Rc<RefCell<Dict>>, usize, u8, usize, usize),
     Enumerate(Value, Value),
     Zip(Vec<Value>, bool),
     Map(Value, Vec<Value>),
@@ -449,6 +450,33 @@ impl Dict {
         Some(&mut self.entries[i].as_mut().unwrap().value)
     }
 
+    /// whether a key that is not an exact str has the hash of `key`; the
+    /// str fast paths miss such keys, which may still compare equal
+    pub fn str_clash(&self, key: &PyStr) -> bool {
+        if self.index.is_empty() {
+            return false;
+        }
+        let hash = key.hash();
+        let mask = self.index.len() - 1;
+        let mut slot = (hash as usize) & mask;
+        let mut perturb = hash;
+        loop {
+            let ix = self.index[slot];
+            if ix == -1 {
+                return false;
+            }
+            if ix >= 0 {
+                if let Some(Some(e)) = self.entries.get(ix as usize) {
+                    if e.hash == hash && !matches!(e.key, Value::Str(_)) {
+                        return true;
+                    }
+                }
+            }
+            perturb >>= 5;
+            slot = (slot * 5 + 1 + perturb as usize) & mask;
+        }
+    }
+
     pub fn find_str(&self, key: &PyStr) -> Option<usize> {
         if self.index.is_empty() {
             return None;
@@ -566,6 +594,18 @@ impl Dict {
     }
 
     /// entry at position `pos` or later that is alive, for iteration
+    /// the live entry before `pos`, for reversed iteration
+    pub fn prev_from(&self, pos: usize) -> Option<(usize, &Entry)> {
+        let mut q = pos.min(self.entries.len());
+        while q > 0 {
+            q -= 1;
+            if let Some(e) = &self.entries[q] {
+                return Some((q, e));
+            }
+        }
+        None
+    }
+
     pub fn next_from(&self, mut pos: usize) -> Option<(usize, &Entry)> {
         while pos < self.entries.len() {
             if let Some(e) = &self.entries[pos] {
@@ -670,6 +710,23 @@ pub fn hash_big(b: &BigInt) -> u64 {
     (if h == -1 { -2 } else { h }) as u64
 }
 
+/// as CPython's frozenset_hash: order independent, dispersed for nesting
+pub fn frozenset_hash(d: &Dict) -> u64 {
+    let shuffle = |h: u64| ((h ^ 89869747) ^ (h << 16)).wrapping_mul(3644798167);
+    let mut h: u64 = 0;
+    for e in d.iter() {
+        h ^= shuffle(e.hash);
+    }
+    h ^= (d.len() as u64 + 1).wrapping_mul(1927868237);
+    h ^= (h >> 11) ^ (h >> 25);
+    h = h.wrapping_mul(69069).wrapping_add(907133923);
+    if h == u64::MAX {
+        590923713
+    } else {
+        h
+    }
+}
+
 /// hash for values whose hash needs no Python code; None otherwise
 pub fn fast_hash(v: &Value) -> Option<u64> {
     Some(match v {
@@ -682,7 +739,7 @@ pub fn fast_hash(v: &Value) -> Option<u64> {
         Value::Bytes(b) => {
             let mut h = FxHasher::default();
             h.write(b);
-            h.finish()
+            h.finish() >> 1
         }
         Value::Tuple(items) => {
             // xxHash-style combination as CPython does
@@ -693,15 +750,14 @@ pub fn fast_hash(v: &Value) -> Option<u64> {
                 acc = acc.rotate_left(31);
                 acc = acc.wrapping_mul(0x9E3779B185EBCA87);
             }
-            acc.wrapping_add((items.len() as u64) ^ (0x27D4EB2F165667C5 ^ 3527539))
-        }
-        Value::FrozenSet(d) => {
-            let mut acc: u64 = 0;
-            for e in d.borrow().iter() {
-                acc ^= e.hash.wrapping_mul(0x9E3779B185EBCA87);
+            let acc = acc.wrapping_add((items.len() as u64) ^ (0x27D4EB2F165667C5 ^ 3527539));
+            if acc == u64::MAX {
+                1546275796
+            } else {
+                acc
             }
-            acc
         }
+        Value::FrozenSet(d) => frozenset_hash(&d.borrow()),
         Value::Complex(c) => hash_float(c.0) ^ hash_float(c.1).wrapping_mul(1000003),
         Value::Range(_) | Value::BigRange(_) => crate::range::hash(v),
         Value::Instance(_) => return None,
@@ -783,6 +839,7 @@ pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
         (Instance(x), Instance(y)) if Rc::ptr_eq(x, y) => true,
         (Instance(_), _) | (_, Instance(_)) => return Option::None,
         (List(_), List(_)) | (Dict(_), Dict(_)) | (Set(_), Set(_)) | (FrozenSet(_), FrozenSet(_)) | (Set(_), FrozenSet(_)) | (FrozenSet(_), Set(_)) => return Option::None,
+        (DictView(_), _) | (_, DictView(_)) => return Option::None,
         (Complex(x), Complex(y)) => x.0 == y.0 && x.1 == y.1,
         (Complex(c), o @ (Int(_) | Bool(_) | Float(_) | Big(_))) | (o @ (Int(_) | Bool(_) | Float(_) | Big(_)), Complex(c)) => c.1 == 0.0 && fast_eq(&Float(c.0), o)?,
         (Range(_) | BigRange(_), Range(_) | BigRange(_)) => crate::range::eq(a, b),

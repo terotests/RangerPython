@@ -65,3 +65,7 @@ def common_reduce(obj, proto):
     if kwargs:
         return (copyreg.__newobj_ex__, (cls, args, kwargs), state, listitems, dictitems)
     return (copyreg.__newobj__, (cls,) + args, state, listitems, dictitems)
+
+
+def set_reduce(obj):
+    return (type(obj), (list(obj),), getstate(obj))
