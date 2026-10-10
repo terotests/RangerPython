@@ -1507,7 +1507,14 @@ impl Vm {
     /// an exception class is instantiated; anything else must be an exception
     pub fn make_raisable(&mut self, e: Value) -> PyResult<Value> {
         match &e {
-            Value::Class(c) if c.is_subclass(&self.t.base_exception) => self.call_vec(&e, vec![], &[]),
+            Value::Class(c) if c.is_subclass(&self.t.base_exception) => {
+                let v = self.call_vec(&e, vec![], &[])?;
+                if !self.class_of(&v).is_subclass(&self.t.base_exception) {
+                    let tn = self.type_name(&v);
+                    return Err(self.type_error(format!("calling {} should have returned an instance of BaseException, not {}", crate::format::class_repr(c), tn)));
+                }
+                Ok(v)
+            }
             Value::Instance(i) if i.class.borrow().is_subclass(&self.t.base_exception) => Ok(e),
             _ => Err(self.type_error("exceptions must derive from BaseException")),
         }
@@ -1628,7 +1635,12 @@ impl Vm {
             Value::Instance(_) | Value::Obj(_) => {
                 let call = self.lookup_special(f, &self.n.call.clone());
                 match call {
-                    Some(c) => self.call_vec(&c, args, kw),
+                    Some(c) => {
+                        self.enter("")?;
+                        let r = self.call_vec(&c, args, kw);
+                        self.depth -= 1;
+                        r
+                    }
                     None => {
                         let tn = self.type_name(f);
                         Err(self.type_error(format!("'{}' object is not callable", tn)))

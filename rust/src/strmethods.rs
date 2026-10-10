@@ -300,7 +300,7 @@ fn str_add(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn str_mul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "__mul__")?;
     match vm.base_of(&a[1]) {
-        Value::Int(n) => Ok(s(x.s.repeat(n.max(0) as usize))),
+        Value::Int(n) => { let n = vm.repeat_count(x.s.len(), n)?; Ok(s(x.s.repeat(n))) }
         Value::Bool(b) => Ok(s(if b { x.s.clone() } else { String::new() })),
         _ => Ok(Value::NotImplemented),
     }

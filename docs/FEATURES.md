@@ -10,149 +10,147 @@ with.
 | target | features supported |
 |---|---:|
 | JavaScript | 97 of 102 |
-| Go | 97 of 102 |
-| Rust | 97 of 102 |
-| Python | 97 of 102 |
+| Rust (hand-written) | 101 of 102 |
 
 ## Syntax
 
-| feature | JavaScript | Go | Rust | Python | note |
-|---|:---:|:---:|:---:|:---:|---|
-| arithmetic and precedence | yes | yes | yes | yes |  |
-| chained comparisons | yes | yes | yes | yes |  |
-| walrus operator | yes | yes | yes | yes |  |
-| conditional expression and lambda | yes | yes | yes | yes |  |
-| star unpacking | yes | yes | yes | yes |  |
-| match statement | yes | yes | yes | yes |  |
-| match class patterns | yes | yes | yes | yes |  |
-| f-strings | yes | yes | yes | yes |  |
-| f-string nested quotes (PEP 701) | yes | yes | yes | yes |  |
-| global and nonlocal | yes | yes | yes | yes |  |
-| decorators with arguments | yes | yes | yes | yes |  |
-| keyword-only and positional-only parameters | yes | yes | yes | yes |  |
-| type hints and annotations | yes | yes | yes | yes |  |
-| type statement and generic syntax (PEP 695) | yes | yes | yes | yes |  |
-| assert | yes | yes | yes | yes |  |
-| del and slices assignment | yes | yes | yes | yes |  |
-| while/else and for/else | yes | yes | yes | yes |  |
-| augmented assignment operators | yes | yes | yes | yes |  |
-| number literals | yes | yes | yes | yes |  |
-| string literals and escapes | yes | yes | yes | yes |  |
-| async def and await | no | no | no | no | ModuleNotFoundError: No module named 'asyncio' |
+| feature | JavaScript | Rust (hand-written) | note |
+|---|:---:|:---:|---|
+| arithmetic and precedence | yes | yes |  |
+| chained comparisons | yes | yes |  |
+| walrus operator | yes | yes |  |
+| conditional expression and lambda | yes | yes |  |
+| star unpacking | yes | yes |  |
+| match statement | yes | yes |  |
+| match class patterns | yes | yes |  |
+| f-strings | yes | yes |  |
+| f-string nested quotes (PEP 701) | yes | yes |  |
+| global and nonlocal | yes | yes |  |
+| decorators with arguments | yes | yes |  |
+| keyword-only and positional-only parameters | yes | yes |  |
+| type hints and annotations | yes | yes |  |
+| type statement and generic syntax (PEP 695) | yes | yes |  |
+| assert | yes | yes |  |
+| del and slices assignment | yes | yes |  |
+| while/else and for/else | yes | yes |  |
+| augmented assignment operators | yes | yes |  |
+| number literals | yes | yes |  |
+| string literals and escapes | yes | yes |  |
+| async def and await | no | yes | ModuleNotFoundError: No module named 'asyncio' |
 
 ## Data types
 
-| feature | JavaScript | Go | Rust | Python | note |
-|---|:---:|:---:|:---:|:---:|---|
-| int operations | yes | yes | yes | yes |  |
-| big integers | no | no | no | no | line 1: got "1.2676506002282294e+30 1e+20 6.148914691236517e+18 0.0" |
-| float formatting | yes | yes | yes | yes |  |
-| complex numbers | yes | yes | yes | yes |  |
-| str methods | yes | yes | yes | yes |  |
-| str formatting with % and format | yes | yes | yes | yes |  |
-| bytes | no | no | no | no | NameError: name 'bytes' is not defined |
-| list methods | yes | yes | yes | yes |  |
-| tuple and namedtuple | yes | yes | yes | yes |  |
-| dict methods and ordering | yes | yes | yes | yes |  |
-| set operations | yes | yes | yes | yes |  |
-| range and slicing | yes | yes | yes | yes |  |
-| bool and None semantics | yes | yes | yes | yes |  |
+| feature | JavaScript | Rust (hand-written) | note |
+|---|:---:|:---:|---|
+| int operations | yes | yes |  |
+| big integers | no | yes | line 1: got "1.2676506002282294e+30 1e+20 6.148914691236517e+18 0.0" |
+| float formatting | yes | yes |  |
+| complex numbers | yes | yes |  |
+| str methods | yes | yes |  |
+| str formatting with % and format | yes | yes |  |
+| bytes | no | yes | NameError: name 'bytes' is not defined |
+| list methods | yes | yes |  |
+| tuple and namedtuple | yes | yes |  |
+| dict methods and ordering | yes | yes |  |
+| set operations | yes | yes |  |
+| range and slicing | yes | yes |  |
+| bool and None semantics | yes | yes |  |
 
 ## Builtins
 
-| feature | JavaScript | Go | Rust | Python | note |
-|---|:---:|:---:|:---:|:---:|---|
-| len, min, max, sum with keys | yes | yes | yes | yes |  |
-| enumerate, zip, map, filter | yes | yes | yes | yes |  |
-| sorted with key and reverse | yes | yes | yes | yes |  |
-| any, all, reversed, iter, next | yes | yes | yes | yes |  |
-| isinstance, issubclass, type, callable | yes | yes | yes | yes |  |
-| getattr, setattr, hasattr, vars, dir | yes | yes | yes | yes |  |
-| chr, ord, hex, bin, oct, divmod, pow | yes | yes | yes | yes |  |
-| eval and exec | yes | yes | yes | yes |  |
-| print options | yes | yes | yes | yes |  |
-| hash and id | yes | yes | yes | yes |  |
-| round and abs on floats | yes | yes | yes | yes |  |
-| open, read and write files | yes | yes | yes | yes |  |
+| feature | JavaScript | Rust (hand-written) | note |
+|---|:---:|:---:|---|
+| len, min, max, sum with keys | yes | yes |  |
+| enumerate, zip, map, filter | yes | yes |  |
+| sorted with key and reverse | yes | yes |  |
+| any, all, reversed, iter, next | yes | yes |  |
+| isinstance, issubclass, type, callable | yes | yes |  |
+| getattr, setattr, hasattr, vars, dir | yes | yes |  |
+| chr, ord, hex, bin, oct, divmod, pow | yes | yes |  |
+| eval and exec | yes | yes |  |
+| print options | yes | yes |  |
+| hash and id | yes | yes |  |
+| round and abs on floats | yes | yes |  |
+| open, read and write files | yes | yes |  |
 
 ## Functions
 
-| feature | JavaScript | Go | Rust | Python | note |
-|---|:---:|:---:|:---:|:---:|---|
-| default argument evaluated once | yes | yes | yes | yes |  |
-| closures and late binding | yes | yes | yes | yes |  |
-| recursion | yes | yes | yes | yes |  |
-| *args and **kwargs forwarding | yes | yes | yes | yes |  |
-| function attributes | yes | yes | yes | yes |  |
-| functools | yes | yes | yes | yes |  |
-| functools.wraps and singledispatch | yes | yes | yes | yes |  |
+| feature | JavaScript | Rust (hand-written) | note |
+|---|:---:|:---:|---|
+| default argument evaluated once | yes | yes |  |
+| closures and late binding | yes | yes |  |
+| recursion | yes | yes |  |
+| *args and **kwargs forwarding | yes | yes |  |
+| function attributes | yes | yes |  |
+| functools | yes | yes |  |
+| functools.wraps and singledispatch | yes | yes |  |
 
 ## Classes
 
-| feature | JavaScript | Go | Rust | Python | note |
-|---|:---:|:---:|:---:|:---:|---|
-| inheritance and super | yes | yes | yes | yes |  |
-| multiple inheritance MRO | yes | yes | yes | yes |  |
-| properties | yes | yes | yes | yes |  |
-| classmethod and staticmethod | yes | yes | yes | yes |  |
-| operator overloading | yes | yes | yes | yes |  |
-| __slots__ and __dict__ | yes | yes | yes | yes |  |
-| dataclasses | yes | yes | yes | yes |  |
-| descriptors | yes | yes | yes | yes |  |
-| metaclasses | yes | yes | yes | yes |  |
-| abstract base classes | yes | yes | yes | yes |  |
-| subclassing built-in types | yes | yes | yes | yes |  |
-| __init_subclass__ and __class_getitem__ | yes | yes | yes | yes |  |
-| enum | yes | yes | yes | yes |  |
-| __repr__, __str__ and __format__ | yes | yes | yes | yes |  |
-| context manager protocol | yes | yes | yes | yes |  |
-| iterator protocol | yes | yes | yes | yes |  |
+| feature | JavaScript | Rust (hand-written) | note |
+|---|:---:|:---:|---|
+| inheritance and super | yes | yes |  |
+| multiple inheritance MRO | yes | yes |  |
+| properties | yes | yes |  |
+| classmethod and staticmethod | yes | yes |  |
+| operator overloading | yes | yes |  |
+| __slots__ and __dict__ | yes | yes |  |
+| dataclasses | yes | yes |  |
+| descriptors | yes | yes |  |
+| metaclasses | yes | yes |  |
+| abstract base classes | yes | yes |  |
+| subclassing built-in types | yes | yes |  |
+| __init_subclass__ and __class_getitem__ | yes | yes |  |
+| enum | yes | yes |  |
+| __repr__, __str__ and __format__ | yes | yes |  |
+| context manager protocol | yes | yes |  |
+| iterator protocol | yes | yes |  |
 
 ## Generators
 
-| feature | JavaScript | Go | Rust | Python | note |
-|---|:---:|:---:|:---:|:---:|---|
-| generator functions | yes | yes | yes | yes |  |
-| send, throw and close | yes | yes | yes | yes |  |
-| yield from and return value | yes | yes | yes | yes |  |
-| lazy infinite generators | yes | yes | yes | yes |  |
-| generator expressions | yes | yes | yes | yes |  |
-| comprehensions (list, dict, set, nested) | yes | yes | yes | yes |  |
+| feature | JavaScript | Rust (hand-written) | note |
+|---|:---:|:---:|---|
+| generator functions | yes | yes |  |
+| send, throw and close | yes | yes |  |
+| yield from and return value | yes | yes |  |
+| lazy infinite generators | yes | yes |  |
+| generator expressions | yes | yes |  |
+| comprehensions (list, dict, set, nested) | yes | yes |  |
 
 ## Exceptions
 
-| feature | JavaScript | Go | Rust | Python | note |
-|---|:---:|:---:|:---:|:---:|---|
-| try/except/else/finally | yes | yes | yes | yes |  |
-| custom exceptions and chaining | yes | yes | yes | yes |  |
-| exception groups and except* | yes | yes | yes | yes |  |
-| built-in exception messages | yes | yes | yes | yes |  |
-| traceback text of an uncaught error | yes | yes | yes | yes |  |
-| raise in finally and context | yes | yes | yes | yes |  |
-| warnings | yes | yes | yes | yes |  |
+| feature | JavaScript | Rust (hand-written) | note |
+|---|:---:|:---:|---|
+| try/except/else/finally | yes | yes |  |
+| custom exceptions and chaining | yes | yes |  |
+| exception groups and except* | yes | yes |  |
+| built-in exception messages | yes | yes |  |
+| traceback text of an uncaught error | yes | yes |  |
+| raise in finally and context | yes | yes |  |
+| warnings | yes | yes |  |
 
 ## Modules
 
-| feature | JavaScript | Go | Rust | Python | note |
-|---|:---:|:---:|:---:|:---:|---|
-| math | yes | yes | yes | yes |  |
-| random with seed | yes | yes | yes | yes |  |
-| json | yes | yes | yes | yes |  |
-| re | yes | yes | yes | yes |  |
-| collections | yes | yes | yes | yes |  |
-| itertools | yes | yes | yes | yes |  |
-| string and textwrap | yes | yes | yes | yes |  |
-| datetime | no | no | no | no | ModuleNotFoundError: No module named 'datetime' |
-| os and os.path | yes | yes | yes | yes |  |
-| sys | yes | yes | yes | yes |  |
-| typing | yes | yes | yes | yes |  |
-| copy | yes | yes | yes | yes |  |
-| fractions and decimal | yes | yes | yes | yes |  |
-| statistics | yes | yes | yes | yes |  |
-| heapq and bisect | yes | yes | yes | yes |  |
-| contextlib | yes | yes | yes | yes |  |
-| operator | yes | yes | yes | yes |  |
-| struct | no | no | no | no | ModuleNotFoundError: No module named 'struct' |
-| io.StringIO | yes | yes | yes | yes |  |
-| time | yes | yes | yes | yes |  |
+| feature | JavaScript | Rust (hand-written) | note |
+|---|:---:|:---:|---|
+| math | yes | yes |  |
+| random with seed | yes | yes |  |
+| json | yes | yes |  |
+| re | yes | yes |  |
+| collections | yes | yes |  |
+| itertools | yes | yes |  |
+| string and textwrap | yes | yes |  |
+| datetime | no | no | ModuleNotFoundError: No module named 'datetime' |
+| os and os.path | yes | yes |  |
+| sys | yes | yes |  |
+| typing | yes | yes |  |
+| copy | yes | yes |  |
+| fractions and decimal | yes | yes |  |
+| statistics | yes | yes |  |
+| heapq and bisect | yes | yes |  |
+| contextlib | yes | yes |  |
+| operator | yes | yes |  |
+| struct | no | yes | ModuleNotFoundError: No module named 'struct' |
+| io.StringIO | yes | yes |  |
+| time | yes | yes |  |
 

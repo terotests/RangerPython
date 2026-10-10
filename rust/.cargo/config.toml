@@ -1,0 +1,3 @@
+# the wasm build needs a larger shadow stack for deep Python recursion
+[target.wasm32-wasip1]
+rustflags = ["-C", "link-arg=-zstack-size=16777216"]

@@ -230,12 +230,18 @@ fn slice_positions(start: i64, stop: i64, step: i64) -> Vec<usize> {
     if step > 0 {
         while i < stop {
             out.push(i as usize);
-            i += step;
+            match i.checked_add(step) {
+                Some(n) => i = n,
+                None => break,
+            }
         }
     } else {
         while i > stop {
             out.push(i as usize);
-            i += step;
+            match i.checked_add(step) {
+                Some(n) => i = n,
+                None => break,
+            }
         }
     }
     out
@@ -478,31 +484,36 @@ pub fn set_op(vm: &mut Vm, op: BinOp, a: &Value, b: &Value) -> PyResult<Value> {
     match op {
         BinOp::BitOr => {
             *out.borrow_mut() = da.borrow().copy();
-            for e in db.borrow().keys() {
+            let snapshot = db.borrow().keys();
+            for e in snapshot {
                 vm.set_add(&out, e)?;
             }
         }
         BinOp::BitAnd => {
-            for e in da.borrow().keys() {
+            let snapshot = da.borrow().keys();
+            for e in snapshot {
                 if vm.set_contains(&db, &e)? {
                     vm.set_add(&out, e)?;
                 }
             }
         }
         BinOp::Sub => {
-            for e in da.borrow().keys() {
+            let snapshot = da.borrow().keys();
+            for e in snapshot {
                 if !vm.set_contains(&db, &e)? {
                     vm.set_add(&out, e)?;
                 }
             }
         }
         _ => {
-            for e in da.borrow().keys() {
+            let snapshot = da.borrow().keys();
+            for e in snapshot {
                 if !vm.set_contains(&db, &e)? {
                     vm.set_add(&out, e)?;
                 }
             }
-            for e in db.borrow().keys() {
+            let snapshot = db.borrow().keys();
+            for e in snapshot {
                 if !vm.set_contains(&da, &e)? {
                     vm.set_add(&out, e)?;
                 }
@@ -519,7 +530,8 @@ pub fn is_subset(vm: &mut Vm, a: &Rc<RefCell<Dict>>, b: &Rc<RefCell<Dict>>) -> P
     if a.borrow().len() > b.borrow().len() {
         return Ok(false);
     }
-    for k in a.borrow().keys() {
+    let snapshot = a.borrow().keys();
+    for k in snapshot {
         if !vm.set_contains(b, &k)? {
             return Ok(false);
         }
@@ -2531,7 +2543,12 @@ fn bi_eval(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             }
         }
         None => match &a[0] {
-            Value::Code(c) => c.clone(),
+            Value::Code(c) => {
+                if !c.freevars.is_empty() {
+                    return Err(vm.type_error("code object passed to eval() may not contain free variables"));
+                }
+                c.clone()
+            }
             _ => unreachable!(),
         },
     };
@@ -2553,7 +2570,12 @@ fn bi_exec(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             }
         }
         None => match &a[0] {
-            Value::Code(c) => c.clone(),
+            Value::Code(c) => {
+                if !c.freevars.is_empty() {
+                    return Err(vm.type_error("code object passed to exec() may not contain free variables"));
+                }
+                c.clone()
+            }
             _ => unreachable!(),
         },
     };

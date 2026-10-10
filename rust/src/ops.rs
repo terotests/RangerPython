@@ -1038,7 +1038,8 @@ impl Vm {
                 if *n <= 0 {
                     Value::str("")
                 } else {
-                    Value::string(x.s.repeat(*n as usize))
+                    let n = self.repeat_count(x.s.len(), *n)?;
+                    Value::string(x.s.repeat(n))
                 }
             }
             (Str(x), Bool(n)) | (Bool(n), Str(x)) if op == BinOp::Mul => Value::string(if *n { x.s.clone() } else { String::new() }),
@@ -1048,7 +1049,10 @@ impl Vm {
                 v.extend_from_slice(y);
                 Value::Bytes(Rc::new(v))
             }
-            (Bytes(x), Int(n)) if op == BinOp::Mul => Value::Bytes(Rc::new(x.repeat((*n).max(0) as usize))),
+            (Bytes(x), Int(n)) if op == BinOp::Mul => {
+                let n = self.repeat_count(x.len(), *n)?;
+                Value::Bytes(Rc::new(x.repeat(n)))
+            }
             (Bytes(_), _) if op == BinOp::Mod => {
                 let s = crate::builtins::bytes_to_latin1(a);
                 let r = crate::format::percent_format(self, &Value::string(s), b)?;
@@ -1060,9 +1064,11 @@ impl Vm {
                 Value::list(v)
             }
             (List(x), Int(n)) | (Int(n), List(x)) if op == BinOp::Mul => {
+                let len = x.borrow().len();
+                let n = self.repeat_count(len, *n)?;
                 let src = x.borrow();
-                let mut v = Vec::with_capacity(src.len() * (*n).max(0) as usize);
-                for _ in 0..(*n).max(0) {
+                let mut v = Vec::with_capacity(len * n);
+                for _ in 0..n {
                     v.extend(src.iter().cloned());
                 }
                 Value::list(v)
@@ -1073,8 +1079,9 @@ impl Vm {
                 Value::tuple(v)
             }
             (Tuple(x), Int(n)) | (Int(n), Tuple(x)) if op == BinOp::Mul => {
-                let mut v = Vec::new();
-                for _ in 0..(*n).max(0) {
+                let n = self.repeat_count(x.len(), *n)?;
+                let mut v = Vec::with_capacity(x.len() * n);
+                for _ in 0..n {
                     v.extend(x.iter().cloned());
                 }
                 Value::tuple(v)
@@ -1093,7 +1100,8 @@ impl Vm {
             }
             (Dict(x), Dict(y)) if op == BinOp::BitOr => {
                 let d = Rc::new(RefCell::new(x.borrow().copy()));
-                for (k, v) in y.borrow().items() {
+                let snapshot = y.borrow().items();
+                for (k, v) in snapshot {
                     self.dict_set(&d, k, v)?;
                 }
                 Value::Dict(d)
@@ -1172,6 +1180,18 @@ impl Vm {
         }
     }
 
+    /// n as a repeat count for a sequence of len items; MemoryError when
+    /// the result could not be allocated
+    pub fn repeat_count(&mut self, len: usize, n: i64) -> PyResult<usize> {
+        if n <= 0 || len == 0 {
+            return Ok(if n <= 0 { 0 } else { n as usize });
+        }
+        match len.checked_mul(n as usize) {
+            Some(t) if (t as u64) <= if usize::BITS == 32 { 1u64 << 28 } else { 1u64 << 32 } => Ok(n as usize),
+            _ => Err(self.err("MemoryError", "")),
+        }
+    }
+
     pub fn inplace(&mut self, op: BinOp, a: &Value, b: &Value) -> PyResult<Value> {
         match (a, op) {
             (Value::List(l), BinOp::Add) => {
@@ -1182,6 +1202,7 @@ impl Vm {
             (Value::List(l), BinOp::Mul) => {
                 let n = self.to_index(b)?;
                 let src = l.borrow().clone();
+                let n = self.repeat_count(src.len(), n)? as i64;
                 let mut lb = l.borrow_mut();
                 lb.clear();
                 for _ in 0..n.max(0) {
@@ -1421,7 +1442,10 @@ impl Vm {
                 for (k, v) in items {
                     match self.dict_get(y, &k)? {
                         Some(v2) => {
-                            if !self.eq(&v, &v2)? {
+                            self.enter(" in comparison")?;
+                            let r = self.eq(&v, &v2);
+                            self.depth -= 1;
+                            if !r? {
                                 return Ok(false);
                             }
                         }
@@ -1465,6 +1489,23 @@ impl Vm {
     }
 
     fn seq_eq(&mut self, x: &[Value], y: &[Value]) -> PyResult<bool> {
+        self.enter(" in comparison")?;
+        let r = self.seq_eq_inner(x, y);
+        self.depth -= 1;
+        r
+    }
+
+    /// counts a level of Rust recursion against the Python recursion limit
+    pub fn enter(&mut self, what: &str) -> PyResult<()> {
+        self.depth += 1;
+        if self.depth > self.max_depth + 50 {
+            self.depth -= 1;
+            return Err(self.err("RecursionError", format!("maximum recursion depth exceeded{}", what)));
+        }
+        Ok(())
+    }
+
+    fn seq_eq_inner(&mut self, x: &[Value], y: &[Value]) -> PyResult<bool> {
         if x.len() != y.len() {
             return Ok(false);
         }
@@ -1590,6 +1631,13 @@ impl Vm {
     }
 
     fn seq_order(&mut self, x: &[Value], y: &[Value]) -> PyResult<Option<Ordering>> {
+        self.enter(" in comparison")?;
+        let r = self.seq_order_inner(x, y);
+        self.depth -= 1;
+        r
+    }
+
+    fn seq_order_inner(&mut self, x: &[Value], y: &[Value]) -> PyResult<Option<Ordering>> {
         for (p, q) in x.iter().zip(y.iter()) {
             if p.is(q) || self.eq(p, q)? {
                 continue;
@@ -1770,12 +1818,19 @@ impl Vm {
             Lookup::Missing => Ok(None),
             Lookup::Slow(cands) => {
                 for i in cands {
-                    let key = match &d.borrow().entries[i] {
-                        Some(e) => e.key.clone(),
-                        None => continue,
+                    let key = match d.borrow().entries.get(i) {
+                        Some(Some(e)) => e.key.clone(),
+                        _ => continue,
                     };
                     if self.eq(&key, k)? {
-                        return Ok(d.borrow().entries[i].as_ref().map(|e| e.value.clone()));
+                        let v = match d.borrow().entries.get(i) {
+                            Some(Some(e)) if e.key.is(&key) => Some(Some(e.value.clone())),
+                            _ => None,
+                        };
+                        return match v {
+                            Some(v) => Ok(v),
+                            None => self.dict_get(d, k),
+                        };
                     }
                 }
                 Ok(None)
@@ -1792,11 +1847,16 @@ impl Vm {
             Lookup::Missing => Ok((h, None)),
             Lookup::Slow(cands) => {
                 for i in cands {
-                    let key = match &d.borrow().entries[i] {
-                        Some(e) => e.key.clone(),
-                        None => continue,
+                    let key = match d.borrow().entries.get(i) {
+                        Some(Some(e)) => e.key.clone(),
+                        _ => continue,
                     };
                     if self.eq(&key, k)? {
+                        // __eq__ may have changed the dict: look again
+                        let same = matches!(d.borrow().entries.get(i), Some(Some(e)) if e.key.is(&key));
+                        if !same {
+                            return self.dict_find(d, k);
+                        }
                         return Ok((h, Some(i)));
                     }
                 }

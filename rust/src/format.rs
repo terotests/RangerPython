@@ -94,6 +94,26 @@ fn strip_zeros(s: &str) -> String {
 
 /// a float in one of the e/f/g/% presentations (no sign handling for
 /// negative values beyond what the digits carry)
+/// x with p digits after the point; past 1100 digits a double's exact
+/// expansion has ended, so the rest are zeros
+fn fixed(x: f64, p: usize) -> String {
+    if p <= 1100 {
+        return format!("{:.*}", p, x);
+    }
+    let mut s = format!("{:.*}", 1100, x);
+    s.push_str(&"0".repeat(p - 1100));
+    s
+}
+
+fn sci(x: f64, p: usize) -> String {
+    if p <= 800 {
+        return format!("{:.*e}", p, x);
+    }
+    let s = format!("{:.*e}", 800, x);
+    let i = s.find('e').unwrap();
+    format!("{}{}{}", &s[..i], "0".repeat(p - 800), &s[i..])
+}
+
 pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
     if x.is_nan() {
         return if ty.is_ascii_uppercase() { "NAN".into() } else { "nan".into() };
@@ -105,7 +125,7 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
     match ty {
         'f' | 'F' => {
             let p = prec.unwrap_or(6);
-            let mut s = format!("{:.*}", p, x);
+            let mut s = fixed(x, p);
             if alt && p == 0 {
                 s.push('.');
             }
@@ -113,7 +133,7 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
         }
         'e' | 'E' => {
             let p = prec.unwrap_or(6);
-            let mut s = exp_fix(format!("{:.*e}", p, x));
+            let mut s = exp_fix(sci(x, p));
             if alt && p == 0 {
                 let i = s.find('e').unwrap();
                 s.insert(i, '.');
@@ -125,7 +145,7 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
         }
         '%' => {
             let p = prec.unwrap_or(6);
-            format!("{:.*}%", p, x * 100.0)
+            format!("{}%", fixed(x * 100.0, p))
         }
         'g' | 'G' | 'n' => {
             let p = prec.unwrap_or(6).max(1);
@@ -133,10 +153,10 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
                 let z = if x.is_sign_negative() { "-0" } else { "0" };
                 return if alt { format!("{}.{}", z, "0".repeat(p - 1)) } else { z.into() };
             }
-            let e = format!("{:.*e}", p - 1, x);
+            let e = sci(x, p - 1);
             let exp: i32 = e[e.find('e').unwrap() + 1..].parse().unwrap();
             let s = if exp >= -4 && exp < p as i32 {
-                format!("{:.*}", (p as i32 - 1 - exp).max(0) as usize, x)
+                fixed(x, (p as i32 - 1 - exp).max(0) as usize)
             } else {
                 exp_fix(e)
             };
@@ -152,10 +172,10 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
             None => float_repr(x),
             Some(p) => {
                 let p = p.max(1);
-                let e = format!("{:.*e}", p - 1, x);
+                let e = sci(x, p - 1);
                 let exp: i32 = e[e.find('e').unwrap() + 1..].parse().unwrap();
                 if exp >= -4 && exp < p as i32 {
-                    let s = strip_zeros(&format!("{:.*}", (p as i32 - 1 - exp).max(0) as usize, x));
+                    let s = strip_zeros(&fixed(x, (p as i32 - 1 - exp).max(0) as usize));
                     if s.contains('.') || s.contains("inf") || s.contains("nan") {
                         s
                     } else {
@@ -312,6 +332,18 @@ fn join_reprs(vm: &mut Vm, items: &[Value]) -> PyResult<String> {
 }
 
 pub fn repr(vm: &mut Vm, v: &Value) -> PyResult<String> {
+    match v {
+        Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_) | Value::FrozenSet(_) | Value::DictView(_) | Value::Instance(_) => {
+            vm.enter(" while getting the repr of an object")?;
+            let r = repr_inner(vm, v);
+            vm.depth -= 1;
+            r
+        }
+        _ => repr_inner(vm, v),
+    }
+}
+
+fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
     Ok(match v {
         Value::Undef | Value::None => "None".into(),
         Value::NotImplemented => "NotImplemented".into(),
@@ -601,7 +633,11 @@ pub fn parse_spec(s: &str) -> Option<Spec> {
         if i == st {
             return None;
         }
-        sp.prec = Some(c[st..i].iter().collect::<String>().parse().ok()?);
+        let pv: usize = c[st..i].iter().collect::<String>().parse().ok()?;
+        if pv > i32::MAX as usize {
+            return None;
+        }
+        sp.prec = Some(pv);
     }
     if i < c.len() {
         sp.ty = Some(c[i]);
