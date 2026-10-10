@@ -1650,6 +1650,12 @@ impl Vm {
                     };
                     f.stack.push(v);
                 }
+                Op::SetupAnnotations if f.ext.as_ref().is_some_and(|x| x.locals.is_some()) => {
+                    let m = f.ext.as_ref().unwrap().locals.clone().unwrap();
+                    if self.map_get(&m, &self.n.annotations.clone())?.is_none() {
+                        self.setitem(&m, Value::Str(self.n.annotations.clone()), Value::dict(Dict::new()))?;
+                    }
+                }
                 Op::SetupAnnotations => {
                     let ns = f.ns.clone().unwrap_or_else(|| f.globals.clone());
                     let has = ns.borrow().get_str(&self.n.annotations).is_some();
@@ -2872,6 +2878,20 @@ impl Vm {
         let path = name.replace('.', "/");
         let mut dirs = vec![String::new()];
         dirs.extend(self.search_path.iter().map(|d| d.trim_end_matches('/').to_string()));
+        // then what a program added to sys.path
+        let sys_path = self.modules.borrow().get_s("sys").and_then(|m| match m {
+            Value::Module(m) => m.dict.borrow().get_s("path"),
+            _ => None,
+        });
+        if let Some(Value::List(l)) = sys_path {
+            for v in l.borrow().iter() {
+                if let Some(d) = v.as_str().map(|d| d.trim_end_matches('/').to_string()) {
+                    if !d.is_empty() && !dirs.contains(&d) {
+                        dirs.push(d);
+                    }
+                }
+            }
+        }
         for d in dirs {
             for (cand, pkg) in [(format!("{}/{}.py", d, path), false), (format!("{}/{}/__init__.py", d, path), true)] {
                 if let Some(s) = self.fs.read(&cand) {
@@ -2888,15 +2908,49 @@ impl Vm {
     }
 
     pub fn run_source(&mut self, src: &str, file: &str, globals: Rc<RefCell<Dict>>) -> PyResult<Value> {
-        let body = match crate::parser::parse_module(src) {
-            Ok(b) => b,
-            Err(e) => return Err(self.parse_error(&e, file)),
-        };
-        let code = match crate::compile::compile_module(&body, file) {
-            Ok(c) => c,
-            Err(e) => return Err(self.syntax_error(&e.msg, e.line, file)),
-        };
+        let code = self.compile_source(src, file, false)?;
         self.run_module_code(code, globals)
+    }
+
+    /// Parses and compiles a module, or an expression when `eval`. The
+    /// SyntaxWarnings found go through the warnings machinery first; one
+    /// that a filter turns into an error is raised as a SyntaxError.
+    pub fn compile_source(&mut self, src: &str, file: &str, eval: bool) -> PyResult<Rc<Code>> {
+        crate::lexer::take_warnings();
+        let code = if eval {
+            crate::parser::parse_expression(src).map(|e| crate::compile::compile_eval(&e, file))
+        } else {
+            crate::parser::parse_module(src).map(|b| crate::compile::compile_module(&b, file))
+        };
+        for w in crate::lexer::take_warnings() {
+            self.syntax_warning(&w, src, file)?;
+        }
+        match code {
+            Ok(Ok(c)) => Ok(c),
+            Ok(Err(e)) => Err(self.syntax_error(&e.msg, e.line, file)),
+            Err(e) => {
+                let x = self.parse_error(&e, file);
+                set_error_text(&x, src, e.line);
+                Err(x)
+            }
+        }
+    }
+
+    /// warnings.warn_explicit() for a SyntaxWarning, as a SyntaxError when it raises one
+    fn syntax_warning(&mut self, w: &crate::lexer::SyntaxWarn, src: &str, file: &str) -> PyResult<()> {
+        let m = self.import_one("warnings")?;
+        let f = self.getattr(&m, &ps("warn_explicit"))?;
+        let cat = Value::Class(self.exc_class("SyntaxWarning"));
+        let args = vec![Value::str(&w.msg), cat, Value::str(file), Value::Int(w.line as i64)];
+        match self.call_vec(&f, args, &[]) {
+            Err(e) if self.exc_is(&e, "SyntaxWarning") => {
+                let e = crate::parser::SyntaxError { msg: w.msg.clone(), line: w.line, col: w.col };
+                let x = self.parse_error(&e, file);
+                set_error_text(&x, src, w.line);
+                Err(x)
+            }
+            r => r.map(|_| ()),
+        }
     }
 
     /// a SyntaxError from the parser, with its column when known
@@ -2961,5 +3015,12 @@ impl Vm {
             }
         }
         Ok(())
+    }
+}
+
+/// sets a SyntaxError's `text` to its line of the source
+fn set_error_text(x: &Exc, src: &str, line: u32) {
+    if let Some(t) = src.lines().nth((line as usize).wrapping_sub(1)) {
+        crate::builtins::exc_set_field(&x.value, "text", Value::str(t));
     }
 }

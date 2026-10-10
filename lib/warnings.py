@@ -19,6 +19,20 @@ def warn(message, category=None, stacklevel=1, source=None, skip_file_prefixes=(
         category = type(message)
     if category is None:
         category = UserWarning
+    filename, lineno = "", 0
+    if _log is not None:
+        try:
+            import sys
+            f = sys._getframe(stacklevel)
+            filename, lineno = f.f_code.co_filename, f.f_lineno
+        except Exception:
+            pass
+    warn_explicit(message, category, filename, lineno)
+
+
+def warn_explicit(message, category, filename, lineno, module=None, registry=None, module_globals=None, source=None):
+    if isinstance(message, Warning):
+        category = type(message)
     for action, cat in _filters:
         if issubclass(category, cat):
             if action == "error":
@@ -28,18 +42,7 @@ def warn(message, category=None, stacklevel=1, source=None, skip_file_prefixes=(
             break
     if _log is not None:
         msg = message if isinstance(message, Warning) else category(message)
-        filename, lineno = "", 0
-        try:
-            import sys
-            f = sys._getframe(stacklevel)
-            filename, lineno = f.f_code.co_filename, f.f_lineno
-        except Exception:
-            pass
         _log.append(WarningMessage(msg, category, filename, lineno))
-
-
-def warn_explicit(message, category, filename, lineno, *args, **kwargs):
-    warn(message, category)
 
 
 def simplefilter(action, category=Warning, lineno=0, append=False):

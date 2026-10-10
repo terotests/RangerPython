@@ -194,7 +194,15 @@ impl<'a> Collector<'a> {
                     self.target(t)?;
                 }
             }
-            StmtKind::AnnAssign(t, ann, v) => {
+            StmtKind::AnnAssign(t, ann, v, simple) => {
+                if let Expr::Name(n) = t {
+                    let n = self.mg(n);
+                    let sc = self.sc();
+                    let what = if sc.globals.contains(&n) { "global" } else if sc.nonlocals.contains(&n) { "nonlocal" } else { "" };
+                    if !what.is_empty() {
+                        return Err(CompileError { msg: format!("annotated name '{}' can't be {}", n, what), line: s.line });
+                    }
+                }
                 if !self.st.future_annotations {
                     self.expr(ann)?;
                 }
@@ -203,7 +211,7 @@ impl<'a> Collector<'a> {
                     self.target(t)?;
                 } else if let Expr::Name(n) = t {
                     // a bare annotation still makes the name local
-                    if self.sc().kind == ScopeKind::Function {
+                    if self.sc().kind == ScopeKind::Function && *simple {
                         let n = n.clone();
                         self.sc().assign(&n);
                     }
@@ -655,7 +663,7 @@ pub fn compile_module(body: &[Stmt], filename: &str) -> CResult<Rc<Code>> {
     let st = SymTable::build(body)?;
     let mut c = Compiler { st, units: vec![], filename: Rc::from(filename) };
     c.push_unit(0, "<module>".into());
-    let has_ann = body.iter().any(|s| matches!(s.kind, StmtKind::AnnAssign(..)));
+    let has_ann = has_annotations(body);
     if has_ann {
         c.emit(Op::SetupAnnotations);
     }
@@ -672,6 +680,21 @@ pub fn compile_module(body: &[Stmt], filename: &str) -> CResult<Rc<Code>> {
     c.emit(Op::Return);
     let code = c.pop_unit("<module>", 1, None, Value::None);
     Ok(Rc::new(code))
+}
+
+/// whether a module or class body has annotations to store, which
+/// compound statements may hold
+fn has_annotations(body: &[Stmt]) -> bool {
+    body.iter().any(|s| match &s.kind {
+        StmtKind::AnnAssign(..) => true,
+        StmtKind::If(_, a, b) | StmtKind::While(_, a, b) | StmtKind::For(_, _, a, b) => has_annotations(a) || has_annotations(b),
+        StmtKind::With(_, a) => has_annotations(a),
+        StmtKind::Try { body, handlers, orelse, finally, .. } => {
+            has_annotations(body) || handlers.iter().any(|h| has_annotations(&h.body)) || has_annotations(orelse) || has_annotations(finally)
+        }
+        StmtKind::Match(_, cases) => cases.iter().any(|c| has_annotations(&c.body)),
+        _ => false,
+    })
 }
 
 /// compiles an expression for eval()
@@ -1009,13 +1032,34 @@ impl<'a> Compiler<'a> {
                 }
                 _ => return Err(self.err("illegal expression for augmented assignment")),
             },
-            StmtKind::AnnAssign(t, ann, v) => {
+            StmtKind::AnnAssign(t, ann, v, simple) => {
                 if let Some(v) = v {
                     self.expr(v)?;
                     self.store(t)?;
+                } else {
+                    // a bare annotation still evaluates the target's object and index
+                    match t {
+                        Expr::Attr(obj, _) => {
+                            self.expr(obj)?;
+                            self.emit(Op::Pop);
+                        }
+                        Expr::Subscript(obj, idx) => {
+                            self.expr(obj)?;
+                            self.emit(Op::Pop);
+                            self.expr(idx)?;
+                            self.emit(Op::Pop);
+                        }
+                        _ => {}
+                    }
                 }
                 let kind = self.u().kind;
-                if let (Expr::Name(n), ScopeKind::Class | ScopeKind::Module) = (t, kind) {
+                let outer = matches!(kind, ScopeKind::Class | ScopeKind::Module);
+                if !*simple && outer && !self.st.future_annotations {
+                    // only a bare name's annotation is stored
+                    self.expr(ann)?;
+                    self.emit(Op::Pop);
+                }
+                if let (Expr::Name(n), true, true) = (t, outer, *simple) {
                     if self.st.future_annotations {
                         let k = self.const_str(&unparse(ann));
                         self.emit(Op::LoadConst(k));
@@ -1196,6 +1240,9 @@ impl<'a> Compiler<'a> {
                 }
             }
             StmtKind::Assert(cond, msg) => {
+                if matches!(cond, Expr::Tuple(items) if !items.is_empty()) {
+                    crate::lexer::push_warning("assertion is always true, perhaps remove parentheses?".into(), self.u().line, 0);
+                }
                 self.jump_if(cond, true)?;
                 let j = self.emit(Op::PopJumpIfTrue(0));
                 self.emit(Op::LoadAssertionError);
@@ -1537,7 +1584,7 @@ impl<'a> Compiler<'a> {
             let dn = self.name_idx(&Rc::from("__doc__"));
             self.emit(Op::StoreName(dn));
         }
-        if c.body.iter().any(|s| matches!(s.kind, StmtKind::AnnAssign(..))) {
+        if has_annotations(&c.body) {
             self.emit(Op::SetupAnnotations);
         }
         self.stmts(&c.body)?;
@@ -2091,9 +2138,7 @@ impl<'a> Compiler<'a> {
                 self.store_name(n);
             }
             Expr::Yield(v) => {
-                if self.u().kind != ScopeKind::Function {
-                    return Err(self.err("'yield' outside function"));
-                }
+                self.check_yield()?;
                 match v {
                     Some(v) => self.expr(v)?,
                     None => {
@@ -2104,6 +2149,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Yield);
             }
             Expr::YieldFrom(v) => {
+                self.check_yield()?;
                 self.expr(v)?;
                 self.emit(Op::GetIter);
                 let k = self.const_val(Value::None);
@@ -2117,6 +2163,20 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::LoadConst(k));
                 self.emit(Op::YieldFrom);
             }
+        }
+        Ok(())
+    }
+
+    /// where a yield may not be
+    fn check_yield(&mut self) -> CResult<()> {
+        const COMPS: [(&str, &str); 4] =
+            [("<listcomp>", "list comprehension"), ("<setcomp>", "set comprehension"), ("<dictcomp>", "dict comprehension"), ("<genexpr>", "generator expression")];
+        let u = self.u();
+        if let Some((_, what)) = COMPS.iter().find(|(s, _)| u.qualname.ends_with(s)) {
+            return Err(self.err(&format!("'yield' inside {}", what)));
+        }
+        if u.kind != ScopeKind::Function {
+            return Err(self.err("'yield' outside function"));
         }
         Ok(())
     }

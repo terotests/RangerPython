@@ -187,7 +187,8 @@ pub enum StmtKind {
     Expr(Expr),
     Assign(Vec<Expr>, Expr),
     AugAssign(Expr, BinOp, Expr),
-    AnnAssign(Expr, Expr, Option<Expr>),
+    /// target, annotation, value, and whether the target is a bare name
+    AnnAssign(Expr, Expr, Option<Expr>, bool),
     If(Expr, Vec<Stmt>, Vec<Stmt>),
     While(Expr, Vec<Stmt>, Vec<Stmt>),
     For(Expr, Expr, Vec<Stmt>, Vec<Stmt>),

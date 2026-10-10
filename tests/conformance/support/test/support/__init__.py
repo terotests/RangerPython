@@ -90,7 +90,8 @@ def _skipper(reason):
 
 
 # CPython's own internals: the tests marked with these are skipped
-cpython_only = unittest.skip("CPython implementation detail")
+def cpython_only(f):
+    return f
 refcount_test = unittest.skip("reference counts")
 bigaddrspacetest = unittest.skip("big address space")
 requires_subprocess = _skipper("no subprocesses")
@@ -268,7 +269,7 @@ class swap_item:
     def __exit__(self, *exc):
         if self.had:
             self.obj[self.item] = self.old
-        else:
+        elif self.item in self.obj:
             del self.obj[self.item]
         return False
 

@@ -112,6 +112,7 @@ pub enum Op {
     LoadExc,
 }
 
+#[derive(Clone)]
 pub struct Code {
     pub name: Rc<PyStr>,
     pub qualname: Rc<PyStr>,

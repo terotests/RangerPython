@@ -3369,14 +3369,7 @@ fn bi_eval(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let code = match source_of(vm, &a[0], "eval")? {
         Some(src) => {
             let src = src.trim_start_matches([' ', '\t']).to_string();
-            let e = match crate::parser::parse_expression(&src) {
-                Ok(e) => e,
-                Err(e) => return Err(vm.parse_error(&e, "<string>")),
-            };
-            match crate::compile::compile_eval(&e, "<string>") {
-                Ok(c) => c,
-                Err(e) => return Err(vm.syntax_error(&e.msg, e.line, "<string>")),
-            }
+            vm.compile_source(&src, "<string>", true)?
         }
         None => match &a[0] {
             Value::Code(c) => {
@@ -3396,14 +3389,7 @@ fn bi_exec(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let (g, l, ext) = eval_scopes(vm, a, k, "exec")?;
     let code = match source_of(vm, &a[0], "exec")? {
         Some(src) => {
-            let body = match crate::parser::parse_module(&src) {
-                Ok(b) => b,
-                Err(e) => return Err(vm.parse_error(&e, "<string>")),
-            };
-            match crate::compile::compile_module(&body, "<string>") {
-                Ok(c) => c,
-                Err(e) => return Err(vm.syntax_error(&e.msg, e.line, "<string>")),
-            }
+            vm.compile_source(&src, "<string>", false)?
         }
         None => match &a[0] {
             Value::Code(c) => {
@@ -3427,23 +3413,8 @@ fn bi_compile(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         Some(s) => s,
         None => return Ok(src),
     };
-    let code = if mode == "eval" {
-        let e = match crate::parser::parse_expression(s.trim()) {
-            Ok(e) => e,
-            Err(e) => return Err(vm.parse_error(&e, &file)),
-        };
-        crate::compile::compile_eval(&e, &file)
-    } else {
-        let body = match crate::parser::parse_module(&s) {
-            Ok(b) => b,
-            Err(e) => return Err(vm.parse_error(&e, &file)),
-        };
-        crate::compile::compile_module(&body, &file)
-    };
-    match code {
-        Ok(c) => Ok(Value::Code(c)),
-        Err(e) => Err(vm.syntax_error(&e.msg, e.line, &file)),
-    }
+    let code = if mode == "eval" { vm.compile_source(s.trim(), &file, true)? } else { vm.compile_source(&s, &file, false)? };
+    Ok(Value::Code(code))
 }
 
 fn bi_exit(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {

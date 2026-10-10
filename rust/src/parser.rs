@@ -2,7 +2,7 @@
 //! Recursive-descent parser: tokens to the syntax tree in ast.rs.
 
 use crate::ast::*;
-use crate::lexer::{tokenize, unescape, Tok, Token};
+use crate::lexer::{tokenize, Tok, Token};
 use std::rc::Rc;
 
 pub struct SyntaxError {
@@ -30,25 +30,24 @@ struct TypeParam {
 }
 
 pub fn parse_module(src: &str) -> PResult<Vec<Stmt>> {
-    let toks = tokenize(src).map_err(|e| SyntaxError { msg: e.msg, line: e.line, col: e.col })?;
-    let mut p = Parser { toks, pos: 0, tparams: None };
+    let mut p = Parser { toks: tokenize(src), pos: 0, tparams: None };
     let mut body = Vec::new();
     while !p.at_eof() {
         if p.eat_tok(&Tok::Newline) {
             continue;
         }
-        p.statement(&mut body)?;
+        p.statement(&mut body).map_err(|e| p.settle(e))?;
     }
     Ok(body)
 }
 
 pub fn parse_expression(src: &str) -> PResult<Expr> {
-    let toks = tokenize(src.trim()).map_err(|e| SyntaxError { msg: e.msg, line: e.line, col: e.col })?;
-    let mut p = Parser { toks, pos: 0, tparams: None };
-    let e = p.expressions()?;
+    let mut p = Parser { toks: tokenize(src.trim_matches([' ', '\t', '\n', '\r', '\x0c'])), pos: 0, tparams: None };
+    let e = p.expressions().map_err(|e| p.settle(e))?;
     while p.eat_tok(&Tok::Newline) {}
     if !p.at_eof() {
-        return Err(p.err("invalid syntax"));
+        let e = p.err("invalid syntax");
+        return Err(p.settle(e));
     }
     Ok(e)
 }
@@ -78,8 +77,32 @@ impl Parser {
         }
         t
     }
+    /// an error at the current token; at a tokenizer error, that error
     fn err(&self, msg: &str) -> SyntaxError {
-        SyntaxError { msg: msg.to_string(), line: self.line(), col: 0 }
+        match &self.toks[self.pos] {
+            Token { tok: Tok::Error(m), line, col } => SyntaxError { msg: m.to_string(), line: *line, col: *col },
+            _ => SyntaxError { msg: msg.to_string(), line: self.line(), col: 0 },
+        }
+    }
+    /// As CPython does, lets a tokenizer error later in the source replace
+    /// the parser's error: an unclosed bracket only when the error is on a
+    /// later line than the bracket, and not an error in an f-string.
+    fn settle(&self, e: SyntaxError) -> SyntaxError {
+        let Some(at) = self.toks.iter().position(|t| matches!(t.tok, Tok::Error(_))) else {
+            return e;
+        };
+        let Token { tok: Tok::Error(m), line, col } = &self.toks[at] else { unreachable!() };
+        let in_fstring = self.toks[..self.pos.min(at)].iter().fold(0i32, |d, t| match t.tok {
+            Tok::FStart => d + 1,
+            Tok::FEnd => d - 1,
+            _ => d,
+        }) > 0;
+        let replace = if m.ends_with("was never closed") { e.line > *line } else { !in_fstring };
+        if replace {
+            SyntaxError { msg: m.to_string(), line: *line, col: *col }
+        } else {
+            e
+        }
     }
     fn at_op(&self, o: &str) -> bool {
         is_op(self.peek(), o)
@@ -118,7 +141,7 @@ impl Parser {
     /// `name "string"`, which CPython does not take for a missing comma
     fn after_name_before_str(&self) -> bool {
         let prev = if self.pos > 0 { self.toks.get(self.pos - 1).map(|t| &t.tok) } else { None };
-        matches!(prev, Some(Tok::Name(_))) && matches!(self.peek(), Tok::Str { .. })
+        matches!(prev, Some(Tok::Name(_))) && matches!(self.peek(), Tok::Str { .. } | Tok::FStart)
     }
     fn at_kw(&self, k: &str) -> bool {
         matches!(self.peek(), Tok::Name(n) if &**n == k)
@@ -309,7 +332,13 @@ impl Parser {
         if !self.eat_tok(&Tok::Newline) && !self.at_eof() {
             if let Some(Stmt { kind: StmtKind::Expr(Expr::Name(n)), .. }) = out.last() {
                 if (&**n == "print" || &**n == "exec") && self.starts_expr() {
-                    return Err(self.err(&format!("Missing parentheses in call to '{}'. Did you mean {}(...)?", n, n)));
+                    // only when what follows is an expression
+                    let save = self.pos;
+                    let legacy = self.star_expressions().is_ok();
+                    self.pos = save;
+                    if legacy {
+                        return Err(self.err(&format!("Missing parentheses in call to '{}'. Did you mean {}(...)?", n, n)));
+                    }
                 }
             }
             return Err(self.err("invalid syntax"));
@@ -321,7 +350,7 @@ impl Parser {
     fn starts_expr(&self) -> bool {
         match self.peek() {
             Tok::Name(n) => !is_keyword(n) || matches!(&**n, "None" | "True" | "False" | "not" | "lambda" | "await"),
-            Tok::Int(_) | Tok::BigInt(_) | Tok::Float(_) | Tok::Imag(_) | Tok::Str { .. } => true,
+            Tok::Int(_) | Tok::BigInt(_) | Tok::Float(_) | Tok::Imag(_) | Tok::Str { .. } | Tok::FStart => true,
             Tok::Op(o) => matches!(*o, "(" | "[" | "{" | "-" | "+" | "~" | "..."),
             _ => false,
         }
@@ -595,6 +624,10 @@ impl Parser {
                 p.kwarg = Some(Param { name, default: None, annotation });
             } else if self.eat_op("*") {
                 seen_star = true;
+                let bare_end = |t: &Tok| is_op(t, end) || is_op(t, "**");
+                if self.at_op(end) || (self.at_op(",") && bare_end(self.peek_at(1))) {
+                    return Err(self.err("named arguments must follow bare *"));
+                }
                 if !self.at_op(",") && !self.at_op(end) {
                     let name = self.name()?;
                     let annotation = if annotations && self.eat_op(":") { Some(self.star_or_expr()?) } else { None };
@@ -618,6 +651,10 @@ impl Parser {
             if !self.eat_op(",") {
                 break;
             }
+        }
+        let all: Vec<&Name> = p.args.iter().chain(p.vararg.iter()).chain(p.kwonly.iter()).chain(p.kwarg.iter()).map(|a| &a.name).collect();
+        if let Some(d) = all.iter().enumerate().find(|(i, n)| all[..*i].contains(n)).map(|(_, n)| n) {
+            return Err(self.err(&format!("duplicate argument '{}' in function definition", d)));
         }
         Ok(p)
     }
@@ -774,12 +811,19 @@ impl Parser {
             }
         }
         // expression statement / assignment
+        let paren = self.at_op("(");
         let first = self.star_expressions_or_yield()?;
         if self.eat_op(":") {
             let ann = self.expression()?;
             let value = if self.eat_op("=") { Some(self.star_expressions_or_yield()?) } else { None };
-            check_target(&first).map_err(|m| self.err(&m))?;
-            return Ok(StmtKind::AnnAssign(first, ann, value));
+            match &first {
+                Expr::Name(_) | Expr::Attr(..) | Expr::Subscript(..) => {}
+                Expr::Tuple(_) => return Err(self.err("only single target (not tuple) can be annotated")),
+                Expr::List(_) => return Err(self.err("only single target (not list) can be annotated")),
+                _ => return Err(self.err("illegal target for annotation")),
+            }
+            let simple = !paren && matches!(first, Expr::Name(_));
+            return Ok(StmtKind::AnnAssign(first, ann, value, simple));
         }
         if let Tok::Op(o) = self.peek().clone() {
             let aug = match o {
@@ -1133,7 +1177,9 @@ impl Parser {
                 let other = self.expression()?;
                 return Ok(Expr::IfExp(Box::new(cond), Box::new(e), Box::new(other)));
             }
-            self.pos = save;
+            if !matches!(self.peek(), Tok::Error(_)) {
+                self.pos = save;
+            }
             return Err(self.err("expected 'else' after 'if' expression"));
         }
         Ok(e)
@@ -1149,7 +1195,15 @@ impl Parser {
     fn lambda(&mut self) -> PResult<Expr> {
         let line = self.line();
         self.expect_kw("lambda")?;
-        let params = self.params(":", false)?;
+        // in a replacement field, the ':' starts the format spec
+        let no_lambda = "f-string: lambda expressions are not allowed without parentheses";
+        let params = match self.params(":", false) {
+            Err(_) if self.peek() == &Tok::FSpec => return Err(self.err(no_lambda)),
+            r => r?,
+        };
+        if self.peek() == &Tok::FSpec {
+            return Err(self.err(no_lambda));
+        }
         self.expect_op(":")?;
         let body = self.expression()?;
         let f = FuncDef {
@@ -1418,6 +1472,13 @@ impl Parser {
                 let e = self.named_expr()?;
                 if self.at_kw("for") || self.at_kw("async") {
                     let comps = self.comp_for()?;
+                    if !args.is_empty() || self.at_op(",") {
+                        if self.at_op(",") && matches!(self.peek_at(1), Tok::Error(_)) {
+                            // what follows the comma is a tokenizer error, seen first
+                            self.advance();
+                        }
+                        return Err(self.err("Generator expression must be parenthesized"));
+                    }
                     args.push(Arg::Pos(Expr::GenExp(Box::new(e), comps)));
                 } else {
                     args.push(Arg::Pos(e));
@@ -1485,7 +1546,7 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Const(Const::Imag(v)))
             }
-            Tok::Str { .. } => self.strings(line),
+            Tok::Str { .. } | Tok::FStart => self.strings(line),
             Tok::Op("...") => {
                 self.advance();
                 Ok(Expr::Const(Const::Ellipsis))
@@ -1612,19 +1673,22 @@ impl Parser {
         let mut lit = String::new();
         let mut any_f = false;
         let mut bytes = None;
-        while let Tok::Str { s, bytes: b, f } = self.peek().clone() {
-            self.advance();
-            if let Some(pb) = bytes {
-                if pb != b {
-                    return Err(SyntaxError { msg: "cannot mix bytes and nonbytes literals".into(), line, col: 0 });
-                }
+        loop {
+            let (b, f) = match self.peek() {
+                Tok::Str { bytes, .. } => (*bytes, false),
+                Tok::FStart => (false, true),
+                _ => break,
+            };
+            if bytes.is_some_and(|pb| pb != b) {
+                return Err(SyntaxError { msg: "cannot mix bytes and nonbytes literals".into(), line, col: 0 });
             }
             bytes = Some(b);
+            if let Tok::Str { s, .. } = self.advance() {
+                lit.push_str(&s);
+            }
             if f {
                 any_f = true;
-                self.fstring(&s, &mut parts, &mut lit, line)?;
-            } else {
-                lit.push_str(&s);
+                self.fstring(&mut parts, &mut lit)?;
             }
         }
         if bytes == Some(true) {
@@ -1640,223 +1704,125 @@ impl Parser {
         Ok(Expr::JoinedStr(parts))
     }
 
-    /// splits an f-string body into literal text and replacement fields
-    fn fstring(&mut self, body: &str, parts: &mut Vec<Expr>, lit: &mut String, line: u32) -> PResult<()> {
-        let cs: Vec<char> = body.chars().collect();
-        let mut i = 0;
-        let mut raw_lit = String::new();
-        let flush = |raw_lit: &mut String, lit: &mut String| -> PResult<()> {
-            if !raw_lit.is_empty() {
-                let u = unescape(raw_lit, false).map_err(|m| SyntaxError { msg: m, line, col: 0 })?;
-                lit.push_str(&u);
-                raw_lit.clear();
+    /// the rest of an f-string after FStart: its text and replacement fields
+    fn fstring(&mut self, parts: &mut Vec<Expr>, lit: &mut String) -> PResult<()> {
+        loop {
+            match self.peek().clone() {
+                Tok::FMiddle(s) => {
+                    self.advance();
+                    lit.push_str(&s);
+                }
+                Tok::FEnd => {
+                    self.advance();
+                    return Ok(());
+                }
+                Tok::Op("{") => {
+                    self.advance();
+                    let (debug, field) = self.replacement_field()?;
+                    lit.push_str(&debug);
+                    if !lit.is_empty() {
+                        parts.push(Expr::Const(Const::Str(Rc::from(lit.as_str()))));
+                        lit.clear();
+                    }
+                    parts.push(field);
+                }
+                _ => return Err(self.err("invalid syntax")),
             }
-            Ok(())
+        }
+    }
+
+    /// `expr [=] [!conv] [:spec] }` after a field's `{`; the text a
+    /// self-documenting field shows, and the formatted value
+    fn replacement_field(&mut self) -> PResult<(String, Expr)> {
+        let before = match self.peek() {
+            Tok::FDebug(_) => Some('='),
+            Tok::Op("!") => Some('!'),
+            Tok::FSpec => Some(':'),
+            Tok::Op("}") => Some('}'),
+            _ => None,
         };
-        while i < cs.len() {
-            let c = cs[i];
-            if c == '\\' && i + 2 < cs.len() && cs[i + 1] == 'N' && cs[i + 2] == '{' {
-                while i < cs.len() && cs[i] != '}' {
-                    raw_lit.push(cs[i]);
-                    i += 1;
-                }
-                if i < cs.len() {
-                    raw_lit.push(cs[i]);
-                    i += 1;
-                }
-                continue;
-            }
-            if c == '\\' && i + 1 < cs.len() && cs[i + 1] == '\\' {
-                raw_lit.push_str("\\\\");
-                i += 2;
-                continue;
-            }
-            if c == '{' {
-                if i + 1 < cs.len() && cs[i + 1] == '{' {
-                    raw_lit.push('{');
-                    i += 2;
-                    continue;
-                }
-                flush(&mut raw_lit, lit)?;
-                // find the end of the expression
-                let (expr_src, conv, spec_src, debug, ni) = split_field(&cs, i + 1).ok_or(SyntaxError { msg: "f-string: expecting '}'".into(), line, col: 0 })?;
-                i = ni;
-                // a debug field's source comes as "expr\0spaces after ="
-                let (expr_src, after_eq) = match expr_src.split_once('\0') {
-                    Some((a, b)) => (a.to_string(), b.to_string()),
-                    None => (expr_src, String::new()),
-                };
-                if debug {
-                    lit.push_str(&expr_src);
-                    lit.push('=');
-                    lit.push_str(&after_eq);
-                }
-                if !lit.is_empty() {
-                    parts.push(Expr::Const(Const::Str(Rc::from(lit.as_str()))));
-                    lit.clear();
-                }
-                let trimmed = expr_src.trim();
-                if trimmed.is_empty() {
-                    return Err(SyntaxError { msg: "f-string: valid expression required before '}'".into(), line, col: 0 });
-                }
-                let value = parse_expression(&format!("({})", trimmed)).map_err(|e| SyntaxError { msg: if e.msg.contains("Perhaps") { e.msg } else { format!("f-string: {}", e.msg) }, line, col: 0 })?;
-                let spec = match spec_src {
-                    Some(s) => {
-                        let mut sp = Vec::new();
-                        let mut sl = String::new();
-                        self.fstring(&s, &mut sp, &mut sl, line)?;
-                        if !sl.is_empty() {
-                            sp.push(Expr::Const(Const::Str(Rc::from(sl.as_str()))));
-                        }
-                        Some(Box::new(Expr::JoinedStr(sp)))
-                    }
-                    None => None,
-                };
-                let conv = if conv == '\0' && debug && spec.is_none() { 'r' } else { conv };
-                parts.push(Expr::FormattedValue { value: Box::new(value), conv, spec });
-                continue;
-            }
-            if c == '}' {
-                if i + 1 < cs.len() && cs[i + 1] == '}' {
-                    raw_lit.push('}');
-                    i += 2;
-                    continue;
-                }
-                return Err(SyntaxError { msg: "f-string: single '}' is not allowed".into(), line, col: 0 });
-            }
-            raw_lit.push(c);
-            i += 1;
+        if let Some(c) = before {
+            return Err(self.err(&format!("f-string: valid expression required before '{}'", c)));
         }
-        flush(&mut raw_lit, lit)?;
-        Ok(())
-    }
-}
-
-/// `expr[=][!c][:spec]}` starting after `{`; returns the parts and the index
-/// after the closing brace
-fn split_field(cs: &[char], mut i: usize) -> Option<(String, char, Option<String>, bool, usize)> {
-    let mut depth = 0;
-    let mut expr = String::new();
-    while i < cs.len() {
-        let c = cs[i];
-        if c == '\'' || c == '"' {
-            let q = c;
-            let triple = i + 2 < cs.len() && cs[i + 1] == q && cs[i + 2] == q;
-            let qlen = if triple { 3 } else { 1 };
-            for _ in 0..qlen {
-                expr.push(q);
+        let after_brace = "f-string: expecting a valid expression after '{'";
+        if !self.starts_expr() && !self.at_op("*") && !self.at_kw("yield") {
+            return Err(self.err(after_brace));
+        }
+        let value = if self.at_kw("yield") { self.yield_expr() } else { self.star_expressions() };
+        let value = match value {
+            Err(e) if e.msg == "invalid syntax" && !matches!(self.peek(), Tok::Error(_)) => return Err(self.err(after_brace)),
+            v => v?,
+        };
+        if matches!(value, Expr::Starred(_)) {
+            return Err(self.err("can't use starred expression here"));
+        }
+        let mut debug = String::new();
+        if let Tok::FDebug(t) = self.peek().clone() {
+            self.advance();
+            debug = t;
+        }
+        let mut conv = '\0';
+        if self.at_op("!") {
+            let bang = self.toks[self.pos].col;
+            self.advance();
+            match self.peek().clone() {
+                Tok::FSpec | Tok::Op("}") => return Err(self.err("f-string: missing conversion character")),
+                Tok::Name(n) => {
+                    if self.toks[self.pos].col != bang + 1 {
+                        return Err(self.err("f-string: conversion type must come right after the exclamanation mark"));
+                    }
+                    if matches!(self.peek_at(1), Tok::Error(_)) {
+                        self.advance();
+                        return Err(self.err(""));
+                    }
+                    if !matches!(&*n, "s" | "r" | "a") {
+                        return Err(self.err(&format!("f-string: invalid conversion character '{}': expected 's', 'r', or 'a'", n)));
+                    }
+                    self.advance();
+                    conv = n.chars().next().unwrap();
+                }
+                _ => return Err(self.err("f-string: invalid conversion character")),
             }
-            i += qlen;
+        }
+        let mut spec = None;
+        if self.eat_tok(&Tok::FSpec) {
+            let mut sp = Vec::new();
             loop {
-                if i >= cs.len() {
-                    return None;
-                }
-                if cs[i] == '\\' {
-                    expr.push(cs[i]);
-                    if i + 1 < cs.len() {
-                        expr.push(cs[i + 1]);
+                match self.peek().clone() {
+                    Tok::FMiddle(s) => {
+                        self.advance();
+                        sp.push(Expr::Const(Const::Str(Rc::from(s.as_str()))));
                     }
-                    i += 2;
-                    continue;
-                }
-                if cs[i] == q && (!triple || (i + 2 < cs.len() && cs[i + 1] == q && cs[i + 2] == q)) {
-                    for _ in 0..qlen {
-                        expr.push(q);
+                    Tok::Op("{") => {
+                        self.advance();
+                        let (d, f) = self.replacement_field()?;
+                        if !d.is_empty() {
+                            sp.push(Expr::Const(Const::Str(Rc::from(d.as_str()))));
+                        }
+                        sp.push(f);
                     }
-                    i += qlen;
-                    break;
+                    _ => break,
                 }
-                expr.push(cs[i]);
-                i += 1;
             }
-            continue;
+            spec = Some(Box::new(Expr::JoinedStr(sp)));
         }
-        if c == '(' || c == '[' || c == '{' {
-            depth += 1;
-        } else if c == ')' || c == ']' || (c == '}' && depth > 0) {
-            depth -= 1;
-        } else if depth == 0 {
-            if c == '}' {
-                return Some((expr, '\0', None, false, i + 1));
-            }
-            if c == '=' && i + 1 < cs.len() && cs[i + 1] != '=' && !expr.ends_with(['=', '!', '<', '>']) {
-                // self-documenting expression
-                let mut j = i + 1;
-                let mut conv = '\0';
-                while j < cs.len() && cs[j].is_whitespace() {
-                    j += 1;
-                }
-                let ws: String = cs[i + 1..j].iter().collect();
-                let expr = format!("{}\0{}", expr, ws);
-                if j < cs.len() && cs[j] == '!' {
-                    conv = cs[j + 1];
-                    j += 2;
-                }
-                if j < cs.len() && cs[j] == '}' {
-                    return Some((expr, conv, None, true, j + 1));
-                }
-                if j < cs.len() && cs[j] == ':' {
-                    let (spec, nj) = read_spec(cs, j + 1)?;
-                    return Some((expr, conv, Some(spec), true, nj));
-                }
-            }
-            if c == '!' && i + 1 < cs.len() && cs[i + 1] != '=' {
-                let conv = cs[i + 1];
-                let mut j = i + 2;
-                while j < cs.len() && cs[j].is_whitespace() {
-                    j += 1;
-                }
-                if j < cs.len() && cs[j] == '}' {
-                    return Some((expr, conv, None, false, j + 1));
-                }
-                if j < cs.len() && cs[j] == ':' {
-                    let (spec, nj) = read_spec(cs, j + 1)?;
-                    return Some((expr, conv, Some(spec), false, nj));
-                }
-                return None;
-            }
-            if c == ':' {
-                let (spec, nj) = read_spec(cs, i + 1)?;
-                return Some((expr, '\0', Some(spec), false, nj));
-            }
+        if !self.eat_op("}") {
+            let msg = if spec.is_some() {
+                "f-string: expecting '}'"
+            } else if conv != '\0' {
+                "f-string: expecting ':' or '}'"
+            } else if !debug.is_empty() {
+                "f-string: expecting '!', or ':', or '}'"
+            } else if self.starts_expr() {
+                "invalid syntax. Perhaps you forgot a comma?"
+            } else {
+                "f-string: expecting '=', or '!', or ':', or '}'"
+            };
+            return Err(self.err(msg));
         }
-        expr.push(c);
-        i += 1;
+        let conv = if conv == '\0' && !debug.is_empty() && spec.is_none() { 'r' } else { conv };
+        Ok((debug, Expr::FormattedValue { value: Box::new(value), conv, spec }))
     }
-    None
-}
-
-fn read_spec(cs: &[char], mut i: usize) -> Option<(String, usize)> {
-    let mut depth = 0;
-    let mut s = String::new();
-    while i < cs.len() {
-        let c = cs[i];
-        if depth > 0 && (c == '\'' || c == '"') {
-            // a string inside a nested replacement field
-            s.push(c);
-            i += 1;
-            while i < cs.len() && cs[i] != c {
-                s.push(cs[i]);
-                i += 1;
-            }
-            if i < cs.len() {
-                s.push(c);
-                i += 1;
-            }
-            continue;
-        }
-        if c == '{' {
-            depth += 1;
-        } else if c == '}' {
-            if depth == 0 {
-                return Some((s, i + 1));
-            }
-            depth -= 1;
-        }
-        s.push(c);
-        i += 1;
-    }
-    None
 }
 
 fn check_target(e: &Expr) -> Result<(), String> {

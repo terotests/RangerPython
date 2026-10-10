@@ -576,6 +576,8 @@ pub fn install_types(vm: &mut Vm) {
     def(&f, "function.__repr__", d_repr);
     def(&f, "function.__call__", function_call);
     let m = t.method.clone();
+    def(&m, "method.__new__", method_new);
+    def(&t.code.clone(), "code.replace", code_replace);
     def(&m, "method.__call__", function_call);
     def(&m, "method.__get__", return_self);
     let bf = t.builtin_function.clone();
@@ -732,6 +734,57 @@ fn object_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 /// types.FunctionType(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None)
+/// code.replace(**changes), for the fields that can change without recompiling
+fn code_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let Some(Value::Code(c)) = a.first() else {
+        return Err(vm.type_error("descriptor 'replace' requires a 'code' object"));
+    };
+    if a.len() > 1 {
+        return Err(vm.type_error("replace() takes no positional arguments"));
+    }
+    let mut n = (**c).clone();
+    for (key, v) in k {
+        let s = || v.as_str().map(|s| s.to_string());
+        match (&*key.s, v) {
+            ("co_consts", _) => {
+                // the internal constants co_consts leaves out stay in place
+                let vals = vm.to_vec(v)?;
+                let slots: Vec<&mut Value> = n.consts.iter_mut().filter(|v| !matches!(v, Value::Obj(_))).collect();
+                if slots.len() != vals.len() {
+                    return Err(vm.value_error("co_consts: cannot change the number of constants"));
+                }
+                for (slot, x) in slots.into_iter().zip(vals) {
+                    *slot = x;
+                }
+            }
+            ("co_name", Value::Str(x)) => n.name = x.clone(),
+            ("co_qualname", Value::Str(x)) => n.qualname = x.clone(),
+            ("co_filename", Value::Str(_)) => n.filename = Rc::from(s().unwrap().as_str()),
+            ("co_firstlineno", Value::Int(x)) => n.firstline = *x as u32,
+            ("co_name" | "co_qualname" | "co_filename" | "co_firstlineno", _) => {
+                let tn = vm.type_name(v);
+                return Err(vm.type_error(format!("replace() argument '{}' has the wrong type ({})", key.s, tn)));
+            }
+            _ => return Err(vm.value_error(format!("replace() cannot change '{}' on this runtime", key.s))),
+        }
+    }
+    Ok(Value::Code(Rc::new(n)))
+}
+
+/// types.MethodType(function, instance)
+fn method_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if a.len() != 3 || !k.is_empty() {
+        return Err(vm.type_error(format!("method expected 2 arguments, got {}", a.len().saturating_sub(1) + k.len())));
+    }
+    if !crate::builtins::is_callable(vm, &a[1]) {
+        return Err(vm.type_error("first argument must be callable"));
+    }
+    if a[2].is_none() {
+        return Err(vm.type_error("instance must not be None"));
+    }
+    Ok(Value::Method(Rc::new((a[2].clone(), a[1].clone()))))
+}
+
 fn function_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let arg = |i: usize, n: &str| arg_or_kw(a, i, k, n).unwrap_or(Value::None);
     let code = match arg(1, "code") {

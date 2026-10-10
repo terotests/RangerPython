@@ -283,6 +283,12 @@ impl Vm {
                 if &*name.s == "__name__" {
                     return Ok(Some(Value::Str(m.name.clone())));
                 }
+                if &*name.s == "__annotations__" {
+                    // made on first use
+                    let d = Value::dict(Dict::new());
+                    m.dict.borrow_mut().set_str(name.clone(), d.clone());
+                    return Ok(Some(d));
+                }
                 let ga = m.dict.borrow().get_s("__getattr__");
                 if let Some(ga) = ga {
                     return match self.call_vec(&ga, vec![Value::Str(name.clone())], &[]) {
@@ -446,6 +452,16 @@ impl Vm {
             if let Some(v) = crate::builtins::class_special(self, c, &name.s)? {
                 return Ok(Some(v));
             }
+        }
+        if &*name.s == "__annotations__" {
+            // a class's own, not inherited; made on first use for a class statement's class
+            let own = c.dict.borrow().get_str(name).cloned();
+            if own.is_some() || c.dict.borrow().get_s("__module__").is_none() {
+                return Ok(own);
+            }
+            let d = Value::dict(Dict::new());
+            c.dict.borrow_mut().set_str(name.clone(), d.clone());
+            return Ok(Some(d));
         }
         if let Some(v) = c.lookup(name) {
             return Ok(Some(match v {
