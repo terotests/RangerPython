@@ -228,7 +228,7 @@ impl Vm {
         };
         let e = self.attr_error(msg);
         if let Value::Instance(i) = &e.value {
-            let mut d = i.dict.borrow_mut();
+            let mut d = i.extra.borrow_mut();
             d.set_s("name", Value::str(&name.s));
             d.set_s("obj", obj.clone());
         }
@@ -692,6 +692,10 @@ impl Vm {
                     inst.extra.borrow_mut().set_str(name.clone(), Value::Bool(b));
                     return Ok(());
                 }
+                n if crate::builtins::exc_fields(self, cls).contains(&n) => {
+                    inst.extra.borrow_mut().set_str(name.clone(), v);
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -762,6 +766,18 @@ impl Vm {
                         _ => {}
                     }
                 }
+                if cls.builtin.get() == Builtin::BaseException {
+                    match &*name.s {
+                        "args" | "__traceback__" | "__cause__" | "__context__" | "__suppress_context__" => {
+                            return Err(self.type_error(format!("{} may not be deleted", name.s)));
+                        }
+                        n if crate::builtins::exc_fields(self, &cls).contains(&n) => {
+                            inst.extra.borrow_mut().remove_str(name);
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
                 if inst.dict.borrow_mut().remove_str(name).is_none() {
                     return Err(self.no_attr(obj, name));
                 }
@@ -788,6 +804,7 @@ impl Vm {
                 }
                 Err(self.no_attr(obj, name))
             }
+            Value::Obj(o) if matches!(&*o.kind.borrow(), ObjKind::Traceback { .. }) && &*name.s == "tb_next" => Err(self.type_error("can't delete tb_next attribute")),
             _ => Err(self.no_attr(obj, name)),
         }
     }
@@ -1123,6 +1140,21 @@ impl Vm {
                 let mut v = (**x).clone();
                 v.extend_from_slice(y);
                 Value::Bytes(Rc::new(v))
+            }
+            (Bytes(x), ByteArray(y)) if op == BinOp::Add => {
+                let mut v = (**x).clone();
+                v.extend_from_slice(&y.borrow());
+                Value::Bytes(Rc::new(v))
+            }
+            (ByteArray(x), Bytes(y)) if op == BinOp::Add => {
+                let mut v = x.borrow().clone();
+                v.extend_from_slice(y);
+                Value::ByteArray(Rc::new(RefCell::new(v)))
+            }
+            (ByteArray(x), ByteArray(y)) if op == BinOp::Add => {
+                let mut v = x.borrow().clone();
+                v.extend_from_slice(&y.borrow());
+                Value::ByteArray(Rc::new(RefCell::new(v)))
             }
             (Bytes(x), Int(n)) if op == BinOp::Mul => {
                 let n = self.repeat_count(x.len(), *n)?;

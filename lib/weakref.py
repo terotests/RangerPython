@@ -1,28 +1,48 @@
 # SPDX-License-Identifier: MIT
-# weakref for the Ranger Python runtime. Values here live as long as
-# anything holds them, so a weak reference is a strong one that never dies.
+# weakref for the Ranger Python runtime. A ref to an instance, function or
+# class really is weak (it reads None once the object is gone; callbacks never
+# run); to anything else it is a strong one that never dies.
+from _rpyweak import new as _new, get as _get
 
 
 class ref:
-    __slots__ = ("_obj", "_callback")
+    __slots__ = ("_obj", "_callback", "_hash")
 
     def __init__(self, obj, callback=None):
-        self._obj = obj
+        self._obj = _new(obj)
         self._callback = callback
 
     def __call__(self):
-        return self._obj
+        return _get(self._obj)
 
     def __eq__(self, other):
         if isinstance(other, ref):
-            return self._obj is other._obj or self._obj == other._obj
+            a, b = self(), other()
+            if a is None or b is None:
+                return self is other
+            return a is b or a == b
         return NotImplemented
 
+    def __ne__(self, other):
+        r = self.__eq__(other)
+        return r if r is NotImplemented else not r
+
     def __hash__(self):
-        return hash(self._obj)
+        try:
+            return self._hash
+        except AttributeError:
+            pass
+        o = self()
+        if o is None:
+            raise TypeError("weak object has gone away")
+        self._hash = hash(o)
+        return self._hash
 
     def __repr__(self):
-        return "<weakref; to '%s'>" % type(self._obj).__name__
+        o = self()
+        if o is None:
+            return "<weakref at %#x; dead>" % id(self)
+        return "<weakref at %#x; to '%s' at %#x>" % (id(self), type(o).__name__, id(o))
 
     __callback__ = property(lambda self: self._callback)
 

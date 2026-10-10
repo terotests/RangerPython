@@ -29,6 +29,8 @@ pub struct Token {
 pub struct LexError {
     pub msg: String,
     pub line: u32,
+    /// 1-based column, 0 when unknown
+    pub col: u32,
 }
 
 const OPS3: [&str; 6] = ["**=", "//=", ">>=", "<<=", "...", "!="];
@@ -59,22 +61,32 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
     let chars: Vec<char> = src.chars().collect();
     let mut toks: Vec<Token> = Vec::new();
     let mut indents: Vec<usize> = vec![0];
+    // the same widths with a tab counted as one column: TabError when they disagree
+    let mut alts: Vec<usize> = vec![0];
+    // open brackets: which, and the line and column they opened at
+    let mut opens: Vec<(&'static str, u32, u32)> = vec![];
     let mut i = 0usize;
     let mut line: u32 = 1;
     let mut depth = 0i32;
     let mut at_line_start = true;
     let n = chars.len();
-    let err = |msg: &str, line: u32| LexError { msg: msg.to_string(), line };
+    let err = |msg: &str, line: u32| LexError { msg: msg.to_string(), line, col: 0 };
     while i < n {
         if at_line_start && depth == 0 {
             // measure indentation
             let mut col = 0usize;
+            let mut alt = 0usize;
             let mut j = i;
             while j < n && (chars[j] == ' ' || chars[j] == '\t' || chars[j] == '\x0c') {
                 if chars[j] == '\t' {
                     col = (col / 8 + 1) * 8;
+                    alt += 1;
                 } else if chars[j] == ' ' {
                     col += 1;
+                    alt += 1;
+                } else {
+                    col = 0;
+                    alt = 0;
                 }
                 j += 1;
             }
@@ -104,16 +116,25 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
                 continue;
             }
             let cur = *indents.last().unwrap();
+            let tab_err = "inconsistent use of tabs and spaces in indentation";
             if col > cur {
+                if alt <= *alts.last().unwrap_or(&0) {
+                    return Err(err(tab_err, line));
+                }
                 indents.push(col);
+                alts.push(alt);
                 toks.push(Token { tok: Tok::Indent, line });
             } else {
                 while col < *indents.last().unwrap() {
                     indents.pop();
+                    alts.pop();
                     toks.push(Token { tok: Tok::Dedent, line });
                 }
                 if col != *indents.last().unwrap() {
                     return Err(err("unindent does not match any outer indentation level", line));
+                }
+                if alt != *alts.last().unwrap_or(&0) {
+                    return Err(err(tab_err, line));
                 }
             }
             i = j;
@@ -141,6 +162,11 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
             while i < n && chars[i] != '\n' {
                 i += 1;
             }
+            continue;
+        }
+        if c == '\\' && i + 1 == n && depth > 0 {
+            // the unclosed bracket is the error
+            i += 1;
             continue;
         }
         if c == '\\' && i + 1 < n && (chars[i + 1] == '\n' || chars[i + 1] == '\r') {
@@ -215,19 +241,34 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
         if OPS1.contains(c) {
             let o = op_str(&c.to_string());
             match o {
-                "(" | "[" | "{" => depth += 1,
-                ")" | "]" | "}" => depth -= 1,
+                "(" | "[" | "{" => {
+                    depth += 1;
+                    let start = chars[..i].iter().rposition(|&ch| ch == '\n').map(|p| p + 1).unwrap_or(0);
+                    opens.push((o, line, (i - start + 1) as u32));
+                }
+                ")" | "]" | "}" => {
+                    depth -= 1;
+                    opens.pop();
+                }
                 _ => {}
             }
             toks.push(Token { tok: Tok::Op(o), line });
             i += 1;
             continue;
         }
+        if c.is_ascii() {
+            return Err(err("invalid syntax", line));
+        }
         return Err(err(&format!("invalid character '{}' (U+{:04X})", c, c as u32), line));
     }
     if let Some(t) = toks.last() {
         if t.tok != Tok::Newline && t.tok != Tok::Dedent {
             toks.push(Token { tok: Tok::Newline, line });
+        }
+    }
+    if let Some((o, l, c)) = opens.last() {
+        if depth > 0 {
+            return Err(LexError { msg: format!("'{}' was never closed", o), line: *l, col: *c });
         }
     }
     while indents.len() > 1 {
@@ -256,6 +297,7 @@ fn read_string(chars: &[char], mut i: usize, mut line: u32, raw: bool, fstr: boo
             return Err(LexError {
                 msg: if triple { "unterminated triple-quoted string literal".into() } else { "unterminated string literal".into() },
                 line,
+                col: 0,
             });
         }
         let c = chars[i];
@@ -285,7 +327,7 @@ fn read_string(chars: &[char], mut i: usize, mut line: u32, raw: bool, fstr: boo
             i += ql;
             loop {
                 if i >= n {
-                    return Err(LexError { msg: "unterminated string literal".into(), line });
+                    return Err(LexError { msg: "unterminated string literal".into(), line, col: 0 });
                 }
                 if chars[i] == '\\' && i + 1 < n {
                     body.push(chars[i]);
@@ -347,7 +389,7 @@ fn read_string(chars: &[char], mut i: usize, mut line: u32, raw: bool, fstr: boo
         if c == '\n' {
             // a replacement field may span lines (3.12)
             if !triple && !(fstr && brace > 0) {
-                return Err(LexError { msg: "unterminated string literal".into(), line });
+                return Err(LexError { msg: "unterminated string literal".into(), line, col: 0 });
             }
             line += 1;
         }

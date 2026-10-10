@@ -76,12 +76,54 @@ impl Vm {
         self.native_obj("frame", ObjKind::Frame { code: f.code.clone(), line, globals: f.globals.clone(), locals, back: Value::None })
     }
 
+    /// the frame object of running frame `idx` (an index into self.frames),
+    /// made once and shared by tracebacks and sys._getframe
+    pub fn frame_value(&mut self, idx: usize) -> Value {
+        if idx >= self.frames.len() || idx >= self.frame_objs.len() {
+            return Value::None;
+        }
+        let mut lo = idx;
+        while lo > 0 && self.frame_objs[lo].is_undef() {
+            lo -= 1;
+        }
+        for i in lo..=idx {
+            if !self.frame_objs[i].is_undef() {
+                continue;
+            }
+            // SAFETY: see Vm::current_frame
+            let f = unsafe { &*self.frames[i] };
+            let line = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(0);
+            let back = if i > 0 { self.frame_objs[i - 1].clone() } else { Value::None };
+            let back = if back.is_undef() { Value::None } else { back };
+            let v = self.frame_obj(f, line);
+            if let Value::Obj(o) = &v {
+                if let ObjKind::Frame { back: b, .. } = &mut *o.kind.borrow_mut() {
+                    *b = back;
+                }
+            }
+            self.frame_objs[i] = v;
+        }
+        self.frame_objs[idx].clone()
+    }
+
     /// adds the frame `f` at `line` to the front of exc.__traceback__
     pub fn tb_here(&mut self, exc: &Value, f: &Frame, line: u32) {
         if let Value::Instance(i) = exc {
             let next = i.extra.borrow().get_str(&self.n.tb).cloned().unwrap_or(Value::None);
-            let frame = self.frame_obj(f, line);
-            let tb = self.native_obj("traceback", ObjKind::Traceback { frame, line, next });
+            let top = self.frames.len();
+            let frame = if top > 0 && std::ptr::eq(self.frames[top - 1] as *const Frame, f) {
+                let v = self.frame_value(top - 1);
+                if let Value::Obj(o) = &v {
+                    if let ObjKind::Frame { line: l, .. } = &mut *o.kind.borrow_mut() {
+                        *l = line;
+                    }
+                }
+                v
+            } else {
+                self.frame_obj(f, line)
+            };
+            let lasti = (f.ip.saturating_sub(1) * 2) as i64;
+            let tb = self.native_obj("traceback", ObjKind::Traceback { frame, line, next, lasti });
             i.extra.borrow_mut().set_str(self.n.tb.clone(), tb);
         }
     }
@@ -92,7 +134,7 @@ impl Vm {
         let mut cur = tb.clone();
         while let Value::Obj(o) = &cur {
             let next = match &*o.kind.borrow() {
-                ObjKind::Traceback { frame, line, next } => {
+                ObjKind::Traceback { frame, line, next, .. } => {
                     if let Value::Obj(fo) = frame {
                         if let ObjKind::Frame { code, .. } = &*fo.kind.borrow() {
                             out.push((code.filename.to_string(), *line as i64, code.name.s.to_string()));
@@ -119,11 +161,11 @@ pub fn exc_extra(vm: &Vm, inst: &Instance, name: &str) -> Value {
 /// attributes of tracebacks, frames and members
 pub fn obj_attr(vm: &mut Vm, o: &NativeObj, name: &str) -> PyResult<Option<Value>> {
     Ok(match &*o.kind.borrow() {
-        ObjKind::Traceback { frame, line, next } => match name {
+        ObjKind::Traceback { frame, line, next, lasti } => match name {
             "tb_frame" => Some(frame.clone()),
             "tb_lineno" => Some(Value::Int(*line as i64)),
             "tb_next" => Some(next.clone()),
-            "tb_lasti" => Some(Value::Int(0)),
+            "tb_lasti" => Some(Value::Int(*lasti)),
             _ => None,
         },
         ObjKind::Frame { code, line, globals, locals, back } => match name {
@@ -209,8 +251,9 @@ fn tb_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         let tn = vm.type_name(&a[2]);
         return Err(vm.type_error(format!("TracebackType() argument 'tb_frame' must be frame, not {}", tn)));
     }
+    let lasti = vm.to_index(&a[3])?;
     let line = vm.to_index(&a[4])? as u32;
-    Ok(vm.native_obj("traceback", ObjKind::Traceback { frame: a[2].clone(), line, next }))
+    Ok(vm.native_obj("traceback", ObjKind::Traceback { frame: a[2].clone(), line, next, lasti }))
 }
 
 fn frame_clear(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {

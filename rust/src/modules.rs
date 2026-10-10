@@ -41,8 +41,45 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_hashlib" => hashlib_module(),
         "_struct" => struct_module(),
         "_unicodedata" => unicodedata_module(),
+        "_rpyweak" => weak_module(),
         _ => return Ok(None),
     }))
+}
+
+// -------------------------------------------------------------------------
+// weak references: what weakref.ref holds
+
+fn weak_module() -> Value {
+    let (d, m) = module("_rpyweak");
+    put_fns(&d, &[("_rpyweak.new", weak_new), ("_rpyweak.get", weak_get)]);
+    m
+}
+
+/// a weak handle to an instance, function or class; anything else is kept as is
+fn weak_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let t = match &a[0] {
+        Value::Instance(i) => WeakTarget::Inst(Rc::downgrade(i)),
+        Value::Func(f) => WeakTarget::Func(Rc::downgrade(f)),
+        Value::Class(c) => WeakTarget::Class(Rc::downgrade(c)),
+        other => return Ok(other.clone()),
+    };
+    Ok(vm.native_obj("weakhandle", ObjKind::Weak(t)))
+}
+
+fn weak_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    if let Value::Obj(o) = &a[0] {
+        if let ObjKind::Weak(t) = &*o.kind.borrow() {
+            return Ok(match t {
+                WeakTarget::Inst(w) => w.upgrade().map(Value::Instance),
+                WeakTarget::Func(w) => w.upgrade().map(Value::Func),
+                WeakTarget::Class(w) => w.upgrade().map(Value::Class),
+            }
+            .unwrap_or(Value::None));
+        }
+    }
+    Ok(a[0].clone())
 }
 
 // -------------------------------------------------------------------------
@@ -630,6 +667,8 @@ fn sys_module(vm: &mut Vm) -> Value {
             ("sys.set_int_max_str_digits", sys_set_int_max_str_digits),
             ("sys.setrecursionlimit", sys_setrecursionlimit),
             ("sys.exc_info", sys_exc_info),
+            ("sys.excepthook", sys_excepthook),
+            ("sys.__excepthook__", sys_excepthook),
             ("sys.exception", sys_exception),
             ("sys.getsizeof", sys_getsizeof),
             ("sys.intern", sys_intern),
@@ -691,6 +730,16 @@ fn sys_exc_info(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
         None => Ok(Value::tuple(vec![Value::None, Value::None, Value::None])),
     }
 }
+/// prints the exception and its traceback to sys.stderr
+fn sys_excepthook(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    if a.len() != 3 {
+        return Err(vm.type_error(format!("excepthook expected 3 arguments, got {}", a.len())));
+    }
+    let m = vm.import("traceback", &Value::None, 0, &vm.main_globals.clone())?;
+    let f = vm.getattr(&m, &ps("print_exception"))?;
+    vm.call_vec(&f, a.to_vec(), &[])?;
+    Ok(Value::None)
+}
 fn sys_exception(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(vm.handled.last().cloned().unwrap_or(Value::None))
 }
@@ -726,29 +775,29 @@ fn sys_false(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Bool(false))
 }
 
-/// a frame-like module object with f_locals, f_globals, f_lineno, f_code
+/// the running frame `depth` calls up, with a fresh f_locals snapshot
 fn sys_getframe(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let depth = match a.first() {
-        Some(v) => vm.to_index(v)? as usize,
+        Some(v) => vm.to_index(v)?,
         None => 0,
     };
     let n = vm.frames.len();
-    if depth >= n {
+    if depth < 0 || depth as usize >= n {
         return Err(vm.value_error("call stack is not deep enough"));
     }
+    let idx = n - 1 - depth as usize;
+    let v = vm.frame_value(idx);
     // SAFETY: see Vm::current_frame
-    let f = unsafe { &*vm.frames[n - 1 - depth] };
-    let d = new_dict();
-    let line = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(0);
-    {
-        let mut b = d.borrow_mut();
-        b.set_s("f_locals", Value::Dict(frame_locals(f)));
-        b.set_s("f_globals", Value::Dict(f.globals.clone()));
-        b.set_s("f_lineno", Value::Int(line as i64));
-        b.set_s("f_code", Value::Code(f.code.clone()));
-        b.set_s("f_back", Value::None);
+    let f = unsafe { &*vm.frames[idx] };
+    let cur = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(0);
+    let snap = Value::Dict(frame_locals(f));
+    if let Value::Obj(o) = &v {
+        if let ObjKind::Frame { line, locals, .. } = &mut *o.kind.borrow_mut() {
+            *line = cur;
+            *locals = snap;
+        }
     }
-    Ok(Value::Module(Rc::new(Module { name: ps("frame"), dict: d })))
+    Ok(v)
 }
 
 // -------------------------------------------------------------------------

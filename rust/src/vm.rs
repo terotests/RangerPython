@@ -59,6 +59,8 @@ pub struct Generator {
     pub name: Rc<PyStr>,
     pub qualname: Rc<PyStr>,
     pub coroutine: bool,
+    /// the exceptions its frame was handling when it last yielded
+    pub handled: Vec<Value>,
 }
 
 /// interned names the VM looks up often
@@ -286,6 +288,8 @@ pub struct Vm {
     pub last_return: Option<Value>,
     /// the frames running now, innermost last (locals(), super(), eval)
     pub frames: Vec<*mut Frame>,
+    /// the frame object of each running frame once something asked for it
+    pub frame_objs: Vec<Value>,
     /// value stacks of finished frames, reused by the next calls
     pub stack_pool: Vec<Vec<Value>>,
     /// write output to the process's stdout/stderr as it comes
@@ -322,6 +326,7 @@ impl Vm {
             start_time: std::time::Instant::now(),
             last_return: None,
             frames: Vec::with_capacity(64),
+            frame_objs: Vec::with_capacity(64),
             stack_pool: Vec::new(),
             classes: HashMap::new(),
             bare_reraise: false,
@@ -389,7 +394,9 @@ impl Vm {
 
     pub fn new_exc(&mut self, cls: &Rc<Class>, args: Vec<Value>) -> Value {
         let inst = Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(Value::tuple(args)), extra: RefCell::new(Dict::new()) };
-        Value::Instance(Rc::new(inst))
+        let v = Value::Instance(Rc::new(inst));
+        crate::builtins::exc_init_native(self, &v);
+        v
     }
 
     pub fn err(&mut self, kind: &str, msg: impl Into<String>) -> Exc {
@@ -493,17 +500,25 @@ impl Vm {
 
     pub fn run_frame(&mut self, f: &mut Frame) -> PyResult<Exit> {
         self.frames.push(f as *mut Frame);
+        self.frame_objs.push(Value::Undef);
         let r = loop {
             match self.exec(f) {
                 Ok(x) => break Ok(x),
                 Err(e) => {
                     if let Err(e) = self.handle_exc(f, e) {
+                        // the traceback keeps the locals of the frames it leaves
+                        if let Some(Value::Obj(o)) = self.frame_objs.last() {
+                            if let ObjKind::Frame { locals: l @ Value::None, .. } = &mut *o.kind.borrow_mut() {
+                                *l = Value::Dict(crate::builtins::frame_locals(f));
+                            }
+                        }
                         break Err(e);
                     }
                 }
             }
         };
         self.frames.pop();
+        self.frame_objs.pop();
         r
     }
 
@@ -557,6 +572,14 @@ impl Vm {
         };
         if !reraised {
             self.tb_here(&e.value, f, line);
+        } else if let Some(Value::Obj(o)) = self.frame_objs.last() {
+            // the frame's f_lineno follows the re-raise
+            let with_exit = matches!(f.code.ops.get(f.ip.saturating_sub(1)), Some(Op::WithExcept));
+            if !with_exit && self.frames.last().map(|p| std::ptr::eq(*p as *const Frame, f)).unwrap_or(false) {
+                if let ObjKind::Frame { line: l, .. } = &mut *o.kind.borrow_mut() {
+                    *l = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(line);
+                }
+            }
         }
         // chain onto an exception being handled
         if let Some(h) = self.handled.last().cloned() {
@@ -1628,7 +1651,7 @@ impl Vm {
     pub fn name_error(&mut self, name: &PyStr) -> Exc {
         let e = self.err("NameError", format!("name '{}' is not defined", name.s));
         if let Value::Instance(i) = &e.value {
-            i.dict.borrow_mut().set_s("name", Value::str(&name.s));
+            i.extra.borrow_mut().set_s("name", Value::str(&name.s));
         }
         e
     }
@@ -1650,7 +1673,9 @@ impl Vm {
         if let Some(c) = cause {
             let c = match c {
                 Value::None => Value::None,
-                other => self.make_raisable(other)?,
+                Value::Class(ref k) if k.is_subclass(&self.t.base_exception) => self.make_raisable(c)?,
+                Value::Instance(ref i) if i.class.borrow().is_subclass(&self.t.base_exception) => c,
+                _ => return Err(self.type_error("exception causes must derive from BaseException")),
             };
             if let Value::Instance(i) = &exc {
                 i.extra.borrow_mut().set_str(self.n.cause.clone(), c);
@@ -1686,12 +1711,10 @@ impl Vm {
                 Ok(cls.is_subclass(c))
             }
             Value::Tuple(items) => {
-                for it in items.iter() {
-                    if self.exc_matches(e, it)? {
-                        return Ok(true);
-                    }
+                if items.iter().any(|it| !matches!(it, Value::Class(c) if c.is_subclass(&self.t.base_exception))) {
+                    return Err(self.type_error("catching classes that do not inherit from BaseException is not allowed"));
                 }
-                Ok(false)
+                Ok(items.iter().any(|it| matches!(it, Value::Class(c) if cls.is_subclass(c))))
             }
             _ => Err(self.type_error("catching classes that do not inherit from BaseException is not allowed")),
         }
@@ -1890,7 +1913,7 @@ impl Vm {
         cells.extend(func.closure.iter().cloned());
         let f = Frame { code: code.clone(), ip: 0, stack: locals, cells, blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         if code.generator || code.coroutine {
-            let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator };
+            let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator, handled: vec![] };
             return Ok(Value::Gen(Rc::new(RefCell::new(g))));
         }
         let mut f = f;
@@ -2027,6 +2050,7 @@ impl Vm {
 
     /// resumes a generator; Ok(None) when it returned (value in last_return)
     pub fn resume(&mut self, g: &Rc<RefCell<Generator>>, sent: Value, throw: Option<Value>) -> PyResult<Option<Value>> {
+        let base = self.handled.len();
         let mut frame = {
             let mut gb = g.borrow_mut();
             if gb.running {
@@ -2043,6 +2067,8 @@ impl Vm {
                     let started = gb.started;
                     gb.started = true;
                     gb.running = true;
+                    let saved = std::mem::take(&mut gb.handled);
+                    self.handled.extend(saved);
                     if started && throw.is_none() {
                         let mut f = f;
                         f.stack.push(sent);
@@ -2072,8 +2098,10 @@ impl Vm {
         self.depth -= 1;
         let mut gb = g.borrow_mut();
         gb.running = false;
+        let mine = if base <= self.handled.len() { self.handled.split_off(base) } else { vec![] };
         match r {
             Ok(Exit::Yield(v)) => {
+                gb.handled = mine;
                 gb.frame = Some(frame);
                 Ok(Some(v))
             }
@@ -2164,6 +2192,13 @@ impl Vm {
                     other => other.clone(),
                 };
                 let mut a = Vec::with_capacity(args.len() + 1);
+                a.push(Value::Class(cls.clone()));
+                a.extend(args.iter().cloned());
+                self.call_vec(&f, a, kw)?
+            }
+            Some(Value::ClassMethod(f)) => {
+                let mut a = Vec::with_capacity(args.len() + 2);
+                a.push(Value::Class(cls.clone()));
                 a.push(Value::Class(cls.clone()));
                 a.extend(args.iter().cloned());
                 self.call_vec(&f, a, kw)?
@@ -2583,7 +2618,7 @@ impl Vm {
             None => {
                 let e = self.err("ModuleNotFoundError", format!("No module named '{}'", name));
                 if let Value::Instance(i) = &e.value {
-                    i.dict.borrow_mut().set_s("name", Value::str(name));
+                    i.extra.borrow_mut().set_s("name", Value::str(name));
                 }
                 return Err(e);
             }
@@ -2631,7 +2666,7 @@ impl Vm {
     pub fn run_source(&mut self, src: &str, file: &str, globals: Rc<RefCell<Dict>>) -> PyResult<Value> {
         let body = match crate::parser::parse_module(src) {
             Ok(b) => b,
-            Err(e) => return Err(self.syntax_error(&e.msg, e.line, file)),
+            Err(e) => return Err(self.parse_error(&e, file)),
         };
         let code = match crate::compile::compile_module(&body, file) {
             Ok(c) => c,
@@ -2640,14 +2675,28 @@ impl Vm {
         self.run_module_code(code, globals)
     }
 
+    /// a SyntaxError from the parser, with its column when known
+    pub fn parse_error(&mut self, e: &crate::parser::SyntaxError, file: &str) -> Exc {
+        let x = self.syntax_error(&e.msg, e.line, file);
+        if e.col > 0 {
+            crate::builtins::exc_set_field(&x.value, "offset", Value::Int(e.col as i64));
+        }
+        x
+    }
+
     pub fn syntax_error(&mut self, msg: &str, line: u32, file: &str) -> Exc {
-        let kind = if msg.contains("indent") { "IndentationError" } else { "SyntaxError" };
+        let kind = if msg.starts_with("inconsistent use of tabs") {
+            "TabError"
+        } else if msg.contains("indent") {
+            "IndentationError"
+        } else {
+            "SyntaxError"
+        };
         let e = self.err(kind, msg.to_string());
         if let Value::Instance(i) = &e.value {
-            let mut d = i.dict.borrow_mut();
+            let mut d = i.extra.borrow_mut();
             d.set_s("lineno", Value::Int(line as i64));
             d.set_s("filename", Value::str(file));
-            d.set_s("msg", Value::str(msg));
         }
         e
     }

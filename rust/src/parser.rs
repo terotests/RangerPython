@@ -8,6 +8,8 @@ use std::rc::Rc;
 pub struct SyntaxError {
     pub msg: String,
     pub line: u32,
+    /// 1-based column, 0 when unknown
+    pub col: u32,
 }
 
 type PResult<T> = Result<T, SyntaxError>;
@@ -28,7 +30,7 @@ struct TypeParam {
 }
 
 pub fn parse_module(src: &str) -> PResult<Vec<Stmt>> {
-    let toks = tokenize(src).map_err(|e| SyntaxError { msg: e.msg, line: e.line })?;
+    let toks = tokenize(src).map_err(|e| SyntaxError { msg: e.msg, line: e.line, col: e.col })?;
     let mut p = Parser { toks, pos: 0, tparams: None };
     let mut body = Vec::new();
     while !p.at_eof() {
@@ -41,7 +43,7 @@ pub fn parse_module(src: &str) -> PResult<Vec<Stmt>> {
 }
 
 pub fn parse_expression(src: &str) -> PResult<Expr> {
-    let toks = tokenize(src.trim()).map_err(|e| SyntaxError { msg: e.msg, line: e.line })?;
+    let toks = tokenize(src.trim()).map_err(|e| SyntaxError { msg: e.msg, line: e.line, col: e.col })?;
     let mut p = Parser { toks, pos: 0, tparams: None };
     let e = p.expressions()?;
     while p.eat_tok(&Tok::Newline) {}
@@ -77,7 +79,7 @@ impl Parser {
         t
     }
     fn err(&self, msg: &str) -> SyntaxError {
-        SyntaxError { msg: msg.to_string(), line: self.line() }
+        SyntaxError { msg: msg.to_string(), line: self.line(), col: 0 }
     }
     fn at_op(&self, o: &str) -> bool {
         is_op(self.peek(), o)
@@ -108,9 +110,15 @@ impl Parser {
                     "]" => "[",
                     _ => "{",
                 }))),
+                _ if (o == ")" || o == "]" || o == "}") && self.starts_expr() && !self.after_name_before_str() => Err(self.err("invalid syntax. Perhaps you forgot a comma?")),
                 _ => Err(self.err(if o == ":" { "expected ':'" } else { "invalid syntax" })),
             }
         }
+    }
+    /// `name "string"`, which CPython does not take for a missing comma
+    fn after_name_before_str(&self) -> bool {
+        let prev = if self.pos > 0 { self.toks.get(self.pos - 1).map(|t| &t.tok) } else { None };
+        matches!(prev, Some(Tok::Name(_))) && matches!(self.peek(), Tok::Str { .. })
     }
     fn at_kw(&self, k: &str) -> bool {
         matches!(self.peek(), Tok::Name(n) if &**n == k)
@@ -147,7 +155,7 @@ impl Parser {
         let mut body = Vec::new();
         if self.eat_tok(&Tok::Newline) {
             if !self.eat_tok(&Tok::Indent) {
-                return Err(self.err("expected an indented block"));
+                return Err(self.err(&self.indent_msg()));
             }
             while !self.eat_tok(&Tok::Dedent) {
                 if self.at_eof() {
@@ -162,6 +170,30 @@ impl Parser {
             self.simple_statements(&mut body)?;
         }
         Ok(body)
+    }
+
+    /// CPython's message for a block header with no indented body
+    fn indent_msg(&self) -> String {
+        let mut i = self.pos.saturating_sub(1);
+        while i > 0 && !matches!(self.toks[i - 1].tok, Tok::Newline | Tok::Indent | Tok::Dedent) {
+            i -= 1;
+        }
+        let kw = |k: usize| match self.toks.get(k).map(|t| &t.tok) {
+            Some(Tok::Name(n)) => n.to_string(),
+            _ => String::new(),
+        };
+        let mut k = kw(i);
+        if k == "async" {
+            k = kw(i + 1);
+        }
+        let line = self.toks.get(i).map(|t| t.line).unwrap_or(0);
+        let what = match &*k {
+            "def" => "function definition".to_string(),
+            "class" => "class definition".to_string(),
+            "if" | "elif" | "else" | "while" | "for" | "try" | "except" | "finally" | "with" | "match" | "case" => format!("'{}' statement", k),
+            _ => return "expected an indented block".into(),
+        };
+        format!("expected an indented block after {} on line {}", what, line)
     }
 
     fn statement(&mut self, out: &mut Vec<Stmt>) -> PResult<()> {
@@ -273,9 +305,24 @@ impl Parser {
             break;
         }
         if !self.eat_tok(&Tok::Newline) && !self.at_eof() {
+            if let Some(Stmt { kind: StmtKind::Expr(Expr::Name(n)), .. }) = out.last() {
+                if (&**n == "print" || &**n == "exec") && self.starts_expr() {
+                    return Err(self.err(&format!("Missing parentheses in call to '{}'. Did you mean {}(...)?", n, n)));
+                }
+            }
             return Err(self.err("invalid syntax"));
         }
         Ok(())
+    }
+
+    /// whether the next token can begin an expression
+    fn starts_expr(&self) -> bool {
+        match self.peek() {
+            Tok::Name(n) => !is_keyword(n) || matches!(&**n, "None" | "True" | "False" | "not" | "lambda" | "await"),
+            Tok::Int(_) | Tok::BigInt(_) | Tok::Float(_) | Tok::Imag(_) | Tok::Str { .. } => true,
+            Tok::Op(o) => matches!(*o, "(" | "[" | "{" | "-" | "+" | "~" | "..."),
+            _ => false,
+        }
     }
 
     fn if_rest(&mut self, line: u32) -> PResult<Stmt> {
@@ -1475,7 +1522,7 @@ impl Parser {
             self.advance();
             if let Some(pb) = bytes {
                 if pb != b {
-                    return Err(SyntaxError { msg: "cannot mix bytes and nonbytes literals".into(), line });
+                    return Err(SyntaxError { msg: "cannot mix bytes and nonbytes literals".into(), line, col: 0 });
                 }
             }
             bytes = Some(b);
@@ -1506,7 +1553,7 @@ impl Parser {
         let mut raw_lit = String::new();
         let flush = |raw_lit: &mut String, lit: &mut String| -> PResult<()> {
             if !raw_lit.is_empty() {
-                let u = unescape(raw_lit, false).map_err(|m| SyntaxError { msg: m, line })?;
+                let u = unescape(raw_lit, false).map_err(|m| SyntaxError { msg: m, line, col: 0 })?;
                 lit.push_str(&u);
                 raw_lit.clear();
             }
@@ -1538,7 +1585,7 @@ impl Parser {
                 }
                 flush(&mut raw_lit, lit)?;
                 // find the end of the expression
-                let (expr_src, conv, spec_src, debug, ni) = split_field(&cs, i + 1).ok_or(SyntaxError { msg: "f-string: expecting '}'".into(), line })?;
+                let (expr_src, conv, spec_src, debug, ni) = split_field(&cs, i + 1).ok_or(SyntaxError { msg: "f-string: expecting '}'".into(), line, col: 0 })?;
                 i = ni;
                 // a debug field's source comes as "expr\0spaces after ="
                 let (expr_src, after_eq) = match expr_src.split_once('\0') {
@@ -1556,9 +1603,9 @@ impl Parser {
                 }
                 let trimmed = expr_src.trim();
                 if trimmed.is_empty() {
-                    return Err(SyntaxError { msg: "f-string: valid expression required before '}'".into(), line });
+                    return Err(SyntaxError { msg: "f-string: valid expression required before '}'".into(), line, col: 0 });
                 }
-                let value = parse_expression(&format!("({})", trimmed)).map_err(|e| SyntaxError { msg: format!("f-string: {}", e.msg), line })?;
+                let value = parse_expression(&format!("({})", trimmed)).map_err(|e| SyntaxError { msg: if e.msg.contains("Perhaps") { e.msg } else { format!("f-string: {}", e.msg) }, line, col: 0 })?;
                 let spec = match spec_src {
                     Some(s) => {
                         let mut sp = Vec::new();
@@ -1581,7 +1628,7 @@ impl Parser {
                     i += 2;
                     continue;
                 }
-                return Err(SyntaxError { msg: "f-string: single '}' is not allowed".into(), line });
+                return Err(SyntaxError { msg: "f-string: single '}' is not allowed".into(), line, col: 0 });
             }
             raw_lit.push(c);
             i += 1;

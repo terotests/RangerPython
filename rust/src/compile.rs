@@ -1337,7 +1337,12 @@ impl<'a> Compiler<'a> {
             }
         }
         if handlers.last().map(|h| h.typ.is_some()).unwrap_or(true) {
+            let saved = self.u().line;
+            if let Some(hd) = handlers.last() {
+                self.u().line = hd.line;
+            }
             self.emit(Op::Reraise);
+            self.u().line = saved;
         }
         let end = self.here();
         for e in ends {
@@ -1405,6 +1410,7 @@ impl<'a> Compiler<'a> {
             return self.stmts(body);
         }
         let (e, t) = &items[i];
+        let wline = self.u().line;
         self.expr(e)?;
         let setup = self.emit(Op::SetupWith(0));
         match t {
@@ -1416,12 +1422,15 @@ impl<'a> Compiler<'a> {
         self.u().blocks.push(FBlock::With);
         self.with(items, i + 1, body)?;
         self.u().blocks.pop();
+        let saved = self.u().line;
+        self.u().line = wline;
         self.emit(Op::PopBlock);
         self.emit(Op::WithExit(0));
         let end = self.emit(Op::Jump(0));
         let h = self.here();
         self.patch(setup, h);
         self.emit(Op::WithExcept);
+        self.u().line = saved;
         let h = self.here();
         self.patch(end, h);
         Ok(())

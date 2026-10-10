@@ -195,7 +195,15 @@ fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
         }
     }
     res.error_type = cls.name().to_string();
-    let msg = builtins::exc_str(vm, exc).unwrap_or_default();
+    let msg = if cls.is_subclass(&vm.exc_class("SyntaxError")) {
+        // the traceback shows the location itself, so only the message
+        match vm.getattr(exc, &builtins::ps("msg")) {
+            Ok(Value::None) | Err(_) => String::new(),
+            Ok(m) => vm.str_of(&m).unwrap_or_default(),
+        }
+    } else {
+        builtins::exc_str(vm, exc).unwrap_or_default()
+    };
     res.error = if msg.is_empty() { name } else { format!("{}: {}", name, msg) };
     lines.push(res.error.clone());
     res.traceback = lines.join("\n");

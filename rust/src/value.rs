@@ -259,10 +259,18 @@ pub enum ObjKind {
     /// function.__code__ (getset) or function.__globals__ (member)
     GetSet(Rc<PyStr>, Rc<Class>, bool),
     /// a traceback entry; `next` is the entry of the frame it was raised in
-    Traceback { frame: Value, line: u32, next: Value },
+    Traceback { frame: Value, line: u32, next: Value, lasti: i64 },
     /// a frame as tracebacks and sys._getframe see it
     Frame { code: Rc<crate::code::Code>, line: u32, globals: Rc<RefCell<Dict>>, locals: Value, back: Value },
+    /// the referent of a weakref.ref
+    Weak(WeakTarget),
     Other(Value),
+}
+
+pub enum WeakTarget {
+    Inst(std::rc::Weak<Instance>),
+    Func(std::rc::Weak<Function>),
+    Class(std::rc::Weak<Class>),
 }
 
 pub enum Iter {

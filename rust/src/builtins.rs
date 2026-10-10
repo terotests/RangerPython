@@ -1030,33 +1030,7 @@ pub fn instance_special(vm: &mut Vm, obj: &Value, inst: &Rc<Instance>, name: &st
             "args" => Some(Value::tuple(args)),
             "__traceback__" | "__cause__" | "__context__" => Some(crate::tb::exc_extra(vm, inst, name)),
             "__suppress_context__" => Some(inst.extra.borrow().get_str(&vm.n.suppress).cloned().unwrap_or(Value::Bool(false))),
-            "value" if cls.is_subclass(&vm.exc_class("StopIteration")) => Some(args.into_iter().next().unwrap_or(Value::None)),
-            "code" if cls.is_subclass(&vm.exc_class("SystemExit")) => Some(match args.len() {
-                0 => Value::None,
-                1 => args[0].clone(),
-                _ => Value::tuple(args),
-            }),
-            "errno" | "strerror" | "filename" | "filename2" if cls.is_subclass(&vm.exc_class("OSError")) => {
-                let i = match name {
-                    "errno" => 0,
-                    "strerror" => 1,
-                    "filename" => 2,
-                    _ => 3,
-                };
-                Some(if args.len() >= 2 { args.get(i).cloned().unwrap_or(Value::None) } else { Value::None })
-            }
-            "name" | "path" | "obj" if cls.is_subclass(&vm.exc_class("ImportError")) || cls.is_subclass(&vm.exc_class("AttributeError")) || cls.is_subclass(&vm.exc_class("NameError")) => Some(Value::None),
-            "msg" if cls.is_subclass(&vm.exc_class("SyntaxError")) => Some(args.into_iter().next().unwrap_or(Value::None)),
-            "lineno" | "offset" | "text" | "filename" | "end_lineno" | "end_offset" if cls.is_subclass(&vm.exc_class("SyntaxError")) => Some(Value::None),
-            "encoding" | "object" | "start" | "end" | "reason" if cls.is_subclass(&vm.exc_class("UnicodeError")) => {
-                let translate = cls.is_subclass(&vm.exc_class("UnicodeTranslateError"));
-                let i = ["encoding", "object", "start", "end", "reason"].iter().position(|n| *n == name).unwrap();
-                match (translate, i) {
-                    (true, 0) => Some(Value::None),
-                    (true, i) => args.get(i - 1).cloned(),
-                    (false, i) => args.get(i).cloned(),
-                }
-            }
+            _ if exc_fields(vm, &cls).contains(&name) => Some(inst.extra.borrow().get_s(name).unwrap_or(Value::None)),
             "exceptions" | "message" => None,
             _ => None,
         });
@@ -1116,59 +1090,275 @@ pub fn encode_error(vm: &mut Vm, enc: &str, obj: &str, start: usize, end: usize,
     Exc { value: v }
 }
 
-fn unicode_error_str(vm: &mut Vm, cls: &Rc<Class>, args: &[Value]) -> PyResult<Option<String>> {
+/// the attributes an exception family keeps outside __dict__ (C slots in CPython)
+pub fn exc_fields(vm: &Vm, cls: &Rc<Class>) -> &'static [&'static str] {
+    let is = |n: &str| match vm.exc.get(n) {
+        Some(k) => cls.is_subclass(k),
+        None => false,
+    };
+    if is("OSError") {
+        &["errno", "strerror", "filename", "filename2"]
+    } else if is("StopIteration") {
+        &["value"]
+    } else if is("SystemExit") {
+        &["code"]
+    } else if is("ImportError") {
+        &["msg", "name", "path", "name_from"]
+    } else if is("AttributeError") {
+        &["name", "obj"]
+    } else if is("NameError") {
+        &["name"]
+    } else if is("SyntaxError") {
+        &["msg", "filename", "lineno", "offset", "text", "end_lineno", "end_offset", "print_file_and_line", "_metadata"]
+    } else if is("UnicodeError") {
+        &["encoding", "object", "start", "end", "reason"]
+    } else {
+        &[]
+    }
+}
+
+fn exc_field(inst: &Instance, name: &str) -> Value {
+    inst.extra.borrow().get_s(name).unwrap_or(Value::None)
+}
+
+pub fn exc_set_field(v: &Value, name: &str, val: Value) {
+    if let Value::Instance(i) = v {
+        i.extra.borrow_mut().set_s(name, val);
+    }
+}
+
+fn kw_check(vm: &mut Vm, tname: &str, k: Kw, allowed: &[&str]) -> PyResult<()> {
+    for (n, _) in k {
+        if !allowed.contains(&&*n.s) {
+            return Err(vm.type_error(if allowed.is_empty() {
+                format!("{}() takes no keyword arguments", tname)
+            } else {
+                format!("{}() got an unexpected keyword argument '{}'", tname, n.s)
+            }));
+        }
+    }
+    Ok(())
+}
+
+fn kw_get(k: Kw, name: &str) -> Value {
+    k.iter().find(|(n, _)| &*n.s == name).map(|(_, v)| v.clone()).unwrap_or(Value::None)
+}
+
+/// BaseException.__init__ and the subclass slots it fills; returns the args to keep
+fn exc_setup(vm: &mut Vm, inst: &Instance, args: &[Value], k: Kw) -> PyResult<Vec<Value>> {
+    let cls = inst.class.borrow().clone();
+    let is = |vm: &Vm, n: &str| cls.is_subclass(&vm.exc_class(n));
+    let mut keep = args.to_vec();
+    let mut set: Vec<(&str, Value)> = vec![];
+    let first = args.first().cloned().unwrap_or(Value::None);
+    if is(vm, "ImportError") {
+        kw_check(vm, "ImportError", k, &["name", "path"])?;
+        let msg = if args.len() == 1 { first.clone() } else { Value::None };
+        set = vec![("msg", msg), ("name", kw_get(k, "name")), ("path", kw_get(k, "path")), ("name_from", Value::None)];
+    } else if is(vm, "AttributeError") {
+        kw_check(vm, "AttributeError", k, &["name", "obj"])?;
+        set = vec![("name", kw_get(k, "name")), ("obj", kw_get(k, "obj"))];
+    } else if is(vm, "NameError") {
+        kw_check(vm, "NameError", k, &["name"])?;
+        set = vec![("name", kw_get(k, "name"))];
+    } else {
+        let tn = cls.name().to_string();
+        kw_check(vm, &tn, k, &[])?;
+    }
+    if is(vm, "OSError") {
+        let mut f = [Value::None, Value::None, Value::None, Value::None];
+        if (2..=5).contains(&args.len()) {
+            f[0] = args[0].clone();
+            f[1] = args[1].clone();
+            if args.len() >= 3 {
+                f[2] = args[2].clone();
+                if args.len() == 5 {
+                    f[3] = args[4].clone();
+                }
+                keep.truncate(2);
+            }
+        }
+        let [e, s, n, n2] = f;
+        set = vec![("errno", e), ("strerror", s), ("filename", n), ("filename2", n2)];
+    } else if is(vm, "StopIteration") {
+        set = vec![("value", first)];
+    } else if is(vm, "SystemExit") {
+        let code = if args.len() > 1 { Value::tuple(args.to_vec()) } else { first };
+        set = vec![("code", code)];
+    } else if is(vm, "SyntaxError") {
+        set = vec![("msg", first), ("print_file_and_line", Value::None)];
+        let mut info = [Value::None, Value::None, Value::None, Value::None, Value::None, Value::None];
+        if args.len() == 2 {
+            let t = vm.to_vec(&args[1])?;
+            if !(4..=6).contains(&t.len()) {
+                return Err(vm.type_error(format!("function takes at {} arguments ({} given)", if t.len() < 4 { "least 4" } else { "most 6" }, t.len())));
+            }
+            if t.len() == 5 {
+                return Err(vm.type_error("end_offset must be provided when end_lineno is provided"));
+            }
+            for (i, v) in t.into_iter().enumerate() {
+                info[i] = v;
+            }
+        }
+        for (n, v) in ["filename", "lineno", "offset", "text", "end_lineno", "end_offset"].into_iter().zip(info) {
+            set.push((n, v));
+        }
+    } else if is(vm, "UnicodeError") {
+        let translate = is(vm, "UnicodeTranslateError");
+        let decode = is(vm, "UnicodeDecodeError");
+        if translate || decode || is(vm, "UnicodeEncodeError") {
+            let want = if translate { 4 } else { 5 };
+            if args.len() != want {
+                return Err(vm.type_error(format!("function takes exactly {} arguments ({} given)", want, args.len())));
+            }
+            let off = if translate { 0 } else { 1 };
+            let mut v = args.to_vec();
+            if !translate && !matches!(v[0], Value::Str(_)) {
+                let tn = vm.type_name(&v[0]);
+                return Err(vm.type_error(format!("argument 1 must be str, not {}", tn)));
+            }
+            if decode {
+                v[1] = match &v[1] {
+                    Value::Bytes(b) => Value::Bytes(b.clone()),
+                    Value::ByteArray(b) => Value::Bytes(Rc::new(b.borrow().clone())),
+                    o => {
+                        let tn = vm.type_name(o);
+                        return Err(vm.type_error(format!("a bytes-like object is required, not '{}'", tn)));
+                    }
+                };
+            } else if !matches!(v[off], Value::Str(_)) {
+                let tn = vm.type_name(&v[off]);
+                return Err(vm.type_error(format!("argument {} must be str, not {}", off + 1, tn)));
+            }
+            for i in [off + 1, off + 2] {
+                if !matches!(v[i], Value::Int(_) | Value::Big(_)) {
+                    let tn = vm.type_name(&v[i]);
+                    return Err(vm.type_error(format!("'{}' object cannot be interpreted as an integer", tn)));
+                }
+            }
+            if !matches!(v[off + 3], Value::Str(_)) {
+                let tn = vm.type_name(&v[off + 3]);
+                return Err(vm.type_error(format!("argument {} must be str, not {}", off + 4, tn)));
+            }
+            let enc = if translate { Value::None } else { v[0].clone() };
+            set = vec![("encoding", enc), ("object", v[off].clone()), ("start", v[off + 1].clone()), ("end", v[off + 2].clone()), ("reason", v[off + 3].clone())];
+        }
+    }
+    let mut ex = inst.extra.borrow_mut();
+    for (n, v) in set {
+        ex.set_s(n, v);
+    }
+    Ok(keep)
+}
+
+/// fills the subclass slots of an exception made natively from `args`
+pub fn exc_init_native(vm: &mut Vm, v: &Value) {
+    if let Value::Instance(i) = v {
+        let args = vm.exc_args(v);
+        if let Ok(keep) = exc_setup(vm, i, &args, &[]) {
+            if keep.len() != args.len() {
+                *i.base.borrow_mut() = Value::tuple(keep);
+            }
+        }
+    }
+}
+
+fn unicode_error_str(vm: &mut Vm, cls: &Rc<Class>, inst: &Instance) -> PyResult<Option<String>> {
     let decode = cls.is_subclass(&vm.exc_class("UnicodeDecodeError"));
     let encode = cls.is_subclass(&vm.exc_class("UnicodeEncodeError"));
-    if !(decode || encode) || args.len() != 5 {
+    let translate = cls.is_subclass(&vm.exc_class("UnicodeTranslateError"));
+    if !(decode || encode || translate) {
         return Ok(None);
     }
-    let enc = vm.str_of(&args[0])?;
-    let (start, end) = match (&args[2], &args[3]) {
-        (Value::Int(a), Value::Int(b)) => (*a, *b),
-        _ => return Ok(None),
+    let obj = exc_field(inst, "object");
+    if obj.is_none() {
+        return Ok(Some(String::new()));
+    }
+    let (start, end) = match (exc_field(inst, "start"), exc_field(inst, "end")) {
+        (Value::Int(a), Value::Int(b)) => (a, b),
+        _ => (0, 0),
     };
-    let reason = vm.str_of(&args[4])?;
+    let reason = exc_field(inst, "reason");
+    let reason = vm.str_of(&reason)?;
+    let enc = if translate { String::new() } else {
+        let e = exc_field(inst, "encoding");
+        vm.str_of(&e)?
+    };
+    let len = match &obj {
+        Value::Bytes(b) => b.len() as i64,
+        Value::Str(s) => s.s.chars().count() as i64,
+        _ => 0,
+    };
+    let single = start >= 0 && start < len && end == start + 1;
     if decode {
-        let byte = match &args[1] {
-            Value::Bytes(b) => b.get(start as usize).copied(),
+        let byte = match &obj {
+            Value::Bytes(b) if single => b.get(start as usize).copied(),
             _ => None,
         };
         return Ok(Some(match byte {
-            Some(c) if end == start + 1 => format!("'{}' codec can't decode byte 0x{:02x} in position {}: {}", enc, c, start, reason),
-            _ => format!("'{}' codec can't decode bytes in position {}-{}: {}", enc, start, end - 1, reason),
+            Some(c) => format!("'{}' codec can't decode byte 0x{:02x} in position {}: {}", enc, c, start, reason),
+            None => format!("'{}' codec can't decode bytes in position {}-{}: {}", enc, start, end - 1, reason),
         }));
     }
-    let ch = match &args[1] {
-        Value::Str(s) => s.s.chars().nth(start as usize),
+    let ch = match &obj {
+        Value::Str(s) if single => s.s.chars().nth(start as usize),
         _ => None,
     };
+    let what = if translate { "can't translate".to_string() } else { format!("'{}' codec can't encode", enc) };
     Ok(Some(match ch {
-        Some(c) if end == start + 1 => {
+        Some(c) => {
             let n = c as u32;
             let esc = if n <= 0xff { format!("\\x{:02x}", n) } else if n <= 0xffff { format!("\\u{:04x}", n) } else { format!("\\U{:08x}", n) };
-            format!("'{}' codec can't encode character '{}' in position {}: {}", enc, esc, start, reason)
+            format!("{} character '{}' in position {}: {}", what, esc, start, reason)
         }
-        _ => format!("'{}' codec can't encode characters in position {}-{}: {}", enc, start, end - 1, reason),
+        None => format!("{} characters in position {}-{}: {}", what, start, end - 1, reason),
     }))
 }
 
 pub fn exc_str(vm: &mut Vm, v: &Value) -> PyResult<String> {
     let args = vm.exc_args(v);
     let cls = vm.class_of(v);
-    if let Some(s) = unicode_error_str(vm, &cls, &args)? {
-        return Ok(s);
+    if let Value::Instance(inst) = v {
+        if let Some(s) = unicode_error_str(vm, &cls, inst)? {
+            return Ok(s);
+        }
+        if cls.is_subclass(&vm.exc_class("OSError")) {
+            let (e, s, f, f2) = (exc_field(inst, "errno"), exc_field(inst, "strerror"), exc_field(inst, "filename"), exc_field(inst, "filename2"));
+            if !f.is_none() {
+                let (e, s, f) = (vm.str_of(&e)?, vm.str_of(&s)?, vm.repr(&f)?);
+                if !f2.is_none() {
+                    let f2 = vm.repr(&f2)?;
+                    return Ok(format!("[Errno {}] {}: {} -> {}", e, s, f, f2));
+                }
+                return Ok(format!("[Errno {}] {}: {}", e, s, f));
+            }
+            if !e.is_none() && !s.is_none() {
+                let (e, s) = (vm.str_of(&e)?, vm.str_of(&s)?);
+                return Ok(format!("[Errno {}] {}", e, s));
+            }
+        }
+        if cls.is_subclass(&vm.exc_class("SyntaxError")) {
+            let msg = exc_field(inst, "msg");
+            let mut out = vm.str_of(&msg)?;
+            let file = match exc_field(inst, "filename") {
+                Value::Str(s) => Some(s.s.rsplit('/').next().unwrap_or("").to_string()),
+                _ => None,
+            };
+            let line = match exc_field(inst, "lineno") {
+                Value::Int(n) => Some(n),
+                _ => None,
+            };
+            match (file, line) {
+                (Some(f), Some(l)) => out = format!("{} ({}, line {})", out, f, l),
+                (Some(f), None) => out = format!("{} ({})", out, f),
+                (None, Some(l)) => out = format!("{} (line {})", out, l),
+                _ => {}
+            }
+            return Ok(out);
+        }
     }
     if cls.is_subclass(&vm.exc_class("KeyError")) && args.len() == 1 {
         return vm.repr(&args[0]);
-    }
-    if cls.is_subclass(&vm.exc_class("OSError")) && (2..=3).contains(&args.len()) {
-        let msg = vm.str_of(&args[1])?;
-        let errno = vm.str_of(&args[0])?;
-        if args.len() == 3 {
-            let f = vm.repr(&args[2])?;
-            return Ok(format!("[Errno {}] {}: {}", errno, msg, f));
-        }
-        return Ok(format!("[Errno {}] {}", errno, msg));
     }
     match args.len() {
         0 => Ok(String::new()),
@@ -1247,22 +1437,58 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
     ("EncodingWarning", "Warning"),
 ];
 
+/// the OSError subclass CPython picks for an errno
+fn errno_class(errno: i64) -> Option<&'static str> {
+    Some(match errno {
+        11 | 114 | 115 => "BlockingIOError",
+        10 => "ChildProcessError",
+        32 | 108 => "BrokenPipeError",
+        103 => "ConnectionAbortedError",
+        111 => "ConnectionRefusedError",
+        104 => "ConnectionResetError",
+        17 => "FileExistsError",
+        2 => "FileNotFoundError",
+        21 => "IsADirectoryError",
+        20 => "NotADirectoryError",
+        4 => "InterruptedError",
+        1 | 13 => "PermissionError",
+        3 => "ProcessLookupError",
+        110 => "TimeoutError",
+        _ => return None,
+    })
+}
+
 fn exc_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
-    let cls = match &a[0] {
+    let mut cls = match &a[0] {
         Value::Class(c) => c.clone(),
         _ => return Err(vm.type_error("BaseException.__new__(X): X is not a type object")),
     };
+    if !cls.is_subclass(&vm.t.base_exception) {
+        let cn = cls.name().to_string();
+        return Err(vm.type_error(format!("BaseException.__new__({}): {} is not a subtype of BaseException", cn, cn)));
+    }
+    let args = &a[1..];
+    if Rc::ptr_eq(&cls, &vm.exc_class("OSError")) && args.len() >= 2 {
+        if let Some(n) = errno_class(match &args[0] { Value::Int(n) => *n, _ => -1 }) {
+            cls = vm.exc_class(n);
+        }
+    }
     let v = vm.new_instance(&cls);
     if let Value::Instance(i) = &v {
-        *i.base.borrow_mut() = Value::tuple(a[1..].to_vec());
+        *i.base.borrow_mut() = Value::tuple(args.to_vec());
+        if let Ok(keep) = exc_setup(vm, i, args, &[]) {
+            *i.base.borrow_mut() = Value::tuple(keep);
+        }
     }
     Ok(v)
 }
 
-fn exc_init(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn exc_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     if let Value::Instance(i) = &a[0] {
-        *i.base.borrow_mut() = Value::tuple(a[1..].to_vec());
+        let keep = exc_setup(vm, i, &a[1..], k)?;
+        *i.base.borrow_mut() = Value::tuple(keep);
     }
     Ok(Value::None)
 }
@@ -1297,7 +1523,8 @@ fn exc_add_note(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         let cur = i.dict.borrow().get_str(&vm.n.notes).cloned();
         match cur {
             Some(Value::List(l)) => l.borrow_mut().push(a[1].clone()),
-            _ => i.dict.borrow_mut().set_str(vm.n.notes.clone(), Value::list(vec![a[1].clone()])),
+            Some(_) => return Err(vm.type_error("Cannot add notes to a non-list __notes__")),
+            None => i.dict.borrow_mut().set_str(vm.n.notes.clone(), Value::list(vec![a[1].clone()])),
         }
     }
     Ok(Value::None)
@@ -1306,8 +1533,64 @@ fn exc_add_note(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn exc_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let cls = vm.class_of(&a[0]);
-    let args = vm.exc_args(&a[0]);
-    Ok(Value::tuple(vec![Value::Class(cls), Value::tuple(args)]))
+    let mut args = vm.exc_args(&a[0]);
+    let Value::Instance(inst) = &a[0] else {
+        return Ok(Value::tuple(vec![Value::Class(cls), Value::tuple(args)]));
+    };
+    let dict = inst.dict.borrow().copy();
+    let mut state = if dict.is_empty() { None } else { Some(dict) };
+    if cls.is_subclass(&vm.exc_class("OSError")) {
+        let f = exc_field(inst, "filename");
+        if args.len() == 2 && !f.is_none() {
+            args.push(f);
+            let f2 = exc_field(inst, "filename2");
+            if !f2.is_none() {
+                args.push(Value::None);
+                args.push(f2);
+            }
+        }
+    } else if cls.is_subclass(&vm.exc_class("ImportError")) {
+        let mut d = state.take().unwrap_or_else(Dict::new);
+        for n in ["name", "path", "name_from"] {
+            let v = exc_field(inst, n);
+            if !v.is_none() {
+                d.set_s(n, v);
+            }
+        }
+        state = if d.is_empty() { None } else { Some(d) };
+    } else if cls.is_subclass(&vm.exc_class("AttributeError")) {
+        let mut d = state.take().unwrap_or_else(Dict::new);
+        let n = exc_field(inst, "name");
+        if !n.is_none() {
+            d.set_s("name", n);
+        }
+        d.set_s("args", Value::tuple(args.clone()));
+        state = Some(d);
+    }
+    let mut out = vec![Value::Class(cls), Value::tuple(args)];
+    if let Some(d) = state {
+        out.push(Value::dict(d));
+    }
+    Ok(Value::tuple(out))
+}
+
+fn exc_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    margs(vm, "__setstate__", a, 1, 1)?;
+    match &a[1] {
+        Value::None => {}
+        Value::Dict(d) => {
+            let items = d.borrow().items();
+            for (k, v) in items {
+                let k = if let Value::Instance(_) = &k { vm.base_of(&k) } else { k };
+                match &k {
+                    Value::Str(s) => vm.setattr(&a[0], s, v)?,
+                    _ => return Err(vm.type_error("attribute name must be string")),
+                }
+            }
+        }
+        _ => return Err(vm.type_error("state is not a dictionary")),
+    }
+    Ok(Value::None)
 }
 
 // -------------------------------------------------------------------------
@@ -1432,6 +1715,7 @@ pub fn install(vm: &mut Vm) {
     def(&be, "BaseException.with_traceback", exc_with_traceback);
     def(&be, "BaseException.add_note", exc_add_note);
     def(&be, "BaseException.__reduce__", exc_reduce);
+    def(&be, "BaseException.__setstate__", exc_setstate);
 
     crate::methods::install_types(vm);
     install_functions(vm);
@@ -2826,7 +3110,7 @@ fn bi_eval(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             let src = src.trim_start_matches([' ', '\t']).to_string();
             let e = match crate::parser::parse_expression(&src) {
                 Ok(e) => e,
-                Err(e) => return Err(vm.syntax_error(&e.msg, e.line, "<string>")),
+                Err(e) => return Err(vm.parse_error(&e, "<string>")),
             };
             match crate::compile::compile_eval(&e, "<string>") {
                 Ok(c) => c,
@@ -2853,7 +3137,7 @@ fn bi_exec(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         Some(src) => {
             let body = match crate::parser::parse_module(&src) {
                 Ok(b) => b,
-                Err(e) => return Err(vm.syntax_error(&e.msg, e.line, "<string>")),
+                Err(e) => return Err(vm.parse_error(&e, "<string>")),
             };
             match crate::compile::compile_module(&body, "<string>") {
                 Ok(c) => c,
@@ -2885,13 +3169,13 @@ fn bi_compile(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let code = if mode == "eval" {
         let e = match crate::parser::parse_expression(s.trim()) {
             Ok(e) => e,
-            Err(e) => return Err(vm.syntax_error(&e.msg, e.line, &file)),
+            Err(e) => return Err(vm.parse_error(&e, &file)),
         };
         crate::compile::compile_eval(&e, &file)
     } else {
         let body = match crate::parser::parse_module(&s) {
             Ok(b) => b,
-            Err(e) => return Err(vm.syntax_error(&e.msg, e.line, &file)),
+            Err(e) => return Err(vm.parse_error(&e, &file)),
         };
         crate::compile::compile_module(&body, &file)
     };
