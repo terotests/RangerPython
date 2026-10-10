@@ -43,6 +43,7 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_unicodedata" => unicodedata_module(),
         "_rpyweak" => weak_module(),
         "_rpygc" => gc_module(),
+        "_rpyitertools" => itertools_module(),
         _ => return Ok(None),
     }))
 }
@@ -131,6 +132,49 @@ fn gc_type(vm: &Vm, v: &Value) -> bool {
         Value::Instance(i) => !Rc::ptr_eq(&i.class.borrow(), &vm.t.object),
         _ => true,
     }
+}
+
+// -------------------------------------------------------------------------
+// support for itertools (pylib/itertools.py)
+
+fn itertools_module() -> Value {
+    let (d, m) = module("_rpyitertools");
+    put_fns(&d, &[("_rpyitertools.immutable", it_immutable), ("_rpyitertools.reuse", it_reuse)]);
+    m
+}
+
+/// mark a class as standing in for a static C type, whose attributes are fixed
+fn it_immutable(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    match &a[0] {
+        Value::Class(c) => c.immutable.set(true),
+        _ => return Err(vm.type_error("immutable() argument must be a type")),
+    }
+    Ok(a[0].clone())
+}
+
+/// reuse(obj, items): a tuple of `items`, kept as obj._result; the tuple
+/// already there is refilled in place while obj holds the only reference to
+/// it, as CPython's combinatoric iterators do
+fn it_reuse(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
+    let items = vm.to_vec(&a[1])?;
+    let Value::Instance(inst) = &a[0] else {
+        return Ok(Value::tuple(items));
+    };
+    let key = PyStr::new("_result".to_string());
+    let mut d = inst.dict.borrow_mut();
+    if let Some(Value::Tuple(t)) = d.get_str_mut(&key) {
+        if let Some(v) = Rc::get_mut(t) {
+            if v.len() == items.len() {
+                *v = items;
+                return Ok(Value::Tuple(t.clone()));
+            }
+        }
+    }
+    let t = Value::tuple(items);
+    d.set_s("_result", t.clone());
+    Ok(t)
 }
 
 // -------------------------------------------------------------------------

@@ -993,7 +993,7 @@ pub fn instance_special(vm: &mut Vm, obj: &Value, inst: &Rc<Instance>, name: &st
 
 /// type.__flags__, as CPython's Py_TPFLAGS_* bits
 fn type_flags(vm: &mut Vm, c: &Rc<Class>) -> PyResult<i64> {
-    let heap = matches!(c.dict.borrow().get_s("__module__"), Some(Value::Str(m)) if &*m.s != "builtins");
+    let heap = !c.immutable.get() && matches!(c.dict.borrow().get_s("__module__"), Some(Value::Str(m)) if &*m.s != "builtins");
     let mut f: i64 = 1 << 12;
     if heap {
         f |= (1 << 9) | (1 << 14);

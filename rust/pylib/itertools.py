@@ -3,6 +3,7 @@
 # (argument checking, __reduce__/__setstate__ and copy support).
 
 from operator import index as _index
+from _rpyitertools import immutable as _immutable, reuse as _reuse
 
 _NULL = object()
 _MAXSIZE = (1 << 63) - 1
@@ -597,8 +598,7 @@ class product:
             if i < 0:
                 self._stopped = True
                 raise StopIteration
-        self._result = result = tuple(result)
-        return result
+        return _reuse(self, result)
 
     def __reduce__(self):
         _deprecated()
@@ -664,8 +664,7 @@ class combinations:
             indices[i] += 1
             for j in range(i + 1, r):
                 indices[j] = indices[j - 1] + 1
-        self._result = result = tuple(pool[i] for i in indices)
-        return result
+        return _reuse(self, [pool[i] for i in indices])
 
     def __reduce__(self):
         _deprecated()
@@ -728,8 +727,7 @@ class combinations_with_replacement:
         index = indices[i] + 1
         for k in range(i, r):
             indices[k] = index
-        self._result = result = tuple(pool[k] for k in indices)
-        return result
+        return _reuse(self, [pool[k] for k in indices])
 
     def __reduce__(self):
         _deprecated()
@@ -805,8 +803,7 @@ class permutations:
             if i < 0:
                 self._stopped = True
                 raise StopIteration
-        self._result = result = tuple(pool[indices[k]] for k in range(r))
-        return result
+        return _reuse(self, [pool[indices[k]] for k in range(r)])
 
     def __reduce__(self):
         _deprecated()
@@ -1083,7 +1080,7 @@ class pairwise:
             self._old = _NULL
             raise
         self._old = new
-        return (old, new)
+        return _reuse(self, (old, new))
 
 
 class zip_longest:
@@ -1124,7 +1121,7 @@ class zip_longest:
                     self._numactive = 0
                     raise
             result.append(item)
-        return tuple(result)
+        return _reuse(self, result)
 
     def __reduce__(self):
         _deprecated()
@@ -1134,3 +1131,13 @@ class zip_longest:
     def __setstate__(self, state):
         _deprecated()
         self._fillvalue = state
+
+
+# the C module's types are static: their attributes cannot be set
+for _tp in (accumulate, batched, chain, combinations,
+            combinations_with_replacement, compress, count, cycle, dropwhile,
+            filterfalse, groupby, _grouper, islice, pairwise, permutations,
+            product, repeat, starmap, takewhile, _tee, _tee_dataobject,
+            zip_longest):
+    _immutable(_tp)
+del _tp

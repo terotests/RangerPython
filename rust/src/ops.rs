@@ -818,9 +818,19 @@ impl Vm {
         Ok(())
     }
 
+    /// the error for setting or deleting an attribute of an immutable type,
+    /// naming it as its C tp_name does
+    fn immutable_type_error(&mut self, c: &Rc<Class>, name: &PyStr) -> Exc {
+        let tp = match c.dict.borrow().get_s("__module__") {
+            Some(Value::Str(m)) if &*m.s != "builtins" => format!("{}.{}", m.s, c.name()),
+            _ => c.name(),
+        };
+        self.type_error(format!("cannot set '{}' attribute of immutable type '{}'", name.s, tp))
+    }
+
     pub fn class_setattr(&mut self, c: &Rc<Class>, name: &Rc<PyStr>, v: Value) -> PyResult<()> {
-        if c.builtin.get() != Builtin::User && c.builtin.get() != Builtin::BaseException && c.mro.borrow().len() <= 2 && !c.dict.borrow().get_s("__module__").is_some() {
-            return Err(self.type_error(format!("cannot set '{}' attribute of immutable type '{}'", name.s, c.name())));
+        if immutable_type(c) {
+            return Err(self.immutable_type_error(c, name));
         }
         match &*name.s {
             "__name__" => {
@@ -923,6 +933,9 @@ impl Vm {
                 Ok(())
             }
             Value::Class(c) => {
+                if immutable_type(c) {
+                    return Err(self.immutable_type_error(c, name));
+                }
                 if c.dict.borrow_mut().remove_str(name).is_none() {
                     return Err(self.no_attr(obj, name));
                 }
@@ -3260,6 +3273,12 @@ fn descr_call(vm: &mut Vm, a: &[Value], k: &[(Rc<PyStr>, Value)]) -> PyResult<Va
     };
     let f = vm.call_vec(&t[0], vec![t[1].clone(), t[2].clone(), t[3].clone()], &[])?;
     vm.call_vec(&f, a[1..].to_vec(), k)
+}
+
+/// whether a type's attributes are fixed: the built-in types, and the
+/// Python-defined stand-ins for static C types
+pub fn immutable_type(c: &Class) -> bool {
+    c.immutable.get() || (c.builtin.get() != Builtin::User && c.builtin.get() != Builtin::BaseException && c.mro.borrow().len() <= 2 && c.dict.borrow().get_s("__module__").is_none())
 }
 
 /// the result tuple of enumerate() and zip(): refilled in place while the

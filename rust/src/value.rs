@@ -188,6 +188,9 @@ pub struct Class {
     pub has_descriptors: Cell<bool>,
     /// instances run __del__ when the last reference goes
     pub has_del: Cell<bool>,
+    /// a type defined in Python standing in for a static C type: its
+    /// attributes cannot be set (Py_TPFLAGS_IMMUTABLETYPE)
+    pub immutable: Cell<bool>,
     pub slots: RefCell<Option<Vec<Name>>>,
 }
 
@@ -1014,6 +1017,7 @@ impl Class {
             has_setattr: Cell::new(false),
             has_descriptors: Cell::new(false),
             has_del: Cell::new(false),
+            immutable: Cell::new(false),
             slots: RefCell::new(None),
         });
         c
