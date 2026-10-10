@@ -1,0 +1,10 @@
+cat makes a sound rex makes a sound (woof) Animal('cat') rex 2 True True
+Vec(4, 6) Vec(8, 12) Vec(12, 18) True 2 6 [4, 6] [Vec(1, 5), Vec(2, 1)]
+a Vec(1, 0)
+25 C
+error: too cold
+['Dog', 'Animal', 'object']
+True True False False
+cat False dflt
+3 {'name': 'cat', 'age': 3}
+42

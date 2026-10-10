@@ -1,0 +1,19 @@
+0.5
+finally (1, 2)
+zero: division by zero
+finally (1, 0)
+type: unsupported operand type(s) for /: 'str' and 'int'
+finally ('a', 1)
+MyError code 7 7 ('code 7',)
+cleanup
+try
+IndexError: list index out of range
+KeyError: 'k' KeyError('k')
+invalid literal for int() with base 10: 'x'
+name 'undefined_name' is not defined
+'NoneType' object has no attribute 'foo'
+outer ValueError
+assert: nope
+1 2 done
+('a', 'b')
+else branch

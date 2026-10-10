@@ -1,0 +1,30 @@
+13 ÄÄKKÖNEN 😀 OK 😀 True Ääkkönen 😀 Ok äÄKKÖNEN 😀 OK
+tab	here 'line\nbreak' a\b raw\n no-bytes
+exhxlxo Hello...|   abc x  x|
+['a', 'b', 'c'] ('a', ',', 'b') ['k=v', 'w'] Abc True True
+a-b-a hi! p/3 A%
+3.14 1,234.5 0.000123 1.23457e+08 -5 ***42****   s
+0.3333333333333333 0.6666666666666666 1e+301 -1e-310 123456789.0 1e+22 0.30000000000000004 100.0 0.0001
+-31 5 42 1.5 -inf
+[('bob', 25), ('cy', 25), ('al', 30), ('di', 30)] [('al', 30), ('di', 30), ('bob', 25), ('cy', 25)]
+[('di', 30), ('cy', 25), ('bob', 25), ('al', 30)]
+[1, 'x', 'y', 5, 6, 7] [7, 'y']
+{'a': 1, 'c': 3, 'z': 26, 'q': 1, 'n': 0} 1 0 {'a': 1, 'c': 3, 'z': 26, 'q': 1, 'n': 0}
+0 1 [4, 9, 16]
+[4, 3, 2, 1] 6
+enter
+body res
+exit ValueError
+after with
+True False True
+2 True even
+[1, 2, 1, 2]
+2.5 3.142 24 10 none a
+[10, 7, 4, 1] 15 True 4
+True True
+[(1, 'a'), (3, 'c')] {'a': 1, 'b': 2} [0, 1, 2, 'a', 'b']
+1 2
+NoneType float function True False
+True True True
+no-eval
+😀 128512 True '\xe9'

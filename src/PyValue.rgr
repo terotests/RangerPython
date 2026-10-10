@@ -1,0 +1,114 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyValue.rgr — a Python value, and a scope of names.
+;
+; One tagged class for every value. `t` says what it is; the fields each tag
+; uses are listed below. Strings are immutable, so a string's code points
+; (what indexing, slicing and len count) are worked out once and kept.
+;
+;   None, Bool (i 0/1), Int (i), Float (d), Str (s)
+;   List, Tuple (items)
+;   Dict (items = keys, vals = values, index: hash key -> position)
+;   Set (items, index)
+;   Func (s name, node Def/Lambda, scope closure, defs default values)
+;   Builtin (s name): a built-in function or type (int, str, len, …)
+;   Class (s name, attrs namespace, bases, vals the method resolution order);
+;         exceptions are classes too
+;   Inst (cls, attrs)
+;   Module (s name, attrs)
+;   Bound (self receiver; cls the function, or none and s a built-in method)
+;   Range (i start, i2 stop, i3 step)
+;   File (s path, mode, pos read position, closed)
+;   Iter (items, pos): what iter(), map(), zip(), a generator … give
+;   Slice (items: start, stop, step)
+;   Prop (wrapped getter, setter), Static, ClassM (wrapped function)
+;   Super (cls: the class to look after, self)
+;   Func and Class keep their defining class in cls (for super())
+; ============================================================================
+
+Import "PyAst.rgr"
+
+Enum PyT:int (
+    None
+    Bool
+    Int
+    Float
+    Str
+    List
+    Tuple
+    Dict
+    Set
+    Func
+    Builtin
+    Class
+    Inst
+    Module
+    Bound
+    Range
+    File
+    Iter
+    Slice
+    Prop
+    Static
+    ClassM
+    Super
+)
+
+class PyVal {
+    def t:PyT PyT.None
+    def i:int 0
+    def i2:int 0
+    def i3:int 0
+    def d:double 0.0
+    def s:string ""
+    def items:[PyVal]
+    def vals:[PyVal]
+    def index:[string:int]
+    def attrs:[string:PyVal]
+    def defs:[string:PyVal]
+    def bases:[PyVal]
+    def cls@(optional):PyVal
+    def self@(optional):PyVal
+    def wrapped@(optional):PyVal
+    def setter@(optional):PyVal
+    def node@(optional):PyNode
+    def scope@(optional):PyScope
+    def id:int 0
+    def pos:int 0
+    def mode:string ""
+    def closed:boolean false
+    ; Class: one of the built-in exception classes, or derived from one
+    def isExc:boolean false
+    ; Str: the code points, once asked for
+    def cps:[int]
+    def cpsKnown:boolean false
+
+    Constructor (tag:PyT) {
+        t = tag
+    }
+
+    fn codes:[int] () {
+        if (cpsKnown == false) {
+            cps = (to_chars s)
+            cpsKnown = true
+        }
+        return cps
+    }
+
+    fn strLen:int () {
+        def c:[int] (this.codes())
+        return (array_length c)
+    }
+}
+
+class PyScope {
+    def vars:[string:PyVal]
+    ; the enclosing function's scope (closures); none at module level
+    def parent@(optional):PyScope
+    ; the module scope; none when this is the module scope
+    def globals@(optional):PyScope
+    ; names declared global (1) or nonlocal (2) in this scope
+    def decl:[string:int]
+    def isClass:boolean false
+}

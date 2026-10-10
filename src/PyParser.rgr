@@ -1,0 +1,1586 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyParser.rgr — tokens to the syntax tree (PyAst.rgr), by recursive descent
+; over Python 3's grammar.
+;
+; A syntax error unwinds the parse (py_raise) to `parse`, which keeps the
+; message and the line in `err` / `errLine`.
+; ============================================================================
+
+Import "PyOps.rgr"
+Import "PyAst.rgr"
+Import "PyLexer.rgr"
+
+class PyParser {
+    def toks:[PyToken]
+    def p:int 0
+    def err:string ""
+    def errLine:int 0
+    ; one entry per function being parsed: does it yield?
+    def yields:[boolean]
+
+    fn parseModule:PyNode (src:string) {
+        def m (new PyNode(PyK.Module 1))
+        def lx (new PyLexer(src))
+        toks = (lx.tokenize())
+        if ((strlen lx.err) > 0) {
+            err = lx.err
+            errLine = lx.errLine
+            return m
+        }
+        try {
+            while ((this.peekKind()) != PyTok.EOF) {
+                if ((this.peekKind()) == PyTok.Newline) {
+                    p = p + 1
+                    continue
+                }
+                this.parseStatementInto(m.body)
+            }
+        } {
+            if ((strlen err) == 0) {
+                err = ("internal parser error: " + (error_msg))
+            }
+        }
+        return m
+    }
+
+    ; an expression on its own (an f-string's {…})
+    fn parseExpressionText:PyNode (src:string line:int) {
+        def lx (new PyLexer(("(" + src + "\n)")))
+        toks = (lx.tokenize())
+        if ((strlen lx.err) > 0) {
+            this.failAt(("f-string: " + lx.err) line)
+        }
+        for toks t:PyToken ti {
+            t.line = line
+        }
+        p = 0
+        def e:PyNode (this.parseTestListStarExpr())
+        if ((this.peekKind()) == PyTok.Newline) {
+            p = p + 1
+        }
+        if ((this.peekKind()) != PyTok.EOF) {
+            this.fail("f-string: invalid expression")
+        }
+        return e
+    }
+
+    fn failAt:void (msg:string line:int) {
+        if ((strlen err) == 0) {
+            err = msg
+            errLine = line
+        }
+        py_raise ("SyntaxError: " + msg)
+    }
+
+    fn fail:void (msg:string) {
+        def t:PyToken (this.peek())
+        this.failAt(msg t.line)
+    }
+
+    ; ---- token access
+
+    fn peek:PyToken () {
+        if (p >= (array_length toks)) {
+            return (last toks)
+        }
+        return (itemAt toks p)
+    }
+
+    fn peekAt:PyToken (off:int) {
+        def i:int (p + off)
+        if (i >= (array_length toks)) {
+            return (last toks)
+        }
+        return (itemAt toks i)
+    }
+
+    fn peekKind:PyTok () {
+        def t:PyToken (this.peek())
+        return t.kind
+    }
+
+    fn line:int () {
+        def t:PyToken (this.peek())
+        return t.line
+    }
+
+    fn isOp:boolean (s:string) {
+        def t:PyToken (this.peek())
+        return ((t.kind == PyTok.Op) && (t.text == s))
+    }
+
+    fn isOpAt:boolean (off:int s:string) {
+        def t:PyToken (this.peekAt(off))
+        return ((t.kind == PyTok.Op) && (t.text == s))
+    }
+
+    fn isKw:boolean (s:string) {
+        def t:PyToken (this.peek())
+        return ((t.kind == PyTok.Name) && (t.text == s))
+    }
+
+    fn acceptOp:boolean (s:string) {
+        if (this.isOp(s)) {
+            p = p + 1
+            return true
+        }
+        return false
+    }
+
+    fn acceptKw:boolean (s:string) {
+        if (this.isKw(s)) {
+            p = p + 1
+            return true
+        }
+        return false
+    }
+
+    fn describe:string (t:PyToken) {
+        if (t.kind == PyTok.Newline) {
+            return "end of line"
+        }
+        if (t.kind == PyTok.EOF) {
+            return "end of input"
+        }
+        if (t.kind == PyTok.Indent) {
+            return "indent"
+        }
+        if (t.kind == PyTok.Dedent) {
+            return "dedent"
+        }
+        if ((t.kind == PyTok.Str) || (t.kind == PyTok.FStr)) {
+            return "string"
+        }
+        return ("'" + t.text + "'")
+    }
+
+    fn expectOp:void (s:string) {
+        if (this.acceptOp(s)) {
+            return
+        }
+        this.fail(("expected '" + s + "', got " + (this.describe((this.peek())))))
+    }
+
+    fn expectKw:void (s:string) {
+        if (this.acceptKw(s)) {
+            return
+        }
+        this.fail(("expected '" + s + "', got " + (this.describe((this.peek())))))
+    }
+
+    sfn isKeyword:boolean (s:string) {
+        def kws:[string] ([] _:string ("False" "None" "True" "and" "as" "assert" "async" "await" "break" "class" "continue" "def" "del" "elif" "else" "except" "finally" "for" "from" "global" "if" "import" "in" "is" "lambda" "nonlocal" "not" "or" "pass" "raise" "return" "try" "while" "with" "yield"))
+        for kws k:string i {
+            if (k == s) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn expectName:string () {
+        def t:PyToken (this.peek())
+        if ((t.kind == PyTok.Name) && ((PyParser.isKeyword(t.text)) == false)) {
+            p = p + 1
+            return t.text
+        }
+        this.fail(("expected a name, got " + (this.describe(t))))
+        return ""
+    }
+
+    fn expectNewline:void () {
+        if ((this.peekKind()) == PyTok.Newline) {
+            p = p + 1
+            return
+        }
+        if ((this.peekKind()) == PyTok.EOF) {
+            return
+        }
+        this.fail(("invalid syntax: unexpected " + (this.describe((this.peek())))))
+    }
+
+    ; ---- statements
+
+    fn parseStatementInto:void (out:[PyNode]) {
+        def t:PyToken (this.peek())
+        if (t.kind == PyTok.Indent) {
+            this.fail("unexpected indent")
+        }
+        if (t.kind == PyTok.Name) {
+            def w:string t.text
+            if (w == "if") {
+                push out (this.parseIf())
+                return
+            }
+            if (w == "while") {
+                push out (this.parseWhile())
+                return
+            }
+            if (w == "for") {
+                push out (this.parseFor())
+                return
+            }
+            if (w == "def") {
+                def decos:[PyNode]
+                push out (this.parseDef(decos))
+                return
+            }
+            if (w == "class") {
+                def decos2:[PyNode]
+                push out (this.parseClass(decos2))
+                return
+            }
+            if (w == "try") {
+                push out (this.parseTry())
+                return
+            }
+            if (w == "with") {
+                push out (this.parseWith())
+                return
+            }
+            if ((w == "async") && ((this.peekAt(1)).text == "def")) {
+                p = p + 1
+                def decos3:[PyNode]
+                push out (this.parseDef(decos3))
+                return
+            }
+        }
+        if (this.isOp("@")) {
+            def ds:[PyNode]
+            while (this.acceptOp("@")) {
+                push ds (this.parseNamedExpr())
+                this.expectNewline()
+            }
+            if (this.isKw("def")) {
+                push out (this.parseDef(ds))
+                return
+            }
+            if (this.isKw("class")) {
+                push out (this.parseClass(ds))
+                return
+            }
+            this.fail("a decorator must be followed by def or class")
+        }
+        this.parseSimpleLineInto(out)
+    }
+
+    ; simple statements separated by ';' up to the end of the line
+    fn parseSimpleLineInto:void (out:[PyNode]) {
+        push out (this.parseSmallStatement())
+        while (this.acceptOp(";")) {
+            if (((this.peekKind()) == PyTok.Newline) || ((this.peekKind()) == PyTok.EOF)) {
+                break
+            }
+            push out (this.parseSmallStatement())
+        }
+        this.expectNewline()
+    }
+
+    fn parseBlock:[PyNode] () {
+        this.expectOp(":")
+        def out:[PyNode]
+        if ((this.peekKind()) == PyTok.Newline) {
+            p = p + 1
+            if ((this.peekKind()) != PyTok.Indent) {
+                this.fail("expected an indented block")
+            }
+            p = p + 1
+            while (((this.peekKind()) != PyTok.Dedent) && ((this.peekKind()) != PyTok.EOF)) {
+                if ((this.peekKind()) == PyTok.Newline) {
+                    p = p + 1
+                    continue
+                }
+                this.parseStatementInto(out)
+            }
+            if ((this.peekKind()) == PyTok.Dedent) {
+                p = p + 1
+            }
+            return out
+        }
+        this.parseSimpleLineInto(out)
+        return out
+    }
+
+    fn parseIf:PyNode () {
+        def node (new PyNode(PyK.If (this.line())))
+        p = p + 1
+        node.k1 = (this.parseNamedExpr())
+        node.body = (this.parseBlock())
+        if (this.isKw("elif")) {
+            def inner:PyNode (this.parseIf())
+            push node.orelse inner
+            return node
+        }
+        if (this.acceptKw("else")) {
+            node.orelse = (this.parseBlock())
+        }
+        return node
+    }
+
+    fn parseWhile:PyNode () {
+        def node (new PyNode(PyK.While (this.line())))
+        p = p + 1
+        node.k1 = (this.parseNamedExpr())
+        node.body = (this.parseBlock())
+        if (this.acceptKw("else")) {
+            node.orelse = (this.parseBlock())
+        }
+        return node
+    }
+
+    fn parseFor:PyNode () {
+        def node (new PyNode(PyK.For (this.line())))
+        p = p + 1
+        node.k1 = (this.parseExprList())
+        this.expectKw("in")
+        node.k2 = (this.parseTestList())
+        node.body = (this.parseBlock())
+        if (this.acceptKw("else")) {
+            node.orelse = (this.parseBlock())
+        }
+        return node
+    }
+
+    fn parseTry:PyNode () {
+        def node (new PyNode(PyK.Try (this.line())))
+        p = p + 1
+        node.body = (this.parseBlock())
+        while (this.isKw("except")) {
+            def h (new PyNode(PyK.Handler (this.line())))
+            p = p + 1
+            this.acceptOp("*")
+            if ((this.isOp(":")) == false) {
+                h.k1 = (this.parseTest())
+                if (this.acceptOp(",")) {
+                    ; except (A, B) written without parentheses: Python 2 only
+                    this.fail("multiple exception types must be parenthesized")
+                }
+                if (this.acceptKw("as")) {
+                    h.s = (this.expectName())
+                }
+            }
+            h.body = (this.parseBlock())
+            push node.handlers h
+        }
+        if (this.acceptKw("else")) {
+            node.orelse = (this.parseBlock())
+        }
+        if (this.acceptKw("finally")) {
+            node.final = (this.parseBlock())
+        }
+        if (((array_length node.handlers) == 0) && ((array_length node.final) == 0)) {
+            this.fail("expected 'except' or 'finally' block")
+        }
+        return node
+    }
+
+    fn parseWith:PyNode () {
+        def node (new PyNode(PyK.With (this.line())))
+        p = p + 1
+        def paren:boolean false
+        if (this.isOp("(")) {
+            ; with (a as b, c as d): only when an 'as' is inside the parentheses
+            def save:int p
+            def depth:int 0
+            def q:int p
+            def found:boolean false
+            while (q < (array_length toks)) {
+                def t:PyToken (itemAt toks q)
+                if ((t.kind == PyTok.Op) && ((t.text == "(") || (t.text == "[") || (t.text == "{"))) {
+                    depth = depth + 1
+                }
+                if ((t.kind == PyTok.Op) && ((t.text == ")") || (t.text == "]") || (t.text == "}"))) {
+                    depth = depth - 1
+                    if (depth == 0) {
+                        break
+                    }
+                }
+                if ((depth == 1) && (t.kind == PyTok.Name) && (t.text == "as")) {
+                    found = true
+                }
+                q = q + 1
+            }
+            if found {
+                paren = true
+                p = save + 1
+            }
+        }
+        while true {
+            def item (new PyNode(PyK.WithItem (this.line())))
+            item.k1 = (this.parseTest())
+            if (this.acceptKw("as")) {
+                item.k2 = (this.parseTarget())
+            }
+            push node.kids item
+            if ((this.acceptOp(",")) == false) {
+                break
+            }
+            if (paren && (this.isOp(")"))) {
+                break
+            }
+        }
+        if paren {
+            this.expectOp(")")
+        }
+        node.body = (this.parseBlock())
+        return node
+    }
+
+    fn parseTarget:PyNode () {
+        return (this.parseBitOr())
+    }
+
+    fn parseDef:PyNode (decos:[PyNode]) {
+        def node (new PyNode(PyK.Def (this.line())))
+        p = p + 1
+        node.s = (this.expectName())
+        node.decos = decos
+        this.expectOp("(")
+        node.kids = (this.parseParams(")" true))
+        this.expectOp(")")
+        if (this.acceptOp("->")) {
+            this.parseTest()
+        }
+        push yields false
+        node.body = (this.parseBlock())
+        if (last yields) {
+            node.i = 1
+        }
+        removeLast yields
+        return node
+    }
+
+    ; def / lambda parameters up to `close` (")" or ":")
+    fn parseParams:[PyNode] (close:string annotations:boolean) {
+        def out:[PyNode]
+        while ((this.isOp(close)) == false) {
+            def prm (new PyNode(PyK.Param (this.line())))
+            if (this.acceptOp("**")) {
+                prm.i = 2
+                prm.s = (this.expectName())
+            } {
+                if (this.acceptOp("*")) {
+                    if ((this.isOp(",")) || (this.isOp(close))) {
+                        prm.i = 3
+                    } {
+                        prm.i = 1
+                        prm.s = (this.expectName())
+                    }
+                } {
+                    if (this.acceptOp("/")) {
+                        prm.i = 4
+                    } {
+                        prm.s = (this.expectName())
+                    }
+                }
+            }
+            if (annotations && ((prm.i == 0) || (prm.i == 1) || (prm.i == 2))) {
+                if (this.acceptOp(":")) {
+                    this.parseTest()
+                }
+            }
+            if ((prm.i == 0) && (this.acceptOp("="))) {
+                prm.k1 = (this.parseTest())
+            }
+            push out prm
+            if ((this.acceptOp(",")) == false) {
+                break
+            }
+        }
+        return out
+    }
+
+    fn parseClass:PyNode (decos:[PyNode]) {
+        def node (new PyNode(PyK.Class (this.line())))
+        p = p + 1
+        node.s = (this.expectName())
+        node.decos = decos
+        if (this.acceptOp("(")) {
+            node.kids = (this.parseCallArgs())
+            this.expectOp(")")
+        }
+        push yields false
+        node.body = (this.parseBlock())
+        removeLast yields
+        return node
+    }
+
+    fn parseSmallStatement:PyNode () {
+        def t:PyToken (this.peek())
+        def ln:int t.line
+        if (t.kind == PyTok.Name) {
+            def w:string t.text
+            if (w == "pass") {
+                p = p + 1
+                return (new PyNode(PyK.Pass ln))
+            }
+            if (w == "break") {
+                p = p + 1
+                return (new PyNode(PyK.Break ln))
+            }
+            if (w == "continue") {
+                p = p + 1
+                return (new PyNode(PyK.Continue ln))
+            }
+            if (w == "return") {
+                p = p + 1
+                def r (new PyNode(PyK.Return ln))
+                if ((this.atStatementEnd()) == false) {
+                    r.k1 = (this.parseTestListStarExpr())
+                }
+                return r
+            }
+            if (w == "raise") {
+                p = p + 1
+                def r2 (new PyNode(PyK.Raise ln))
+                if ((this.atStatementEnd()) == false) {
+                    r2.k1 = (this.parseTest())
+                    if (this.acceptKw("from")) {
+                        r2.k2 = (this.parseTest())
+                    }
+                }
+                return r2
+            }
+            if ((w == "global") || (w == "nonlocal")) {
+                p = p + 1
+                def g (new PyNode(PyK.Global ln))
+                if (w == "nonlocal") {
+                    g.kind = PyK.Nonlocal
+                }
+                push g.strs (this.expectName())
+                while (this.acceptOp(",")) {
+                    push g.strs (this.expectName())
+                }
+                return g
+            }
+            if (w == "import") {
+                p = p + 1
+                def im (new PyNode(PyK.Import ln))
+                while true {
+                    push im.strs (this.parseDottedName())
+                    if (this.acceptKw("as")) {
+                        push im.names (this.expectName())
+                    } {
+                        push im.names ""
+                    }
+                    if ((this.acceptOp(",")) == false) {
+                        break
+                    }
+                }
+                return im
+            }
+            if (w == "from") {
+                p = p + 1
+                def fi (new PyNode(PyK.FromImport ln))
+                def dots:string ""
+                while ((this.isOp(".")) || (this.isOp("..."))) {
+                    def dt:PyToken (this.peek())
+                    dots = dots + dt.text
+                    p = p + 1
+                }
+                if (this.isKw("import")) {
+                    fi.s = dots
+                } {
+                    fi.s = (dots + (this.parseDottedName()))
+                }
+                this.expectKw("import")
+                if (this.acceptOp("*")) {
+                    push fi.strs "*"
+                    push fi.names ""
+                    return fi
+                }
+                def paren:boolean (this.acceptOp("("))
+                while true {
+                    if (paren && (this.isOp(")"))) {
+                        break
+                    }
+                    push fi.strs (this.expectName())
+                    if (this.acceptKw("as")) {
+                        push fi.names (this.expectName())
+                    } {
+                        push fi.names ""
+                    }
+                    if ((this.acceptOp(",")) == false) {
+                        break
+                    }
+                }
+                if paren {
+                    this.expectOp(")")
+                }
+                return fi
+            }
+            if (w == "assert") {
+                p = p + 1
+                def a (new PyNode(PyK.Assert ln))
+                a.k1 = (this.parseTest())
+                if (this.acceptOp(",")) {
+                    a.k2 = (this.parseTest())
+                }
+                return a
+            }
+            if (w == "del") {
+                p = p + 1
+                def d (new PyNode(PyK.Del ln))
+                def tl:PyNode (this.parseExprList())
+                if ((tl.kind == PyK.Tuple) && ((tl.i) == 1)) {
+                    d.kids = tl.kids
+                } {
+                    push d.kids tl
+                }
+                return d
+            }
+        }
+        ; expression statement, assignment, augmented assignment
+        def first:PyNode (this.parseTestListStarExpr())
+        if (this.isOp("=")) {
+            def asg (new PyNode(PyK.Assign ln))
+            push asg.kids first
+            def value:PyNode first
+            while (this.acceptOp("=")) {
+                if (this.isKw("yield")) {
+                    value = (this.parseYield())
+                } {
+                    value = (this.parseTestListStarExpr())
+                }
+                push asg.kids value
+            }
+            removeLast asg.kids
+            asg.k1 = value
+            for asg.kids tg:PyNode ti {
+                this.checkTarget(tg)
+            }
+            return asg
+        }
+        def at:PyToken (this.peek())
+        if ((at.kind == PyTok.Op) && ((strlen at.text) >= 2) && (PyParser.endsWithEq(at.text)) && (at.text != "==") && (at.text != "<=") && (at.text != ">=") && (at.text != "!=")) {
+            p = p + 1
+            def aug (new PyNode(PyK.AugAssign ln))
+            aug.s = (substring at.text 0 ((strlen at.text) - 1))
+            this.checkTarget(first)
+            aug.k1 = first
+            if (this.isKw("yield")) {
+                aug.k2 = (this.parseYield())
+            } {
+                aug.k2 = (this.parseTestList())
+            }
+            return aug
+        }
+        if (this.acceptOp(":")) {
+            ; annotated assignment: x: int = 5
+            def ann (new PyNode(PyK.AnnAssign ln))
+            ann.k1 = first
+            this.parseTest()
+            if (this.acceptOp("=")) {
+                ann.k2 = (this.parseTestListStarExpr())
+            }
+            return ann
+        }
+        def es (new PyNode(PyK.ExprStmt ln))
+        es.k1 = first
+        return es
+    }
+
+    sfn endsWithEq:boolean (s:string) {
+        return (endsWith s "=")
+    }
+
+    fn checkTarget:void (t:PyNode) {
+        if ((t.kind == PyK.Name) || (t.kind == PyK.Attr) || (t.kind == PyK.Subscript)) {
+            return
+        }
+        if ((t.kind == PyK.Tuple) || (t.kind == PyK.List)) {
+            for t.kids k:PyNode i {
+                this.checkTarget(k)
+            }
+            return
+        }
+        if (t.kind == PyK.Starred) {
+            def inner:PyNode (unwrap t.k1)
+            this.checkTarget(inner)
+            return
+        }
+        this.failAt("cannot assign to expression" t.line)
+    }
+
+    fn atStatementEnd:boolean () {
+        def k:PyTok (this.peekKind())
+        if ((k == PyTok.Newline) || (k == PyTok.EOF)) {
+            return true
+        }
+        return (this.isOp(";"))
+    }
+
+    fn parseDottedName:string () {
+        def s:string (this.expectName())
+        while (this.acceptOp(".")) {
+            s = s + "." + (this.expectName())
+        }
+        return s
+    }
+
+    ; ---- expressions
+
+    ; a, b, *c  (a tuple when there is a comma)
+    fn parseTestListStarExpr:PyNode () {
+        def ln:int (this.line())
+        def first:PyNode (this.parseTestOrStar())
+        if ((this.isOp(",")) == false) {
+            return first
+        }
+        def tup (new PyNode(PyK.Tuple ln))
+        tup.i = 1
+        push tup.kids first
+        while (this.acceptOp(",")) {
+            if (this.atExprEnd()) {
+                break
+            }
+            push tup.kids (this.parseTestOrStar())
+        }
+        return tup
+    }
+
+    fn parseTestList:PyNode () {
+        return (this.parseTestListStarExpr())
+    }
+
+    ; for-targets and del: bitwise-or level expressions, so `in` is left alone
+    fn parseExprList:PyNode () {
+        def ln:int (this.line())
+        def first:PyNode (this.parseStarOrBitOr())
+        if ((this.isOp(",")) == false) {
+            return first
+        }
+        def tup (new PyNode(PyK.Tuple ln))
+        tup.i = 1
+        push tup.kids first
+        while (this.acceptOp(",")) {
+            if ((this.isKw("in")) || (this.atExprEnd())) {
+                break
+            }
+            push tup.kids (this.parseStarOrBitOr())
+        }
+        return tup
+    }
+
+    fn parseStarOrBitOr:PyNode () {
+        if (this.isOp("*")) {
+            def st (new PyNode(PyK.Starred (this.line())))
+            p = p + 1
+            st.k1 = (this.parseBitOr())
+            return st
+        }
+        return (this.parseBitOr())
+    }
+
+    fn atExprEnd:boolean () {
+        def t:PyToken (this.peek())
+        if ((t.kind == PyTok.Newline) || (t.kind == PyTok.EOF) || (t.kind == PyTok.Indent) || (t.kind == PyTok.Dedent)) {
+            return true
+        }
+        if (t.kind == PyTok.Op) {
+            def s:string t.text
+            if ((s == ")") || (s == "]") || (s == "}") || (s == "=") || (s == ";") || (s == ":")) {
+                return true
+            }
+            if ((strlen s) >= 2) {
+                if ((endsWith s "=") && (s != "==") && (s != "<=") && (s != ">=") && (s != "!=")) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    fn parseTestOrStar:PyNode () {
+        if (this.isOp("*")) {
+            def st (new PyNode(PyK.Starred (this.line())))
+            p = p + 1
+            st.k1 = (this.parseBitOr())
+            return st
+        }
+        if (this.isKw("yield")) {
+            return (this.parseYield())
+        }
+        return (this.parseNamedExpr())
+    }
+
+    fn parseYield:PyNode () {
+        def ln:int (this.line())
+        p = p + 1
+        if ((array_length yields) > 0) {
+            removeLast yields
+            push yields true
+        }
+        if (this.acceptKw("from")) {
+            def yf (new PyNode(PyK.YieldFrom ln))
+            yf.k1 = (this.parseTest())
+            return yf
+        }
+        def y (new PyNode(PyK.Yield ln))
+        if ((this.atExprEnd()) == false) {
+            y.k1 = (this.parseTestListStarExpr())
+        }
+        return y
+    }
+
+    fn parseNamedExpr:PyNode () {
+        def t:PyToken (this.peek())
+        if ((t.kind == PyTok.Name) && (this.isOpAt(1 ":="))) {
+            def w (new PyNode(PyK.Walrus t.line))
+            w.s = t.text
+            p = p + 2
+            w.k1 = (this.parseTest())
+            return w
+        }
+        return (this.parseTest())
+    }
+
+    fn parseTest:PyNode () {
+        if (this.isKw("lambda")) {
+            return (this.parseLambda())
+        }
+        def ln:int (this.line())
+        def body:PyNode (this.parseOr())
+        if (this.isKw("if")) {
+            ; a comprehension's `if` is not a conditional expression: it has no else
+            def save:int p
+            p = p + 1
+            def test:PyNode (this.parseOr())
+            if (this.acceptKw("else")) {
+                def ie (new PyNode(PyK.IfExp ln))
+                ie.k1 = body
+                ie.k2 = test
+                ie.k3 = (this.parseTest())
+                return ie
+            }
+            p = save
+        }
+        return body
+    }
+
+    fn parseTestNoCond:PyNode () {
+        if (this.isKw("lambda")) {
+            return (this.parseLambda())
+        }
+        return (this.parseOr())
+    }
+
+    fn parseLambda:PyNode () {
+        def node (new PyNode(PyK.Lambda (this.line())))
+        p = p + 1
+        node.kids = (this.parseParams(":" false))
+        this.expectOp(":")
+        push yields false
+        node.k1 = (this.parseTest())
+        removeLast yields
+        return node
+    }
+
+    fn parseOr:PyNode () {
+        def left:PyNode (this.parseAnd())
+        while (this.isKw("or")) {
+            def n (new PyNode(PyK.Or (this.line())))
+            p = p + 1
+            n.k1 = left
+            n.k2 = (this.parseAnd())
+            left = n
+        }
+        return left
+    }
+
+    fn parseAnd:PyNode () {
+        def left:PyNode (this.parseNot())
+        while (this.isKw("and")) {
+            def n (new PyNode(PyK.And (this.line())))
+            p = p + 1
+            n.k1 = left
+            n.k2 = (this.parseNot())
+            left = n
+        }
+        return left
+    }
+
+    fn parseNot:PyNode () {
+        if (this.isKw("not")) {
+            def n (new PyNode(PyK.Not (this.line())))
+            p = p + 1
+            n.k1 = (this.parseNot())
+            return n
+        }
+        return (this.parseComparison())
+    }
+
+    fn compOp:string () {
+        def t:PyToken (this.peek())
+        if (t.kind == PyTok.Op) {
+            def s:string t.text
+            if ((s == "<") || (s == ">") || (s == "==") || (s == "!=") || (s == "<=") || (s == ">=")) {
+                p = p + 1
+                return s
+            }
+            return ""
+        }
+        if (t.kind == PyTok.Name) {
+            if (t.text == "in") {
+                p = p + 1
+                return "in"
+            }
+            if (t.text == "is") {
+                p = p + 1
+                if (this.acceptKw("not")) {
+                    return "is not"
+                }
+                return "is"
+            }
+            if ((t.text == "not") && ((this.peekAt(1)).text == "in")) {
+                p = p + 2
+                return "not in"
+            }
+        }
+        return ""
+    }
+
+    fn parseComparison:PyNode () {
+        def ln:int (this.line())
+        def first:PyNode (this.parseBitOr())
+        def op:string (this.compOp())
+        if ((strlen op) == 0) {
+            return first
+        }
+        def c (new PyNode(PyK.Compare ln))
+        push c.kids first
+        while ((strlen op) > 0) {
+            push c.strs op
+            push c.kids (this.parseBitOr())
+            op = (this.compOp())
+        }
+        return c
+    }
+
+    fn bin:PyNode (op:string a:PyNode b:PyNode ln:int) {
+        def n (new PyNode(PyK.BinOp ln))
+        n.s = op
+        n.k1 = a
+        n.k2 = b
+        return n
+    }
+
+    fn parseBitOr:PyNode () {
+        def left:PyNode (this.parseBitXor())
+        while (this.isOp("|")) {
+            def ln:int (this.line())
+            p = p + 1
+            left = (this.bin("|" left (this.parseBitXor()) ln))
+        }
+        return left
+    }
+
+    fn parseBitXor:PyNode () {
+        def left:PyNode (this.parseBitAnd())
+        while (this.isOp("^")) {
+            def ln:int (this.line())
+            p = p + 1
+            left = (this.bin("^" left (this.parseBitAnd()) ln))
+        }
+        return left
+    }
+
+    fn parseBitAnd:PyNode () {
+        def left:PyNode (this.parseShift())
+        while (this.isOp("&")) {
+            def ln:int (this.line())
+            p = p + 1
+            left = (this.bin("&" left (this.parseShift()) ln))
+        }
+        return left
+    }
+
+    fn parseShift:PyNode () {
+        def left:PyNode (this.parseArith())
+        while ((this.isOp("<<")) || (this.isOp(">>"))) {
+            def t:PyToken (this.peek())
+            p = p + 1
+            left = (this.bin(t.text left (this.parseArith()) t.line))
+        }
+        return left
+    }
+
+    fn parseArith:PyNode () {
+        def left:PyNode (this.parseTerm())
+        while ((this.isOp("+")) || (this.isOp("-"))) {
+            def t:PyToken (this.peek())
+            p = p + 1
+            left = (this.bin(t.text left (this.parseTerm()) t.line))
+        }
+        return left
+    }
+
+    fn parseTerm:PyNode () {
+        def left:PyNode (this.parseFactor())
+        while ((this.isOp("*")) || (this.isOp("/")) || (this.isOp("//")) || (this.isOp("%")) || (this.isOp("@"))) {
+            def t:PyToken (this.peek())
+            p = p + 1
+            left = (this.bin(t.text left (this.parseFactor()) t.line))
+        }
+        return left
+    }
+
+    fn parseFactor:PyNode () {
+        if ((this.isOp("-")) || (this.isOp("+")) || (this.isOp("~"))) {
+            def t:PyToken (this.peek())
+            p = p + 1
+            def u (new PyNode(PyK.Unary t.line))
+            u.s = t.text
+            u.k1 = (this.parseFactor())
+            return u
+        }
+        return (this.parsePower())
+    }
+
+    fn parsePower:PyNode () {
+        if (this.isKw("await")) {
+            p = p + 1
+        }
+        def base:PyNode (this.parseAtomTrailers())
+        if (this.isOp("**")) {
+            def ln:int (this.line())
+            p = p + 1
+            return (this.bin("**" base (this.parseFactor()) ln))
+        }
+        return base
+    }
+
+    fn parseAtomTrailers:PyNode () {
+        def e:PyNode (this.parseAtom())
+        while true {
+            if (this.isOp("(")) {
+                def c (new PyNode(PyK.Call (this.line())))
+                p = p + 1
+                c.k1 = e
+                c.kids = (this.parseCallArgs())
+                this.expectOp(")")
+                e = c
+                continue
+            }
+            if (this.isOp("[")) {
+                def s (new PyNode(PyK.Subscript (this.line())))
+                p = p + 1
+                s.k1 = e
+                s.k2 = (this.parseSubscriptList())
+                this.expectOp("]")
+                e = s
+                continue
+            }
+            if (this.isOp(".")) {
+                def a (new PyNode(PyK.Attr (this.line())))
+                p = p + 1
+                a.k1 = e
+                def nt:PyToken (this.peek())
+                if (nt.kind != PyTok.Name) {
+                    this.fail("expected an attribute name after '.'")
+                }
+                p = p + 1
+                a.s = nt.text
+                e = a
+                continue
+            }
+            break
+        }
+        return e
+    }
+
+    fn parseCallArgs:[PyNode] () {
+        def out:[PyNode]
+        while ((this.isOp(")")) == false) {
+            def t:PyToken (this.peek())
+            if (this.acceptOp("**")) {
+                def ss (new PyNode(PyK.StarStar t.line))
+                ss.k1 = (this.parseTest())
+                push out ss
+            } {
+                if (this.acceptOp("*")) {
+                    def st (new PyNode(PyK.Starred t.line))
+                    st.k1 = (this.parseTest())
+                    push out st
+                } {
+                    if ((t.kind == PyTok.Name) && (this.isOpAt(1 "="))) {
+                        p = p + 2
+                        def kw (new PyNode(PyK.Keyword t.line))
+                        kw.s = t.text
+                        kw.k1 = (this.parseTest())
+                        push out kw
+                    } {
+                        def a:PyNode (this.parseNamedExpr())
+                        if (this.isKw("for")) {
+                            def g (new PyNode(PyK.GenExp t.line))
+                            g.k1 = a
+                            g.kids = (this.parseCompClauses())
+                            push out g
+                        } {
+                            push out a
+                        }
+                    }
+                }
+            }
+            if ((this.acceptOp(",")) == false) {
+                break
+            }
+        }
+        return out
+    }
+
+    fn parseSubscriptList:PyNode () {
+        def ln:int (this.line())
+        def first:PyNode (this.parseSubscript())
+        if ((this.isOp(",")) == false) {
+            return first
+        }
+        def tup (new PyNode(PyK.Tuple ln))
+        push tup.kids first
+        while (this.acceptOp(",")) {
+            if (this.isOp("]")) {
+                break
+            }
+            push tup.kids (this.parseSubscript())
+        }
+        return tup
+    }
+
+    fn parseSubscript:PyNode () {
+        def ln:int (this.line())
+        def lo@(optional):PyNode
+        if ((this.isOp(":")) == false) {
+            lo = (this.parseNamedExpr())
+            if ((this.isOp(":")) == false) {
+                return (unwrap lo)
+            }
+        }
+        def sl (new PyNode(PyK.Slice ln))
+        sl.k1 = lo
+        this.expectOp(":")
+        if (((this.isOp(":")) == false) && ((this.isOp("]")) == false) && ((this.isOp(",")) == false)) {
+            sl.k2 = (this.parseTest())
+        }
+        if (this.acceptOp(":")) {
+            if (((this.isOp("]")) == false) && ((this.isOp(",")) == false)) {
+                sl.k3 = (this.parseTest())
+            }
+        }
+        return sl
+    }
+
+    fn parseCompClauses:[PyNode] () {
+        def out:[PyNode]
+        while true {
+            if (this.isKw("async")) {
+                p = p + 1
+            }
+            if (this.isKw("for")) {
+                def cf (new PyNode(PyK.CompFor (this.line())))
+                p = p + 1
+                cf.k1 = (this.parseExprList())
+                this.expectKw("in")
+                cf.k2 = (this.parseOr())
+                push out cf
+                continue
+            }
+            if (this.isKw("if")) {
+                def ci (new PyNode(PyK.CompIf (this.line())))
+                p = p + 1
+                ci.k1 = (this.parseTestNoCond())
+                push out ci
+                continue
+            }
+            break
+        }
+        return out
+    }
+
+    fn parseAtom:PyNode () {
+        def t:PyToken (this.peek())
+        def ln:int t.line
+        if (t.kind == PyTok.Name) {
+            def w:string t.text
+            if (w == "None") {
+                p = p + 1
+                return (new PyNode(PyK.NoneLit ln))
+            }
+            if (w == "True") {
+                p = p + 1
+                return (new PyNode(PyK.TrueLit ln))
+            }
+            if (w == "False") {
+                p = p + 1
+                return (new PyNode(PyK.FalseLit ln))
+            }
+            if (PyParser.isKeyword(w)) {
+                this.fail(("invalid syntax near '" + w + "'"))
+            }
+            p = p + 1
+            def nm (new PyNode(PyK.Name ln))
+            nm.s = w
+            return nm
+        }
+        if (t.kind == PyTok.Int) {
+            p = p + 1
+            def il (new PyNode(PyK.IntLit ln))
+            il.s = t.text
+            def iv@(optional):int (str2int t.text)
+            if (null? iv) {
+                il.kind = PyK.FloatLit
+                il.d = (py_parse_float t.text)
+            } {
+                il.i = (unwrap iv)
+                ; beyond 2^53 a JavaScript number is no longer exact
+                if ((strlen t.text) > 15) {
+                    def dv:double (py_parse_float t.text)
+                    if ((dv > 9007199254740991.0) || (dv < -9007199254740991.0)) {
+                        il.kind = PyK.FloatLit
+                        il.d = dv
+                        il.i = 1
+                    }
+                }
+            }
+            return il
+        }
+        if (t.kind == PyTok.Float) {
+            p = p + 1
+            def fl (new PyNode(PyK.FloatLit ln))
+            fl.d = (py_parse_float t.text)
+            return fl
+        }
+        if ((t.kind == PyTok.Str) || (t.kind == PyTok.FStr)) {
+            return (this.parseStrings())
+        }
+        if (t.kind == PyTok.Op) {
+            if (t.text == "(") {
+                p = p + 1
+                if (this.acceptOp(")")) {
+                    return (new PyNode(PyK.Tuple ln))
+                }
+                if (this.isKw("yield")) {
+                    def y:PyNode (this.parseYield())
+                    this.expectOp(")")
+                    return y
+                }
+                def first:PyNode (this.parseTestOrStar())
+                if (this.isKw("for")) {
+                    def g (new PyNode(PyK.GenExp ln))
+                    g.k1 = first
+                    g.kids = (this.parseCompClauses())
+                    this.expectOp(")")
+                    return g
+                }
+                if (this.acceptOp(")")) {
+                    if (first.kind == PyK.Starred) {
+                        this.failAt("cannot use starred expression here" ln)
+                    }
+                    return first
+                }
+                def tup (new PyNode(PyK.Tuple ln))
+                push tup.kids first
+                while (this.acceptOp(",")) {
+                    if (this.isOp(")")) {
+                        break
+                    }
+                    push tup.kids (this.parseTestOrStar())
+                }
+                this.expectOp(")")
+                return tup
+            }
+            if (t.text == "[") {
+                p = p + 1
+                def lst (new PyNode(PyK.List ln))
+                if (this.acceptOp("]")) {
+                    return lst
+                }
+                def first2:PyNode (this.parseTestOrStar())
+                if (this.isKw("for")) {
+                    def lc (new PyNode(PyK.ListComp ln))
+                    lc.k1 = first2
+                    lc.kids = (this.parseCompClauses())
+                    this.expectOp("]")
+                    return lc
+                }
+                push lst.kids first2
+                while (this.acceptOp(",")) {
+                    if (this.isOp("]")) {
+                        break
+                    }
+                    push lst.kids (this.parseTestOrStar())
+                }
+                this.expectOp("]")
+                return lst
+            }
+            if (t.text == "{") {
+                return (this.parseBrace())
+            }
+            if (t.text == "...") {
+                p = p + 1
+                return (new PyNode(PyK.Ellipsis ln))
+            }
+        }
+        this.fail(("invalid syntax: unexpected " + (this.describe(t))))
+        return (new PyNode(PyK.NoneLit ln))
+    }
+
+    fn parseBrace:PyNode () {
+        def ln:int (this.line())
+        p = p + 1
+        if (this.acceptOp("}")) {
+            return (new PyNode(PyK.Dict ln))
+        }
+        if (this.acceptOp("**")) {
+            def d (new PyNode(PyK.Dict ln))
+            def sp (new PyNode(PyK.DictSpread ln))
+            sp.k1 = (this.parseBitOr())
+            push d.kids sp
+            push d.kids (new PyNode(PyK.NoneLit ln))
+            this.parseDictRest(d)
+            return d
+        }
+        def first:PyNode (this.parseTestOrStar())
+        if (this.acceptOp(":")) {
+            def value:PyNode (this.parseTest())
+            if (this.isKw("for")) {
+                def dc (new PyNode(PyK.DictComp ln))
+                dc.k1 = first
+                dc.k2 = value
+                dc.kids = (this.parseCompClauses())
+                this.expectOp("}")
+                return dc
+            }
+            def d2 (new PyNode(PyK.Dict ln))
+            push d2.kids first
+            push d2.kids value
+            this.parseDictRest(d2)
+            return d2
+        }
+        if (this.isKw("for")) {
+            def sc (new PyNode(PyK.SetComp ln))
+            sc.k1 = first
+            sc.kids = (this.parseCompClauses())
+            this.expectOp("}")
+            return sc
+        }
+        def st (new PyNode(PyK.Set ln))
+        push st.kids first
+        while (this.acceptOp(",")) {
+            if (this.isOp("}")) {
+                break
+            }
+            push st.kids (this.parseTestOrStar())
+        }
+        this.expectOp("}")
+        return st
+    }
+
+    fn parseDictRest:void (d:PyNode) {
+        while (this.acceptOp(",")) {
+            if (this.isOp("}")) {
+                break
+            }
+            if (this.acceptOp("**")) {
+                def sp (new PyNode(PyK.DictSpread (this.line())))
+                sp.k1 = (this.parseBitOr())
+                push d.kids sp
+                push d.kids (new PyNode(PyK.NoneLit sp.line))
+                continue
+            }
+            push d.kids (this.parseTest())
+            this.expectOp(":")
+            push d.kids (this.parseTest())
+        }
+        this.expectOp("}")
+    }
+
+    ; adjacent literals join: "a" 'b' f"{c}"
+    fn parseStrings:PyNode () {
+        def ln:int (this.line())
+        def parts:[PyNode]
+        def anyF:boolean false
+        while (((this.peekKind()) == PyTok.Str) || ((this.peekKind()) == PyTok.FStr)) {
+            def t:PyToken (this.peek())
+            p = p + 1
+            if (t.kind == PyTok.FStr) {
+                anyF = true
+                def fs:PyNode (this.parseFString(t.text t.line))
+                for fs.kids k:PyNode i {
+                    push parts k
+                }
+            } {
+                def sl (new PyNode(PyK.StrLit t.line))
+                sl.s = t.text
+                push parts sl
+            }
+        }
+        if (anyF == false) {
+            def all:string ""
+            for parts pt:PyNode i {
+                all = all + pt.s
+            }
+            def one (new PyNode(PyK.StrLit ln))
+            one.s = all
+            return one
+        }
+        def f (new PyNode(PyK.FStr ln))
+        f.kids = parts
+        return f
+    }
+
+    ; the body of an f-string: literal text and {expression!conv:spec} parts
+    fn parseFString:PyNode (body:string line:int) {
+        def f (new PyNode(PyK.FStr line))
+        def cs:[int] (to_chars body)
+        def n:int (array_length cs)
+        def lit:[int]
+        def i:int 0
+        while (i < n) {
+            def c:int (itemAt cs i)
+            if (c == 123) {
+                if (((i + 1) < n) && ((itemAt cs (i + 1)) == 123)) {
+                    push lit 123
+                    i = i + 2
+                    continue
+                }
+                if ((array_length lit) > 0) {
+                    def sl (new PyNode(PyK.StrLit line))
+                    sl.s = (py_codes_to_str lit 0 (array_length lit))
+                    push f.kids sl
+                    clear lit
+                }
+                ; the expression runs to a top-level ! : = or }
+                def j:int (i + 1)
+                def depth:int 0
+                def quote:int 0
+                while (j < n) {
+                    def d:int (itemAt cs j)
+                    if (quote != 0) {
+                        if (d == quote) {
+                            quote = 0
+                        }
+                        j = j + 1
+                        continue
+                    }
+                    if ((d == 39) || (d == 34)) {
+                        quote = d
+                        j = j + 1
+                        continue
+                    }
+                    if ((d == 40) || (d == 91) || (d == 123)) {
+                        depth = depth + 1
+                    }
+                    if ((d == 41) || (d == 93)) {
+                        depth = depth - 1
+                    }
+                    if (d == 125) {
+                        if (depth == 0) {
+                            break
+                        }
+                        depth = depth - 1
+                    }
+                    if (depth == 0) {
+                        def nx:int 0
+                        if ((j + 1) < n) {
+                            nx = (itemAt cs (j + 1))
+                        }
+                        if ((d == 33) && (nx != 61)) {
+                            break
+                        }
+                        if (d == 58) {
+                            break
+                        }
+                        if ((d == 61) && ((nx == 125) || (nx == 33) || (nx == 58))) {
+                            def pv:int (itemAt cs (j - 1))
+                            if ((pv != 61) && (pv != 33) && (pv != 60) && (pv != 62)) {
+                                break
+                            }
+                        }
+                    }
+                    j = j + 1
+                }
+                if (j >= n) {
+                    this.failAt("f-string: expecting '}'" line)
+                }
+                def exprText:string (py_codes_to_str cs (i + 1) j)
+                if ((strlen (trim exprText)) == 0) {
+                    this.failAt("f-string: empty expression not allowed" line)
+                }
+                def part (new PyNode(PyK.FmtPart line))
+                def sub (new PyParser)
+                part.k1 = (sub.parseExpressionText(exprText line))
+                if ((strlen sub.err) > 0) {
+                    this.failAt(sub.err line)
+                }
+                if ((itemAt cs j) == 61) {
+                    ; {x=}: the text, then the value's repr
+                    part.i = 1
+                    def dbg (new PyNode(PyK.StrLit line))
+                    dbg.s = (py_codes_to_str cs (i + 1) (j + 1))
+                    push f.kids dbg
+                    j = j + 1
+                }
+                if ((j < n) && ((itemAt cs j) == 33)) {
+                    if ((j + 1) >= n) {
+                        this.failAt("f-string: invalid conversion character" line)
+                    }
+                    part.s = (py_chr (itemAt cs (j + 1)))
+                    if ((part.s != "r") && (part.s != "s") && (part.s != "a")) {
+                        this.failAt("f-string: invalid conversion character" line)
+                    }
+                    j = j + 2
+                }
+                if ((j < n) && ((itemAt cs j) == 58)) {
+                    ; the spec runs to the matching }; it may hold {nested} fields
+                    def k:int (j + 1)
+                    def sd:int 0
+                    while (k < n) {
+                        def e:int (itemAt cs k)
+                        if (e == 123) {
+                            sd = sd + 1
+                        }
+                        if (e == 125) {
+                            if (sd == 0) {
+                                break
+                            }
+                            sd = sd - 1
+                        }
+                        k = k + 1
+                    }
+                    if (k >= n) {
+                        this.failAt("f-string: expecting '}'" line)
+                    }
+                    part.k2 = (this.parseFString((py_codes_to_str cs (j + 1) k) line))
+                    j = k
+                }
+                if ((j >= n) || ((itemAt cs j) != 125)) {
+                    this.failAt("f-string: expecting '}'" line)
+                }
+                if ((part.i == 1) && ((strlen part.s) == 0) && (null? part.k2)) {
+                    part.s = "r"
+                }
+                push f.kids part
+                i = j + 1
+                continue
+            }
+            if (c == 125) {
+                if (((i + 1) < n) && ((itemAt cs (i + 1)) == 125)) {
+                    push lit 125
+                    i = i + 2
+                    continue
+                }
+                this.failAt("f-string: single '}' is not allowed" line)
+            }
+            push lit c
+            i = i + 1
+        }
+        if ((array_length lit) > 0) {
+            def sl2 (new PyNode(PyK.StrLit line))
+            sl2.s = (py_codes_to_str lit 0 (array_length lit))
+            push f.kids sl2
+        }
+        return f
+    }
+}

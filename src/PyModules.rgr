@@ -1,0 +1,3045 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyModules.rgr — the standard library modules the runtime ships with:
+;   math, random, json, os, os.path, sys, string, time, collections,
+;   itertools, functools, statistics, copy, typing.
+;
+; A module is a PyVal(Module) whose functions are PyVal(Builtin) named
+; "module.function"; PyBuiltins.call hands every such name to callBuiltin.
+; random is CPython's Mersenne Twister, so a seeded script draws the same
+; numbers here as under CPython.
+; ============================================================================
+
+Import "PyOps.rgr"
+Import "PyValue.rgr"
+Import "PyFormat.rgr"
+Import "PyFs.rgr"
+Import "PyInterp.rgr"
+
+class PyModules {
+    def ip:PyInterp
+    def mt:[int]
+    def mti:int 625
+    def seeded:boolean false
+    def gaussNext:double 0.0
+    def hasGauss:boolean false
+    def jcs:[int]
+    def jpos:int 0
+    def jdoc:string ""
+
+    Constructor (interp:PyInterp) {
+        ip = interp
+    }
+
+    ; ---- building modules
+
+    fn fns:void (m:PyVal names:string) {
+        def ns:[string] (strsplit names " ")
+        for ns n:string i {
+            def b (new PyVal(PyT.Builtin))
+            b.s = (m.s + "." + n)
+            set m.attrs n b
+        }
+    }
+
+    fn newModule:PyVal (name:string) {
+        def m (new PyVal(PyT.Module))
+        m.s = name
+        return m
+    }
+
+    fn nativeClass:PyVal (name:string) {
+        def c (new PyVal(PyT.Class))
+        c.s = name
+        c.mode = "native"
+        ip.computeMro(c)
+        return c
+    }
+
+    fn strList:PyVal (names:string) {
+        def out:[PyVal]
+        def ns:[string] (strsplit names " ")
+        for ns n:string i {
+            push out (ip.mkStr(n))
+        }
+        return (ip.mkList(out))
+    }
+
+    fn make@(optional):PyVal (name:string) {
+        def none@(optional):PyVal
+        if (name == "math") {
+            def m:PyVal (this.newModule("math"))
+            this.fns(m "sqrt sin cos tan asin acos atan atan2 sinh cosh tanh exp expm1 log log10 log2 log1p pow floor ceil trunc fabs hypot degrees radians isnan isinf isfinite isclose gcd lcm factorial comb perm prod fsum copysign fmod modf dist isqrt")
+            set m.attrs "pi" (ip.mkFloat(3.141592653589793))
+            set m.attrs "e" (ip.mkFloat(2.718281828459045))
+            set m.attrs "tau" (ip.mkFloat(6.283185307179586))
+            set m.attrs "inf" (ip.mkFloat((py_inf)))
+            set m.attrs "nan" (ip.mkFloat((py_nan)))
+            def optr79@(optional):PyVal m
+            return optr79
+        }
+        if (name == "random") {
+            def m2:PyVal (this.newModule("random"))
+            this.fns(m2 "seed random randint randrange choice choices shuffle uniform sample gauss normalvariate triangular expovariate getrandbits")
+            def optr84@(optional):PyVal m2
+            return optr84
+        }
+        if (name == "json") {
+            def m3:PyVal (this.newModule("json"))
+            this.fns(m3 "dumps loads dump load")
+            def ve@(optional):PyVal (get ip.builtins "ValueError")
+            def jc:PyVal (this.nativeClass("JSONDecodeError"))
+            jc.mode = "builtin"
+            jc.isExc = true
+            push jc.bases (unwrap ve)
+            ip.computeMro(jc)
+            set m3.attrs "JSONDecodeError" jc
+            def optr96@(optional):PyVal m3
+            return optr96
+        }
+        if (name == "os") {
+            def m4:PyVal (this.newModule("os"))
+            this.fns(m4 "getcwd chdir listdir mkdir makedirs remove unlink rmdir rename replace walk getenv")
+            set m4.attrs "sep" (ip.mkStr("/"))
+            set m4.attrs "linesep" (ip.mkStr("\n"))
+            set m4.attrs "name" (ip.mkStr("posix"))
+            set m4.attrs "curdir" (ip.mkStr("."))
+            set m4.attrs "environ" (ip.mkDict())
+            set m4.attrs "path" (unwrap (this.make("os.path")))
+            def optr107@(optional):PyVal m4
+            return optr107
+        }
+        if (name == "os.path") {
+            def m5:PyVal (this.newModule("os.path"))
+            this.fns(m5 "join exists isfile isdir basename dirname split splitext abspath normpath getsize isabs expanduser")
+            set m5.attrs "sep" (ip.mkStr("/"))
+            def optr113@(optional):PyVal m5
+            return optr113
+        }
+        if (name == "sys") {
+            def m6:PyVal (this.newModule("sys"))
+            this.fns(m6 "exit setrecursionlimit getrecursionlimit")
+            def args:[PyVal]
+            for ip.argv a:string i {
+                push args (ip.mkStr(a))
+            }
+            if ((array_length args) == 0) {
+                push args (ip.mkStr("main.py"))
+            }
+            set m6.attrs "argv" (ip.mkList(args))
+            def so (new PyVal(PyT.File))
+            so.s = "<stdout>"
+            so.mode = "w"
+            set m6.attrs "stdout" so
+            def se (new PyVal(PyT.File))
+            se.s = "<stderr>"
+            se.mode = "w"
+            set m6.attrs "stderr" se
+            set m6.attrs "maxsize" (ip.mkInt(9007199254740991))
+            set m6.attrs "version" (ip.mkStr("3.13.0 (Ranger Python runtime)"))
+            set m6.attrs "platform" (ip.mkStr("ranger"))
+            set m6.attrs "path" (ip.mkList(([] _:PyVal ())))
+            set m6.attrs "modules" (ip.mkDict())
+            def optr139@(optional):PyVal m6
+            return optr139
+        }
+        if (name == "string") {
+            def m7:PyVal (this.newModule("string"))
+            set m7.attrs "ascii_lowercase" (ip.mkStr("abcdefghijklmnopqrstuvwxyz"))
+            set m7.attrs "ascii_uppercase" (ip.mkStr("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+            set m7.attrs "ascii_letters" (ip.mkStr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+            set m7.attrs "digits" (ip.mkStr("0123456789"))
+            set m7.attrs "hexdigits" (ip.mkStr("0123456789abcdefABCDEF"))
+            set m7.attrs "octdigits" (ip.mkStr("01234567"))
+            def punct:string ("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+            set m7.attrs "punctuation" (ip.mkStr(punct))
+            def ws:string (" \t\n\r" + (py_chr 11) + (py_chr 12))
+            set m7.attrs "whitespace" (ip.mkStr(ws))
+            set m7.attrs "printable" (ip.mkStr(("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" + punct + ws)))
+            def optr154@(optional):PyVal m7
+            return optr154
+        }
+        if (name == "time") {
+            def m8:PyVal (this.newModule("time"))
+            this.fns(m8 "time perf_counter monotonic sleep time_ns process_time")
+            def optr159@(optional):PyVal m8
+            return optr159
+        }
+        if (name == "collections") {
+            def m9:PyVal (this.newModule("collections"))
+            set m9.attrs "defaultdict" (this.nativeClass("defaultdict"))
+            set m9.attrs "Counter" (this.nativeClass("Counter"))
+            set m9.attrs "OrderedDict" (this.nativeClass("OrderedDict"))
+            set m9.attrs "deque" (this.nativeClass("deque"))
+            this.fns(m9 "namedtuple")
+            def optr168@(optional):PyVal m9
+            return optr168
+        }
+        if (name == "itertools") {
+            def m10:PyVal (this.newModule("itertools"))
+            this.fns(m10 "chain product permutations combinations combinations_with_replacement accumulate groupby islice zip_longest starmap takewhile dropwhile filterfalse pairwise compress repeat tee count cycle batched")
+            def optr173@(optional):PyVal m10
+            return optr173
+        }
+        if (name == "functools") {
+            def m11:PyVal (this.newModule("functools"))
+            this.fns(m11 "reduce partial lru_cache cache wraps total_ordering cmp_to_key")
+            def optr178@(optional):PyVal m11
+            return optr178
+        }
+        if (name == "statistics") {
+            def m12:PyVal (this.newModule("statistics"))
+            this.fns(m12 "mean fmean median median_low median_high mode stdev pstdev variance pvariance")
+            def se2:PyVal (this.nativeClass("StatisticsError"))
+            se2.mode = "builtin"
+            se2.isExc = true
+            push se2.bases (unwrap (get ip.builtins "ValueError"))
+            ip.computeMro(se2)
+            set m12.attrs "StatisticsError" se2
+            def optr189@(optional):PyVal m12
+            return optr189
+        }
+        if (name == "copy") {
+            def m13:PyVal (this.newModule("copy"))
+            this.fns(m13 "copy deepcopy")
+            def optr194@(optional):PyVal m13
+            return optr194
+        }
+        if (name == "typing") {
+            def m14:PyVal (this.newModule("typing"))
+            this.fns(m14 "List Dict Set Tuple Optional Union Any Callable Iterable Iterator Sequence Mapping Generator Type FrozenSet DefaultDict NamedTuple TypeVar cast")
+            def optr199@(optional):PyVal m14
+            return optr199
+        }
+        return none
+    }
+
+    ; ---- argument helpers
+
+    fn num:double (args:[PyVal] i:int fname:string) {
+        if (i >= (array_length args)) {
+            ip.raise("TypeError" (fname + "() missing required argument"))
+        }
+        return (ip.bi.toNum((itemAt args i)))
+    }
+
+    fn domain:void () {
+        ip.raise("ValueError" "math domain error")
+    }
+
+    fn checkF:PyVal (x:double) {
+        if ((py_isinf x) || (py_isnan x)) {
+            ; a finite input that overflowed
+            if (py_isinf x) {
+                ip.raise("OverflowError" "math range error")
+            }
+        }
+        return (ip.mkFloat(x))
+    }
+
+    fn intOf:PyVal (x:double) {
+        return (ip.bi.toIntValue((ip.mkFloat(x))))
+    }
+
+    fn bitLength:int (n0:int) {
+        def n:int n0
+        if (n < 0) {
+            n = (0 - n)
+        }
+        def k:int 0
+        while (n > 0) {
+            n = (idiv n 2)
+            k = k + 1
+        }
+        return k
+    }
+
+    fn codesOf:[int] (s:string) {
+        def v:PyVal (ip.mkStr(s))
+        return (v.codes())
+    }
+
+    fn listOf:[PyVal] (v:PyVal) {
+        return (ip.iterValues(v))
+    }
+
+    fn call1:PyVal (f:PyVal a:PyVal) {
+        def kn:[string]
+        def kv:[PyVal]
+        return (ip.callValue(f ([] _:PyVal (a)) kn kv))
+    }
+
+    fn call2:PyVal (f:PyVal a:PyVal b:PyVal) {
+        def kn:[string]
+        def kv:[PyVal]
+        return (ip.callValue(f ([] _:PyVal (a b)) kn kv))
+    }
+
+    ; ---- dispatch
+
+    fn callBuiltin:PyVal (name:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def dot:int (lastIndexOf name ".")
+        if (dot < 0) {
+            ip.raise("NameError" ("name '" + name + "' is not defined"))
+        }
+        def mod:string (substring name 0 dot)
+        def f:string (substring name (dot + 1) (strlen name))
+        if (mod == "math") {
+            return (this.mathCall(f args kn kv))
+        }
+        if (mod == "random") {
+            return (this.randomCall(f args kn kv))
+        }
+        if (mod == "json") {
+            return (this.jsonCall(f args kn kv))
+        }
+        if ((mod == "os") || (mod == "os.path")) {
+            return (this.osCall(mod f args kn kv))
+        }
+        if (mod == "sys") {
+            if (f == "exit") {
+                def code:PyVal ip.NONE
+                if ((array_length args) > 0) {
+                    code = (itemAt args 0)
+                }
+                ip.raiseVal((ip.makeExcArg("SystemExit" code)))
+            }
+            if (f == "setrecursionlimit") {
+                def lim:int (ip.bi.toInt((itemAt args 0) "limit"))
+                if (lim > 900) {
+                    lim = 900
+                }
+                ip.maxDepth = lim
+                return ip.NONE
+            }
+            if (f == "getrecursionlimit") {
+                return (ip.mkInt(1000))
+            }
+        }
+        if (mod == "time") {
+            if (f == "sleep") {
+                return ip.NONE
+            }
+            if (f == "time_ns") {
+                return (ip.mkInt((py_trunc ((py_now_ms) * 1000000.0))))
+            }
+            return (ip.mkFloat(((py_now_ms) / 1000.0)))
+        }
+        if (mod == "collections") {
+            return (this.namedTuple(args kn kv))
+        }
+        if (mod == "itertools") {
+            return (this.iterCall(f args kn kv))
+        }
+        if (mod == "functools") {
+            return (this.funcCall(f args kn kv))
+        }
+        if (mod == "statistics") {
+            return (this.statCall(f args kn kv))
+        }
+        if (mod == "copy") {
+            if (f == "copy") {
+                return (this.shallowCopy((itemAt args 0)))
+            }
+            return (this.deepCopy((itemAt args 0)))
+        }
+        if (mod == "typing") {
+            if (f == "cast") {
+                return (itemAt args 1)
+            }
+            if (f == "TypeVar") {
+                return (ip.mkStr((ip.toStr((itemAt args 0)))))
+            }
+            return ip.NONE
+        }
+        ip.raise("AttributeError" ("module '" + mod + "' has no attribute '" + f + "'"))
+        return ip.NONE
+    }
+
+    ; ---- math
+
+    fn mathCall:PyVal (f:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def n:int (array_length args)
+        if (f == "sqrt") {
+            def x:double (this.num(args 0 f))
+            if (x < 0.0) {
+                this.domain()
+            }
+            return (ip.mkFloat((py_sqrt x)))
+        }
+        if (f == "sin") {
+            return (ip.mkFloat((py_sin (this.num(args 0 f)))))
+        }
+        if (f == "cos") {
+            return (ip.mkFloat((py_cos (this.num(args 0 f)))))
+        }
+        if (f == "tan") {
+            return (ip.mkFloat((py_tan (this.num(args 0 f)))))
+        }
+        if ((f == "asin") || (f == "acos")) {
+            def x2:double (this.num(args 0 f))
+            if ((x2 > 1.0) || (x2 < -1.0)) {
+                this.domain()
+            }
+            if (f == "asin") {
+                return (ip.mkFloat((py_asin x2)))
+            }
+            return (ip.mkFloat((py_acos x2)))
+        }
+        if (f == "atan") {
+            return (ip.mkFloat((py_atan (this.num(args 0 f)))))
+        }
+        if (f == "atan2") {
+            return (ip.mkFloat((py_atan2 (this.num(args 0 f)) (this.num(args 1 f)))))
+        }
+        if ((f == "sinh") || (f == "cosh") || (f == "tanh")) {
+            def x3:double (this.num(args 0 f))
+            def ep:double (py_exp x3)
+            def em:double (py_exp (0.0 - x3))
+            if (f == "sinh") {
+                return (this.checkF(((ep - em) / 2.0)))
+            }
+            if (f == "cosh") {
+                return (this.checkF(((ep + em) / 2.0)))
+            }
+            if (x3 > 20.0) {
+                return (ip.mkFloat(1.0))
+            }
+            if (x3 < -20.0) {
+                return (ip.mkFloat(-1.0))
+            }
+            return (ip.mkFloat(((ep - em) / (ep + em))))
+        }
+        if (f == "exp") {
+            return (this.checkF((py_exp (this.num(args 0 f)))))
+        }
+        if (f == "expm1") {
+            def x4:double (this.num(args 0 f))
+            if ((x4 < 0.00001) && (x4 > -0.00001)) {
+                return (ip.mkFloat((x4 + ((x4 * x4) / 2.0) + ((x4 * x4 * x4) / 6.0))))
+            }
+            return (this.checkF(((py_exp x4) - 1.0)))
+        }
+        if (f == "log") {
+            def x5:double (this.num(args 0 f))
+            if (x5 <= 0.0) {
+                this.domain()
+            }
+            if (n > 1) {
+                def b:double (this.num(args 1 f))
+                if (b <= 0.0) {
+                    this.domain()
+                }
+                def lb:double (py_log b)
+                if (lb == 0.0) {
+                    ip.raise("ZeroDivisionError" "division by zero")
+                }
+                return (ip.mkFloat(((py_log x5) / lb)))
+            }
+            return (ip.mkFloat((py_log x5)))
+        }
+        if ((f == "log10") || (f == "log2")) {
+            def x6:double (this.num(args 0 f))
+            if (x6 <= 0.0) {
+                this.domain()
+            }
+            if (f == "log10") {
+                return (ip.mkFloat((py_log10 x6)))
+            }
+            return (ip.mkFloat((py_log2 x6)))
+        }
+        if (f == "log1p") {
+            def x7:double (this.num(args 0 f))
+            if (x7 <= -1.0) {
+                this.domain()
+            }
+            def u:double (1.0 + x7)
+            if (u == 1.0) {
+                return (ip.mkFloat(x7))
+            }
+            return (ip.mkFloat(((py_log u) * (x7 / (u - 1.0)))))
+        }
+        if (f == "pow") {
+            def a:double (this.num(args 0 f))
+            def b2:double (this.num(args 1 f))
+            if ((a == 0.0) && (b2 < 0.0)) {
+                this.domain()
+            }
+            if ((a < 0.0) && ((py_floor b2) != b2) && ((py_isinf b2) == false)) {
+                this.domain()
+            }
+            def r:double (py_pow a b2)
+            if ((py_isinf r) && ((py_isinf a) == false) && ((py_isinf b2) == false)) {
+                ip.raise("OverflowError" "math range error")
+            }
+            return (ip.mkFloat(r))
+        }
+        if ((f == "floor") || (f == "ceil") || (f == "trunc")) {
+            def v:PyVal (itemAt args 0)
+            if (ip.isIntLike(v)) {
+                return (ip.mkInt(v.i))
+            }
+            def mname:string ("__" + f + "__")
+            def dm@(optional):PyVal (ip.findMethod(v mname))
+            if (!null? dm) {
+                return (ip.callMethodVal((unwrap dm) v ([] _:PyVal ())))
+            }
+            def x8:double (this.num(args 0 f))
+            if (f == "floor") {
+                return (this.intOf((py_floor x8)))
+            }
+            if (f == "ceil") {
+                return (this.intOf((py_ceil x8)))
+            }
+            return (this.intOf(x8))
+        }
+        if (f == "fabs") {
+            def x9:double (this.num(args 0 f))
+            if (x9 < 0.0) {
+                return (ip.mkFloat((0.0 - x9)))
+            }
+            return (ip.mkFloat((x9 + 0.0)))
+        }
+        if ((f == "hypot") || (f == "dist")) {
+            def xs:[double]
+            if (f == "hypot") {
+                for args av:PyVal ai {
+                    push xs (ip.bi.toNum(av))
+                }
+            } {
+                def p:[PyVal] (this.listOf((itemAt args 0)))
+                def q:[PyVal] (this.listOf((itemAt args 1)))
+                if ((array_length p) != (array_length q)) {
+                    ip.raise("ValueError" "both points must have the same number of dimensions")
+                }
+                for p pv:PyVal pi {
+                    push xs ((ip.bi.toNum(pv)) - (ip.bi.toNum((itemAt q pi))))
+                }
+            }
+            def big:double 0.0
+            for xs xv:double xi {
+                def ax:double xv
+                if (ax < 0.0) {
+                    ax = (0.0 - ax)
+                }
+                if (py_isinf ax) {
+                    return (ip.mkFloat((py_inf)))
+                }
+                if (ax > big) {
+                    big = ax
+                }
+            }
+            if (big == 0.0) {
+                return (ip.mkFloat(0.0))
+            }
+            if ((array_length xs) == 2) {
+                def h0:double (itemAt xs 0)
+                def h1:double (itemAt xs 1)
+                def hs:double ((h0 * h0) + (h1 * h1))
+                if ((py_isinf hs) == false) {
+                    if (hs > 0.0) {
+                        return (ip.mkFloat((py_sqrt hs)))
+                    }
+                }
+            }
+            def sq:[double]
+            for xs xv2:double xi2 {
+                def t:double (xv2 / big)
+                push sq (t * t)
+            }
+            return (ip.mkFloat((big * (py_sqrt (this.fsumD(sq))))))
+        }
+        if (f == "degrees") {
+            return (ip.mkFloat(((this.num(args 0 f)) * (180.0 / 3.141592653589793))))
+        }
+        if (f == "radians") {
+            return (ip.mkFloat(((this.num(args 0 f)) * (3.141592653589793 / 180.0))))
+        }
+        if (f == "isnan") {
+            return (ip.mkBool((py_isnan (this.num(args 0 f)))))
+        }
+        if (f == "isinf") {
+            return (ip.mkBool((py_isinf (this.num(args 0 f)))))
+        }
+        if (f == "isfinite") {
+            def x10:double (this.num(args 0 f))
+            return (ip.mkBool((((py_isinf x10) == false) && ((py_isnan x10) == false))))
+        }
+        if (f == "isclose") {
+            def a2:double (this.num(args 0 f))
+            def b3:double (this.num(args 1 f))
+            def rel:double 0.000000001
+            def abt:double 0.0
+            def rk@(optional):PyVal (ip.bi.kw(kn kv "rel_tol"))
+            if (!null? rk) {
+                rel = (ip.bi.toNum((unwrap rk)))
+            }
+            def ak@(optional):PyVal (ip.bi.kw(kn kv "abs_tol"))
+            if (!null? ak) {
+                abt = (ip.bi.toNum((unwrap ak)))
+            }
+            if (a2 == b3) {
+                return ip.TRUE
+            }
+            if ((py_isinf a2) || (py_isinf b3)) {
+                return ip.FALSE
+            }
+            def d:double (a2 - b3)
+            if (d < 0.0) {
+                d = (0.0 - d)
+            }
+            def aa:double a2
+            if (aa < 0.0) {
+                aa = (0.0 - aa)
+            }
+            def bb:double b3
+            if (bb < 0.0) {
+                bb = (0.0 - bb)
+            }
+            def m:double aa
+            if (bb > m) {
+                m = bb
+            }
+            return (ip.mkBool(((d <= (rel * m)) || (d <= abt))))
+        }
+        if ((f == "gcd") || (f == "lcm")) {
+            def acc:int 0
+            if (f == "lcm") {
+                acc = 1
+            }
+            for args gv:PyVal gi {
+                def x11:int (ip.bi.toInt(gv f))
+                if (x11 < 0) {
+                    x11 = (0 - x11)
+                }
+                if (f == "gcd") {
+                    acc = (this.gcd(acc x11))
+                } {
+                    if ((acc == 0) || (x11 == 0)) {
+                        acc = 0
+                    } {
+                        acc = ((idiv acc (this.gcd(acc x11))) * x11)
+                    }
+                }
+            }
+            return (ip.mkInt(acc))
+        }
+        if (f == "isqrt") {
+            def x12:int (ip.bi.toInt((itemAt args 0) f))
+            if (x12 < 0) {
+                ip.raise("ValueError" "isqrt() argument must be nonnegative")
+            }
+            def r2:int (py_trunc (py_sqrt (py_i2d x12)))
+            while ((r2 * r2) > x12) {
+                r2 = r2 - 1
+            }
+            while (((r2 + 1) * (r2 + 1)) <= x12) {
+                r2 = r2 + 1
+            }
+            return (ip.mkInt(r2))
+        }
+        if (f == "factorial") {
+            def x13:int (ip.bi.toInt((itemAt args 0) f))
+            if (x13 < 0) {
+                ip.raise("ValueError" "factorial() not defined for negative values")
+            }
+            def acc2:PyVal (ip.mkInt(1))
+            def k:int 2
+            while (k <= x13) {
+                acc2 = (ip.binop("*" acc2 (ip.mkInt(k))))
+                k = k + 1
+            }
+            return acc2
+        }
+        if ((f == "comb") || (f == "perm")) {
+            def nn:int (ip.bi.toInt((itemAt args 0) f))
+            def kk:int nn
+            if ((n > 1) && ((ip.argAt(args 1)).t != PyT.None)) {
+                kk = (ip.bi.toInt((itemAt args 1) f))
+            }
+            if ((nn < 0) || (kk < 0)) {
+                ip.raise("ValueError" "n must be a non-negative integer")
+            }
+            if (kk > nn) {
+                return (ip.mkInt(0))
+            }
+            def acc3:PyVal (ip.mkInt(1))
+            if (f == "perm") {
+                def j:int 0
+                while (j < kk) {
+                    acc3 = (ip.binop("*" acc3 (ip.mkInt((nn - j)))))
+                    j = j + 1
+                }
+                return acc3
+            }
+            if (kk > (nn - kk)) {
+                kk = (nn - kk)
+            }
+            def j2:int 1
+            while (j2 <= kk) {
+                acc3 = (ip.binop("//" (ip.binop("*" acc3 (ip.mkInt((nn - kk + j2))))) (ip.mkInt(j2))))
+                j2 = j2 + 1
+            }
+            return acc3
+        }
+        if (f == "prod") {
+            def acc4:PyVal (ip.mkInt(1))
+            def st@(optional):PyVal (ip.bi.kw(kn kv "start"))
+            if (!null? st) {
+                acc4 = (unwrap st)
+            }
+            for (this.listOf((itemAt args 0))) pv2:PyVal pj {
+                acc4 = (ip.binop("*" acc4 pv2))
+            }
+            return acc4
+        }
+        if (f == "fsum") {
+            def ds:[double]
+            for (this.listOf((itemAt args 0))) fv:PyVal fj {
+                push ds (ip.bi.toNum(fv))
+            }
+            return (ip.mkFloat((this.fsumD(ds))))
+        }
+        if (f == "copysign") {
+            def x14:double (this.num(args 0 f))
+            def y:double (this.num(args 1 f))
+            if (x14 < 0.0) {
+                x14 = (0.0 - x14)
+            }
+            if ((y < 0.0) || ((y == 0.0) && (PyFormat.isNegZero(y)))) {
+                return (ip.mkFloat((0.0 - x14)))
+            }
+            return (ip.mkFloat(x14))
+        }
+        if (f == "fmod") {
+            def x15:double (this.num(args 0 f))
+            def y2:double (this.num(args 1 f))
+            if (y2 == 0.0) {
+                this.domain()
+            }
+            def q2:double (py_i2d (py_trunc (x15 / y2)))
+            return (ip.mkFloat((x15 - (q2 * y2))))
+        }
+        if (f == "modf") {
+            def x16:double (this.num(args 0 f))
+            def ip2:double (py_i2d (py_trunc x16))
+            return (ip.pair((ip.mkFloat((x16 - ip2))) (ip.mkFloat(ip2))))
+        }
+        ip.raise("AttributeError" ("module 'math' has no attribute '" + f + "'"))
+        return ip.NONE
+    }
+
+    fn gcd:int (a0:int b0:int) {
+        def a:int a0
+        def b:int b0
+        while (b != 0) {
+            def t:int (a % b)
+            a = b
+            b = t
+        }
+        return a
+    }
+
+    ; Shewchuk's exact summation, as math.fsum
+    fn fsumD:double (xs:[double]) {
+        def parts:[double]
+        for xs x0:double i {
+            def x:double x0
+            def keep:[double]
+            for parts y0:double j {
+                def y:double y0
+                def ax:double x
+                if (ax < 0.0) {
+                    ax = (0.0 - ax)
+                }
+                def ay:double y
+                if (ay < 0.0) {
+                    ay = (0.0 - ay)
+                }
+                if (ax < ay) {
+                    def t:double x
+                    x = y
+                    y = t
+                }
+                def hi:double (x + y)
+                def lo:double (y - (hi - x))
+                if (lo != 0.0) {
+                    push keep lo
+                }
+                x = hi
+            }
+            push keep x
+            parts = keep
+        }
+        def n:int (array_length parts)
+        if (n == 0) {
+            return 0.0
+        }
+        n = n - 1
+        def hi2:double (itemAt parts n)
+        def lo2:double 0.0
+        while (n > 0) {
+            def x2:double hi2
+            n = n - 1
+            def y2:double (itemAt parts n)
+            hi2 = (x2 + y2)
+            def yr:double (hi2 - x2)
+            lo2 = (y2 - yr)
+            if (lo2 != 0.0) {
+                break
+            }
+        }
+        if (n > 0) {
+            def pn:double (itemAt parts (n - 1))
+            if (((lo2 < 0.0) && (pn < 0.0)) || ((lo2 > 0.0) && (pn > 0.0))) {
+                def y3:double (lo2 * 2.0)
+                def x3:double (hi2 + y3)
+                def yr2:double (x3 - hi2)
+                if (y3 == yr2) {
+                    hi2 = x3
+                }
+            }
+        }
+        return hi2
+    }
+
+    ; ---- random: CPython's MT19937
+
+    fn mul32:int (a:int b:int) {
+        def al:int (a % 65536)
+        def ah:int (idiv a 65536)
+        def bl:int (b % 65536)
+        def bh:int (idiv b 65536)
+        def lo:int (al * bl)
+        def cross:int (((ah * bl) + (al * bh)) % 65536)
+        return ((lo + (cross * 65536)) % 4294967296)
+    }
+
+    fn initGenrand:void (s:int) {
+        def arr:[int]
+        push arr (s % 4294967296)
+        def i:int 1
+        while (i < 624) {
+            def prev:int (itemAt arr (i - 1))
+            def x:int (py_xor32 prev (py_shr32 prev 30))
+            push arr (((this.mul32(1812433253 x)) + i) % 4294967296)
+            i = i + 1
+        }
+        mt = arr
+        mti = 624
+    }
+
+    fn initByArray:void (key:[int]) {
+        this.initGenrand(19650218)
+        def i:int 1
+        def j:int 0
+        def klen:int (array_length key)
+        def k:int 624
+        if (klen > k) {
+            k = klen
+        }
+        while (k > 0) {
+            def prev:int (itemAt mt (i - 1))
+            def x:int (py_xor32 (itemAt mt i) (this.mul32((py_xor32 prev (py_shr32 prev 30)) 1664525)))
+            set mt i ((x + (itemAt key j) + j) % 4294967296)
+            i = i + 1
+            j = j + 1
+            if (i >= 624) {
+                set mt 0 (itemAt mt 623)
+                i = 1
+            }
+            if (j >= klen) {
+                j = 0
+            }
+            k = k - 1
+        }
+        k = 623
+        while (k > 0) {
+            def prev2:int (itemAt mt (i - 1))
+            def x2:int (py_xor32 (itemAt mt i) (this.mul32((py_xor32 prev2 (py_shr32 prev2 30)) 1566083941)))
+            set mt i (((x2 - i) + 4294967296) % 4294967296)
+            i = i + 1
+            if (i >= 624) {
+                set mt 0 (itemAt mt 623)
+                i = 1
+            }
+            k = k - 1
+        }
+        set mt 0 2147483648
+        mti = 624
+        seeded = true
+        hasGauss = false
+    }
+
+    fn seedInt:void (v0:int) {
+        def v:int v0
+        if (v < 0) {
+            v = (0 - v)
+        }
+        def key:[int]
+        while (v > 0) {
+            push key (v % 4294967296)
+            v = (idiv v 4294967296)
+        }
+        if ((array_length key) == 0) {
+            push key 0
+        }
+        this.initByArray(key)
+    }
+
+    fn genrand:int () {
+        if (seeded == false) {
+            this.seedInt((py_trunc (py_now_ms)))
+        }
+        if (mti >= 624) {
+            def kk:int 0
+            while (kk < 624) {
+                def y:int (py_or32 (py_and32 (itemAt mt kk) 2147483648) (py_and32 (itemAt mt ((kk + 1) % 624)) 2147483647))
+                def v:int (py_xor32 (itemAt mt ((kk + 397) % 624)) (py_shr32 y 1))
+                if ((y % 2) == 1) {
+                    v = (py_xor32 v 2567483615)
+                }
+                set mt kk v
+                kk = kk + 1
+            }
+            mti = 0
+        }
+        def y2:int (itemAt mt mti)
+        mti = mti + 1
+        y2 = (py_xor32 y2 (py_shr32 y2 11))
+        y2 = (py_xor32 y2 (py_and32 (py_shl32 y2 7) 2636928640))
+        y2 = (py_xor32 y2 (py_and32 (py_shl32 y2 15) 4022730752))
+        y2 = (py_xor32 y2 (py_shr32 y2 18))
+        return y2
+    }
+
+    fn rnd:double () {
+        def a:int (py_shr32 (this.genrand()) 5)
+        def b:int (py_shr32 (this.genrand()) 6)
+        return ((((py_i2d a) * 67108864.0) + (py_i2d b)) * (1.0 / 9007199254740992.0))
+    }
+
+    fn getrandbits:int (k0:int) {
+        if (k0 <= 32) {
+            return (py_shr32 (this.genrand()) (32 - k0))
+        }
+        def k:int k0
+        def result:int 0
+        def mul:int 1
+        while (k > 0) {
+            def r:int (this.genrand())
+            if (k < 32) {
+                r = (py_shr32 r (32 - k))
+            }
+            result = result + (r * mul)
+            mul = mul * 4294967296
+            k = k - 32
+        }
+        return result
+    }
+
+    fn randbelow:int (n:int) {
+        if (n <= 0) {
+            return 0
+        }
+        def k:int (this.bitLength(n))
+        def r:int (this.getrandbits(k))
+        while (r >= n) {
+            r = (this.getrandbits(k))
+        }
+        return r
+    }
+
+    fn randrange:int (start:int stop:int hasStop:boolean step:int) {
+        if (hasStop == false) {
+            if (start > 0) {
+                return (this.randbelow(start))
+            }
+            ip.raise("ValueError" "empty range for randrange()")
+        }
+        def width:int (stop - start)
+        if (step == 1) {
+            if (width > 0) {
+                return (start + (this.randbelow(width)))
+            }
+            ip.raise("ValueError" ("empty range in randrange(" + (to_string start) + ", " + (to_string stop) + ")"))
+        }
+        def n:int 0
+        if (step > 0) {
+            n = (PyFormat.floorDivInt((width + step - 1) step))
+        } {
+            if (step < 0) {
+                n = (PyFormat.floorDivInt((width + step + 1) step))
+            } {
+                ip.raise("ValueError" "zero step for randrange()")
+            }
+        }
+        if (n <= 0) {
+            ip.raise("ValueError" ("empty range in randrange(" + (to_string start) + ", " + (to_string stop) + ", " + (to_string step) + ")"))
+        }
+        return (start + (step * (this.randbelow(n))))
+    }
+
+    fn randomCall:PyVal (f:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def n:int (array_length args)
+        if (f == "seed") {
+            def a:PyVal (ip.bi.arg(args 0 kn kv "a"))
+            if (a.t == PyT.None) {
+                this.seedInt((py_trunc (py_now_ms)))
+                return ip.NONE
+            }
+            if (ip.isIntLike(a)) {
+                this.seedInt(a.i)
+                return ip.NONE
+            }
+            if (a.t == PyT.Str) {
+                this.seedInt((ip.bi.strHash(a.s)))
+                return ip.NONE
+            }
+            this.seedInt((ip.bi.toInt((ip.bi.toIntValue(a)) "seed")))
+            return ip.NONE
+        }
+        if (f == "random") {
+            return (ip.mkFloat((this.rnd())))
+        }
+        if (f == "getrandbits") {
+            return (ip.mkInt((this.getrandbits((ip.bi.toInt((itemAt args 0) f))))))
+        }
+        if (f == "randint") {
+            ip.bi.need("randint" args 2 2)
+            def lo:int (ip.bi.toInt((itemAt args 0) f))
+            def hi:int (ip.bi.toInt((itemAt args 1) f))
+            return (ip.mkInt((this.randrange(lo (hi + 1) true 1))))
+        }
+        if (f == "randrange") {
+            def st:int (ip.bi.toInt((itemAt args 0) f))
+            if (n == 1) {
+                return (ip.mkInt((this.randrange(st 0 false 1))))
+            }
+            def stp:int 1
+            if (n > 2) {
+                stp = (ip.bi.toInt((itemAt args 2) f))
+            }
+            return (ip.mkInt((this.randrange(st (ip.bi.toInt((itemAt args 1) f)) true stp))))
+        }
+        if (f == "choice") {
+            def seq:PyVal (itemAt args 0)
+            def len:int (ip.length(seq))
+            if (len == 0) {
+                ip.raise("IndexError" "Cannot choose from an empty sequence")
+            }
+            return (ip.getItem(seq (ip.mkInt((this.randbelow(len))))))
+        }
+        if (f == "shuffle") {
+            def x:PyVal (itemAt args 0)
+            def i:int ((array_length x.items) - 1)
+            while (i >= 1) {
+                def j:int (this.randbelow((i + 1)))
+                def t:PyVal (itemAt x.items i)
+                set x.items i (itemAt x.items j)
+                set x.items j t
+                i = i - 1
+            }
+            return ip.NONE
+        }
+        if (f == "uniform") {
+            def a2:double (this.num(args 0 f))
+            def b2:double (this.num(args 1 f))
+            return (ip.mkFloat((a2 + ((b2 - a2) * (this.rnd())))))
+        }
+        if (f == "triangular") {
+            def low:double 0.0
+            def high:double 1.0
+            if (n > 0) {
+                low = (this.num(args 0 f))
+            }
+            if (n > 1) {
+                high = (this.num(args 1 f))
+            }
+            def u:double (this.rnd())
+            def c:double 0.5
+            if ((n > 2) && ((ip.argAt(args 2)).t != PyT.None)) {
+                if (high == low) {
+                    return (ip.mkFloat(low))
+                }
+                c = (((this.num(args 2 f)) - low) / (high - low))
+            }
+            if (u > c) {
+                u = (1.0 - u)
+                c = (1.0 - c)
+                def t2:double low
+                low = high
+                high = t2
+            }
+            return (ip.mkFloat((low + ((high - low) * (py_sqrt (u * c))))))
+        }
+        if (f == "expovariate") {
+            def lam:double 1.0
+            if (n > 0) {
+                lam = (this.num(args 0 f))
+            }
+            return (ip.mkFloat(((0.0 - (py_log (1.0 - (this.rnd())))) / lam)))
+        }
+        if ((f == "gauss") || (f == "normalvariate")) {
+            def mu:double 0.0
+            def sigma:double 1.0
+            def mv:PyVal (ip.bi.arg(args 0 kn kv "mu"))
+            if (mv.t != PyT.None) {
+                mu = (ip.bi.toNum(mv))
+            }
+            def sv:PyVal (ip.bi.arg(args 1 kn kv "sigma"))
+            if (sv.t != PyT.None) {
+                sigma = (ip.bi.toNum(sv))
+            }
+            if (f == "gauss") {
+                def z:double 0.0
+                if hasGauss {
+                    z = gaussNext
+                    hasGauss = false
+                } {
+                    def x2pi:double ((this.rnd()) * 6.283185307179586)
+                    def g2rad:double (py_sqrt (-2.0 * (py_log (1.0 - (this.rnd())))))
+                    z = ((py_cos x2pi) * g2rad)
+                    gaussNext = ((py_sin x2pi) * g2rad)
+                    hasGauss = true
+                }
+                return (ip.mkFloat((mu + (z * sigma))))
+            }
+            def magic:double ((4.0 * (py_exp -0.5)) / (py_sqrt 2.0))
+            def z2:double 0.0
+            while true {
+                def u1:double (this.rnd())
+                def u2:double (1.0 - (this.rnd()))
+                z2 = ((magic * (u1 - 0.5)) / u2)
+                def zz:double ((z2 * z2) / 4.0)
+                if (zz <= (0.0 - (py_log u2))) {
+                    break
+                }
+            }
+            return (ip.mkFloat((mu + (z2 * sigma))))
+        }
+        if (f == "choices") {
+            def pop:[PyVal] (this.listOf((itemAt args 0)))
+            def np:int (array_length pop)
+            def k:int 1
+            def kk@(optional):PyVal (ip.bi.kw(kn kv "k"))
+            if (!null? kk) {
+                k = (ip.bi.toInt((unwrap kk) "k"))
+            }
+            def wv:PyVal (ip.bi.arg(args 1 kn kv "weights"))
+            def cw@(optional):PyVal (ip.bi.kw(kn kv "cum_weights"))
+            def out:[PyVal]
+            if ((wv.t == PyT.None) && (null? cw)) {
+                def i2:int 0
+                while (i2 < k) {
+                    push out (itemAt pop (py_trunc (py_floor ((this.rnd()) * (py_i2d np)))))
+                    i2 = i2 + 1
+                }
+                return (ip.mkList(out))
+            }
+            def cum:[double]
+            if (!null? cw) {
+                for (this.listOf((unwrap cw))) cv:PyVal ci {
+                    push cum (ip.bi.toNum(cv))
+                }
+            } {
+                def run:double 0.0
+                for (this.listOf(wv)) wv2:PyVal wi {
+                    run = run + (ip.bi.toNum(wv2))
+                    push cum run
+                }
+            }
+            if ((array_length cum) != np) {
+                ip.raise("ValueError" "The number of weights does not match the population")
+            }
+            def total:double (itemAt cum (np - 1))
+            if (total <= 0.0) {
+                ip.raise("ValueError" "Total of weights must be greater than zero")
+            }
+            def i3:int 0
+            while (i3 < k) {
+                def r:double ((this.rnd()) * total)
+                ; bisect_right(cum, r, 0, np - 1)
+                def lo2:int 0
+                def hi2:int (np - 1)
+                while (lo2 < hi2) {
+                    def mid:int (idiv (lo2 + hi2) 2)
+                    if (r < (itemAt cum mid)) {
+                        hi2 = mid
+                    } {
+                        lo2 = mid + 1
+                    }
+                }
+                push out (itemAt pop lo2)
+                i3 = i3 + 1
+            }
+            return (ip.mkList(out))
+        }
+        if (f == "sample") {
+            def pop2:[PyVal] (this.listOf((itemAt args 0)))
+            def np2:int (array_length pop2)
+            def k2:int (ip.bi.toInt((ip.bi.arg(args 1 kn kv "k")) "k"))
+            if ((k2 < 0) || (k2 > np2)) {
+                ip.raise("ValueError" "Sample larger than population or is negative")
+            }
+            def res:[PyVal]
+            def setsize:int 21
+            if (k2 > 5) {
+                def e:int (py_trunc (py_ceil ((py_log (py_i2d (k2 * 3))) / (py_log 4.0))))
+                def p4:int 1
+                def ei:int 0
+                while (ei < e) {
+                    p4 = p4 * 4
+                    ei = ei + 1
+                }
+                setsize = setsize + p4
+            }
+            if (np2 <= setsize) {
+                def pool:[PyVal]
+                for pop2 pv:PyVal pi {
+                    push pool pv
+                }
+                def i4:int 0
+                while (i4 < k2) {
+                    def j2:int (this.randbelow((np2 - i4)))
+                    push res (itemAt pool j2)
+                    set pool j2 (itemAt pool (np2 - i4 - 1))
+                    i4 = i4 + 1
+                }
+            } {
+                def sel:[int:boolean]
+                def i5:int 0
+                while (i5 < k2) {
+                    def j3:int (this.randbelow(np2))
+                    while (has sel j3) {
+                        j3 = (this.randbelow(np2))
+                    }
+                    set sel j3 true
+                    push res (itemAt pop2 j3)
+                    i5 = i5 + 1
+                }
+            }
+            return (ip.mkList(res))
+        }
+        ip.raise("AttributeError" ("module 'random' has no attribute '" + f + "'"))
+        return ip.NONE
+    }
+
+    ; ---- json
+
+    fn jsonStr:string (s:string ascii:boolean) {
+        def cs:[int] (this.codesOf(s))
+        def out:[int]
+        push out 34
+        for cs c:int i {
+            if (c == 34) {
+                push out 92
+                push out 34
+                continue
+            }
+            if (c == 92) {
+                push out 92
+                push out 92
+                continue
+            }
+            if (c == 10) {
+                push out 92
+                push out 110
+                continue
+            }
+            if (c == 13) {
+                push out 92
+                push out 114
+                continue
+            }
+            if (c == 9) {
+                push out 92
+                push out 116
+                continue
+            }
+            if (c == 8) {
+                push out 92
+                push out 98
+                continue
+            }
+            if (c == 12) {
+                push out 92
+                push out 102
+                continue
+            }
+            if ((c < 32) || (ascii && (c > 126))) {
+                if (c > 65535) {
+                    def v:int (c - 65536)
+                    this.pushU(out (55296 + (idiv v 1024)))
+                    this.pushU(out (56320 + (v % 1024)))
+                } {
+                    this.pushU(out c)
+                }
+                continue
+            }
+            push out c
+        }
+        push out 34
+        return (py_codes_to_str out 0 (array_length out))
+    }
+
+    fn pushU:void (out:[int] c:int) {
+        push out 92
+        push out 117
+        def hx:string (ip.bi.hexPad(c 4))
+        def hc:[int] (this.codesOf(hx))
+        for hc h:int i {
+            push out h
+        }
+    }
+
+    fn jsonKey:string (k:PyVal ascii:boolean) {
+        if (k.t == PyT.Str) {
+            return (this.jsonStr(k.s ascii))
+        }
+        if (k.t == PyT.Bool) {
+            if (k.i == 1) {
+                return "\"true\""
+            }
+            return "\"false\""
+        }
+        if (k.t == PyT.None) {
+            return "\"null\""
+        }
+        if (k.t == PyT.Int) {
+            return ("\"" + (ip.toStr(k)) + "\"")
+        }
+        if (k.t == PyT.Float) {
+            return ("\"" + (this.jsonFloat(k.d)) + "\"")
+        }
+        ip.raise("TypeError" ("keys must be str, int, float, bool or None, not " + (ip.typeName(k))))
+        return ""
+    }
+
+    fn jsonFloat:string (x:double) {
+        if (py_isnan x) {
+            return "NaN"
+        }
+        if (py_isinf x) {
+            if (x > 0.0) {
+                return "Infinity"
+            }
+            return "-Infinity"
+        }
+        return (PyFormat.floatRepr(x))
+    }
+
+    fn jsonDump:string (v:PyVal ind:string hasInd:boolean level:int itemSep:string keySep:string sortKeys:boolean ascii:boolean dflt:PyVal) {
+        switch v.t {
+            case PyT.None {
+                return "null"
+            }
+            case PyT.Bool {
+                if (v.i == 1) {
+                    return "true"
+                }
+                return "false"
+            }
+            case PyT.Int {
+                return (ip.toStr(v))
+            }
+            case PyT.Float {
+                return (this.jsonFloat(v.d))
+            }
+            case PyT.Str {
+                return (this.jsonStr(v.s ascii))
+            }
+        }
+        def nl:string ""
+        def nl2:string ""
+        if hasInd {
+            nl = ("\n" + (PyFormat.rep(ind (level + 1))))
+            nl2 = ("\n" + (PyFormat.rep(ind level)))
+        }
+        if ((v.t == PyT.List) || (v.t == PyT.Tuple)) {
+            if ((array_length v.items) == 0) {
+                return "[]"
+            }
+            def parts:[string]
+            for v.items it:PyVal i {
+                push parts (this.jsonDump(it ind hasInd (level + 1) itemSep keySep sortKeys ascii dflt))
+            }
+            return ("[" + nl + (join parts (itemSep + nl)) + nl2 + "]")
+        }
+        if (v.t == PyT.Dict) {
+            if ((array_length v.items) == 0) {
+                return "{}"
+            }
+            def order:[int]
+            for v.items k:PyVal ki {
+                push order ki
+            }
+            if sortKeys {
+                def ks:[PyVal] (ip.bi.sortVals(v.items ip.NONE false))
+                def order2:[int]
+                for ks sk:PyVal si {
+                    for v.items k2:PyVal ki2 {
+                        if (ip.same(sk k2)) {
+                            push order2 ki2
+                            break
+                        }
+                    }
+                }
+                order = order2
+            }
+            def parts2:[string]
+            for order oi:int i2 {
+                def kstr:string (this.jsonKey((itemAt v.items oi) ascii))
+                push parts2 (kstr + keySep + (this.jsonDump((itemAt v.vals oi) ind hasInd (level + 1) itemSep keySep sortKeys ascii dflt)))
+            }
+            return ("{" + nl + (join parts2 (itemSep + nl)) + nl2 + "}")
+        }
+        if (dflt.t != PyT.None) {
+            return (this.jsonDump((this.call1(dflt v)) ind hasInd level itemSep keySep sortKeys ascii dflt))
+        }
+        ip.raise("TypeError" ("Object of type " + (ip.typeName(v)) + " is not JSON serializable"))
+        return ""
+    }
+
+    fn jsonFail:void (msg:string pos:int) {
+        def line:int 1
+        def last:int -1
+        def i:int 0
+        while ((i < pos) && (i < (array_length jcs))) {
+            if ((itemAt jcs i) == 10) {
+                line = line + 1
+                last = i
+            }
+            i = i + 1
+        }
+        def col:int (pos - last)
+        def full:string (msg + ": line " + (to_string line) + " column " + (to_string col) + " (char " + (to_string pos) + ")")
+        def jm:PyVal (unwrap (this.make("json")))
+        def cls:PyVal (unwrap (get jm.attrs "JSONDecodeError"))
+        ip.raiseVal((ip.makeExc(cls full)))
+    }
+
+    fn jsonWs:void () {
+        while (jpos < (array_length jcs)) {
+            def c:int (itemAt jcs jpos)
+            if ((c == 32) || (c == 9) || (c == 10) || (c == 13)) {
+                jpos = jpos + 1
+            } {
+                return
+            }
+        }
+    }
+
+    fn jsonLit:boolean (word:string) {
+        def wc:[int] (this.codesOf(word))
+        def n:int (array_length wc)
+        if ((jpos + n) > (array_length jcs)) {
+            return false
+        }
+        for wc c:int i {
+            if ((itemAt jcs (jpos + i)) != c) {
+                return false
+            }
+        }
+        jpos = jpos + n
+        return true
+    }
+
+    fn jsonValue:PyVal () {
+        this.jsonWs()
+        if (jpos >= (array_length jcs)) {
+            this.jsonFail("Expecting value" jpos)
+        }
+        def c:int (itemAt jcs jpos)
+        if (c == 123) {
+            def d:PyVal (ip.mkDict())
+            def start:int jpos
+            jpos = jpos + 1
+            this.jsonWs()
+            if ((jpos < (array_length jcs)) && ((itemAt jcs jpos) == 125)) {
+                jpos = jpos + 1
+                return d
+            }
+            while true {
+                this.jsonWs()
+                if ((jpos >= (array_length jcs)) || ((itemAt jcs jpos) != 34)) {
+                    this.jsonFail("Expecting property name enclosed in double quotes" jpos)
+                }
+                def key:PyVal (this.jsonString())
+                this.jsonWs()
+                if ((jpos >= (array_length jcs)) || ((itemAt jcs jpos) != 58)) {
+                    this.jsonFail("Expecting ':' delimiter" jpos)
+                }
+                jpos = jpos + 1
+                def val:PyVal (this.jsonValue())
+                ip.dictSet(d key val)
+                this.jsonWs()
+                if ((jpos < (array_length jcs)) && ((itemAt jcs jpos) == 44)) {
+                    jpos = jpos + 1
+                    continue
+                }
+                if ((jpos < (array_length jcs)) && ((itemAt jcs jpos) == 125)) {
+                    jpos = jpos + 1
+                    return d
+                }
+                this.jsonFail("Expecting ',' delimiter" jpos)
+            }
+            return d
+        }
+        if (c == 91) {
+            def items:[PyVal]
+            jpos = jpos + 1
+            this.jsonWs()
+            if ((jpos < (array_length jcs)) && ((itemAt jcs jpos) == 93)) {
+                jpos = jpos + 1
+                return (ip.mkList(items))
+            }
+            while true {
+                push items (this.jsonValue())
+                this.jsonWs()
+                if ((jpos < (array_length jcs)) && ((itemAt jcs jpos) == 44)) {
+                    jpos = jpos + 1
+                    continue
+                }
+                if ((jpos < (array_length jcs)) && ((itemAt jcs jpos) == 93)) {
+                    jpos = jpos + 1
+                    return (ip.mkList(items))
+                }
+                this.jsonFail("Expecting ',' delimiter" jpos)
+            }
+            return (ip.mkList(items))
+        }
+        if (c == 34) {
+            return (this.jsonString())
+        }
+        if (this.jsonLit("true")) {
+            return ip.TRUE
+        }
+        if (this.jsonLit("false")) {
+            return ip.FALSE
+        }
+        if (this.jsonLit("null")) {
+            return ip.NONE
+        }
+        if (this.jsonLit("NaN")) {
+            return (ip.mkFloat((py_nan)))
+        }
+        if (this.jsonLit("Infinity")) {
+            return (ip.mkFloat((py_inf)))
+        }
+        if (this.jsonLit("-Infinity")) {
+            return (ip.mkFloat((0.0 - (py_inf))))
+        }
+        ; a number
+        def st:int jpos
+        def isFloat:boolean false
+        if (c == 45) {
+            jpos = jpos + 1
+        }
+        def digits:int 0
+        while ((jpos < (array_length jcs)) && (PyLexer.isDigit((itemAt jcs jpos)))) {
+            jpos = jpos + 1
+            digits = digits + 1
+        }
+        if (digits == 0) {
+            jpos = st
+            this.jsonFail("Expecting value" st)
+        }
+        if ((jpos < (array_length jcs)) && ((itemAt jcs jpos) == 46)) {
+            def save:int jpos
+            jpos = jpos + 1
+            def fd:int 0
+            while ((jpos < (array_length jcs)) && (PyLexer.isDigit((itemAt jcs jpos)))) {
+                jpos = jpos + 1
+                fd = fd + 1
+            }
+            if (fd == 0) {
+                jpos = save
+            } {
+                isFloat = true
+            }
+        }
+        if ((jpos < (array_length jcs)) && (((itemAt jcs jpos) == 101) || ((itemAt jcs jpos) == 69))) {
+            def save2:int jpos
+            jpos = jpos + 1
+            if ((jpos < (array_length jcs)) && (((itemAt jcs jpos) == 43) || ((itemAt jcs jpos) == 45))) {
+                jpos = jpos + 1
+            }
+            def ed:int 0
+            while ((jpos < (array_length jcs)) && (PyLexer.isDigit((itemAt jcs jpos)))) {
+                jpos = jpos + 1
+                ed = ed + 1
+            }
+            if (ed == 0) {
+                jpos = save2
+            } {
+                isFloat = true
+            }
+        }
+        def text:string (py_codes_to_str jcs st jpos)
+        if isFloat {
+            return (ip.mkFloat((py_parse_float text)))
+        }
+        return (ip.bi.parseIntText(text 10))
+    }
+
+    fn jsonString:PyVal () {
+        def start:int jpos
+        jpos = jpos + 1
+        def out:[int]
+        while true {
+            if (jpos >= (array_length jcs)) {
+                this.jsonFail("Unterminated string starting at" start)
+            }
+            def c:int (itemAt jcs jpos)
+            if (c == 34) {
+                jpos = jpos + 1
+                return (ip.mkStr((py_codes_to_str out 0 (array_length out))))
+            }
+            if (c < 32) {
+                this.jsonFail("Invalid control character at" jpos)
+            }
+            if (c == 92) {
+                jpos = jpos + 1
+                if (jpos >= (array_length jcs)) {
+                    this.jsonFail("Unterminated string starting at" start)
+                }
+                def e:int (itemAt jcs jpos)
+                jpos = jpos + 1
+                if (e == 110) {
+                    push out 10
+                    continue
+                }
+                if (e == 116) {
+                    push out 9
+                    continue
+                }
+                if (e == 114) {
+                    push out 13
+                    continue
+                }
+                if (e == 98) {
+                    push out 8
+                    continue
+                }
+                if (e == 102) {
+                    push out 12
+                    continue
+                }
+                if ((e == 34) || (e == 92) || (e == 47)) {
+                    push out e
+                    continue
+                }
+                if (e == 117) {
+                    def u:int (this.jsonHex4((jpos - 2)))
+                    if ((u >= 55296) && (u < 56320) && ((jpos + 1) < (array_length jcs)) && ((itemAt jcs jpos) == 92) && ((itemAt jcs (jpos + 1)) == 117)) {
+                        def save:int jpos
+                        jpos = jpos + 2
+                        def u2:int (this.jsonHex4((jpos - 2)))
+                        if ((u2 >= 56320) && (u2 < 57344)) {
+                            push out (65536 + ((u - 55296) * 1024) + (u2 - 56320))
+                            continue
+                        }
+                        jpos = save
+                    }
+                    push out u
+                    continue
+                }
+                this.jsonFail("Invalid \\escape" (jpos - 2))
+            }
+            push out c
+            jpos = jpos + 1
+        }
+        return ip.NONE
+    }
+
+    fn jsonHex4:int (at:int) {
+        def v:int 0
+        def i:int 0
+        while (i < 4) {
+            if (jpos >= (array_length jcs)) {
+                this.jsonFail("Invalid \\uXXXX escape" at)
+            }
+            def d:int (PyLexer.digitValue((itemAt jcs jpos)))
+            if ((d < 0) || (d > 15)) {
+                this.jsonFail("Invalid \\uXXXX escape" at)
+            }
+            v = (v * 16) + d
+            jpos = jpos + 1
+            i = i + 1
+        }
+        return v
+    }
+
+    fn jsonLoads:PyVal (text:string) {
+        jcs = (this.codesOf(text))
+        jpos = 0
+        def v:PyVal (this.jsonValue())
+        this.jsonWs()
+        if (jpos < (array_length jcs)) {
+            this.jsonFail("Extra data" jpos)
+        }
+        return v
+    }
+
+    fn jsonCall:PyVal (f:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        if ((f == "loads") || (f == "load")) {
+            def src:PyVal (itemAt args 0)
+            if (f == "load") {
+                src = (ip.meth.callMethod(src "read" ([] _:PyVal ()) ([] _:string ()) ([] _:PyVal ())))
+            }
+            if (src.t != PyT.Str) {
+                ip.raise("TypeError" ("the JSON object must be str, bytes or bytearray, not " + (ip.typeName(src))))
+            }
+            return (this.jsonLoads(src.s))
+        }
+        def obj:PyVal (itemAt args 0)
+        def ind:string ""
+        def hasInd:boolean false
+        def iv@(optional):PyVal (ip.bi.kw(kn kv "indent"))
+        if (!null? iv) {
+            def ivv:PyVal (unwrap iv)
+            if (ivv.t != PyT.None) {
+                hasInd = true
+                if (ivv.t == PyT.Str) {
+                    ind = ivv.s
+                } {
+                    ind = (PyFormat.rep(" " ivv.i))
+                }
+            }
+        }
+        def itemSep:string ", "
+        def keySep:string ": "
+        if hasInd {
+            itemSep = ","
+        }
+        def sv@(optional):PyVal (ip.bi.kw(kn kv "separators"))
+        if (!null? sv) {
+            def svv:PyVal (unwrap sv)
+            if (svv.t != PyT.None) {
+                def tv1:PyVal (itemAt svv.items 0)
+                itemSep = tv1.s
+                def tv2:PyVal (itemAt svv.items 1)
+                keySep = tv2.s
+            }
+        }
+        def sortKeys:boolean false
+        def sk@(optional):PyVal (ip.bi.kw(kn kv "sort_keys"))
+        if (!null? sk) {
+            sortKeys = (ip.truthy((unwrap sk)))
+        }
+        def ascii:boolean true
+        def ea@(optional):PyVal (ip.bi.kw(kn kv "ensure_ascii"))
+        if (!null? ea) {
+            ascii = (ip.truthy((unwrap ea)))
+        }
+        def dflt:PyVal ip.NONE
+        def dv@(optional):PyVal (ip.bi.kw(kn kv "default"))
+        if (!null? dv) {
+            dflt = (unwrap dv)
+        }
+        def text:string (this.jsonDump(obj ind hasInd 0 itemSep keySep sortKeys ascii dflt))
+        if (f == "dump") {
+            ip.meth.fileWrite((itemAt args 1) text)
+            return ip.NONE
+        }
+        return (ip.mkStr(text))
+    }
+
+    ; ---- os and os.path
+
+    fn pathArg:string (args:[PyVal] i:int) {
+        if (i >= (array_length args)) {
+            return "."
+        }
+        def v:PyVal (itemAt args i)
+        if (v.t != PyT.Str) {
+            ip.raise("TypeError" ("expected str, bytes or os.PathLike object, not " + (ip.typeName(v))))
+        }
+        return v.s
+    }
+
+    fn osErr:void (cls:string errno:int text:string path:string) {
+        ip.raise(cls ("[Errno " + (to_string errno) + "] " + text + ": " + (PyFormat.strRepr(path))))
+    }
+
+    fn pathJoin:string (a:string b:string) {
+        if (startsWith b "/") {
+            return b
+        }
+        if (((strlen a) == 0) || (endsWith a "/")) {
+            return (a + b)
+        }
+        return (a + "/" + b)
+    }
+
+    fn normPath:string (p:string) {
+        if ((strlen p) == 0) {
+            return "."
+        }
+        def abs:boolean (startsWith p "/")
+        def parts:[string] (strsplit p "/")
+        def out:[string]
+        for parts seg:string i {
+            if (((strlen seg) == 0) || (seg == ".")) {
+                continue
+            }
+            if (seg == "..") {
+                def n:int (array_length out)
+                if ((n > 0) && ((itemAt out (n - 1)) != "..")) {
+                    removeLast out
+                    continue
+                }
+                if abs {
+                    continue
+                }
+            }
+            push out seg
+        }
+        def body:string (join out "/")
+        if abs {
+            return ("/" + body)
+        }
+        if ((strlen body) == 0) {
+            return "."
+        }
+        return body
+    }
+
+    fn splitPath:[string] (p:string) {
+        def i:int (lastIndexOf p "/")
+        def head:string ""
+        def tail:string p
+        if (i >= 0) {
+            head = (substring p 0 (i + 1))
+            tail = (substring p (i + 1) (strlen p))
+            ; strip trailing slashes from the head unless it is all slashes
+            def h:string head
+            while ((strlen h) > 0) {
+                if (endsWith h "/") {
+                    h = (substring h 0 ((strlen h) - 1))
+                } {
+                    break
+                }
+            }
+            if ((strlen h) > 0) {
+                head = h
+            }
+        }
+        return ([] _:string (head tail))
+    }
+
+    fn osCall:PyVal (mod:string f:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def fs:PyFileSystem ip.fs
+        if (mod == "os.path") {
+            if (f == "join") {
+                def acc:string (this.pathArg(args 0))
+                def i:int 1
+                while (i < (array_length args)) {
+                    acc = (this.pathJoin(acc (this.pathArg(args i))))
+                    i = i + 1
+                }
+                return (ip.mkStr(acc))
+            }
+            if (f == "exists") {
+                return (ip.mkBool((fs.exists((this.pathArg(args 0))))))
+            }
+            if (f == "isfile") {
+                return (ip.mkBool((fs.isFile((this.pathArg(args 0))))))
+            }
+            if (f == "isdir") {
+                return (ip.mkBool((fs.isDir((this.pathArg(args 0))))))
+            }
+            if (f == "isabs") {
+                return (ip.mkBool((startsWith (this.pathArg(args 0)) "/")))
+            }
+            if (f == "expanduser") {
+                return (ip.mkStr((this.pathArg(args 0))))
+            }
+            if (f == "abspath") {
+                return (ip.mkStr((fs.normalize((this.pathArg(args 0))))))
+            }
+            if (f == "normpath") {
+                return (ip.mkStr((this.normPath((this.pathArg(args 0))))))
+            }
+            def sp:[string] (this.splitPath((this.pathArg(args 0))))
+            if (f == "basename") {
+                return (ip.mkStr((itemAt sp 1)))
+            }
+            if (f == "dirname") {
+                return (ip.mkStr((itemAt sp 0)))
+            }
+            if (f == "split") {
+                return (ip.pair((ip.mkStr((itemAt sp 0))) (ip.mkStr((itemAt sp 1)))))
+            }
+            if (f == "splitext") {
+                def p:string (this.pathArg(args 0))
+                def base:string (itemAt sp 1)
+                def dot:int (lastIndexOf base ".")
+                ; leading dots of the name are not an extension
+                def lead:int 0
+                while ((lead < (strlen base)) && ((substring base lead (lead + 1)) == ".")) {
+                    lead = lead + 1
+                }
+                if ((dot >= lead) && (lead < (strlen base))) {
+                    def cut:int ((strlen p) - ((strlen base) - dot))
+                    return (ip.pair((ip.mkStr((substring p 0 cut))) (ip.mkStr((substring p cut (strlen p))))))
+                }
+                return (ip.pair((ip.mkStr(p)) (ip.mkStr(""))))
+            }
+            if (f == "getsize") {
+                def path:string (this.pathArg(args 0))
+                def txt@(optional):string (fs.read(path))
+                if (null? txt) {
+                    if (fs.isDir(path)) {
+                        return (ip.mkInt(4096))
+                    }
+                    this.osErr("FileNotFoundError" 2 "No such file or directory" path)
+                }
+                def bytes:int 0
+                def cs:[int] (this.codesOf((unwrap txt)))
+                for cs c:int ci {
+                    if (c < 128) {
+                        bytes = bytes + 1
+                    } {
+                        if (c < 2048) {
+                            bytes = bytes + 2
+                        } {
+                            if (c < 65536) {
+                                bytes = bytes + 3
+                            } {
+                                bytes = bytes + 4
+                            }
+                        }
+                    }
+                }
+                return (ip.mkInt(bytes))
+            }
+        }
+        if (f == "getcwd") {
+            return (ip.mkStr(fs.cwd))
+        }
+        if (f == "getenv") {
+            if ((array_length args) > 1) {
+                return (itemAt args 1)
+            }
+            return ip.NONE
+        }
+        if (f == "chdir") {
+            def p2:string (this.pathArg(args 0))
+            if ((fs.isDir(p2)) == false) {
+                this.osErr("FileNotFoundError" 2 "No such file or directory" p2)
+            }
+            fs.cwd = (fs.normalize(p2))
+            return ip.NONE
+        }
+        if (f == "listdir") {
+            def p3:string (this.pathArg(args 0))
+            if ((fs.isDir(p3)) == false) {
+                if (fs.isFile(p3)) {
+                    this.osErr("NotADirectoryError" 20 "Not a directory" p3)
+                }
+                this.osErr("FileNotFoundError" 2 "No such file or directory" p3)
+            }
+            def out:[PyVal]
+            for (fs.listDir(p3)) nm:string ni {
+                push out (ip.mkStr(nm))
+            }
+            return (ip.mkList(out))
+        }
+        if ((f == "mkdir") || (f == "makedirs")) {
+            def p4:string (this.pathArg(args 0))
+            def exOk:boolean false
+            def ek@(optional):PyVal (ip.bi.kw(kn kv "exist_ok"))
+            if (!null? ek) {
+                exOk = (ip.truthy((unwrap ek)))
+            }
+            if (fs.exists(p4)) {
+                if (exOk && (fs.isDir(p4))) {
+                    return ip.NONE
+                }
+                this.osErr("FileExistsError" 17 "File exists" p4)
+            }
+            if (f == "mkdir") {
+                def par:string (fs.parentOf((fs.normalize(p4))))
+                if ((fs.isDir(par)) == false) {
+                    this.osErr("FileNotFoundError" 2 "No such file or directory" p4)
+                }
+            }
+            fs.mkdirs(p4)
+            return ip.NONE
+        }
+        if ((f == "remove") || (f == "unlink")) {
+            def p5:string (this.pathArg(args 0))
+            if (fs.isDir(p5)) {
+                this.osErr("IsADirectoryError" 21 "Is a directory" p5)
+            }
+            if ((fs.remove(p5)) == false) {
+                this.osErr("FileNotFoundError" 2 "No such file or directory" p5)
+            }
+            return ip.NONE
+        }
+        if (f == "rmdir") {
+            def p6:string (this.pathArg(args 0))
+            if ((fs.isDir(p6)) == false) {
+                this.osErr("FileNotFoundError" 2 "No such file or directory" p6)
+            }
+            if ((array_length (fs.listDir(p6))) > 0) {
+                this.osErr("OSError" 39 "Directory not empty" p6)
+            }
+            fs.removeDir(p6)
+            return ip.NONE
+        }
+        if ((f == "rename") || (f == "replace")) {
+            def a:string (this.pathArg(args 0))
+            def b:string (this.pathArg(args 1))
+            def txt2@(optional):string (fs.read(a))
+            if (null? txt2) {
+                this.osErr("FileNotFoundError" 2 "No such file or directory" a)
+            }
+            fs.write(b (unwrap txt2))
+            fs.remove(a)
+            return ip.NONE
+        }
+        if (f == "walk") {
+            def top:string (this.pathArg(args 0))
+            def out2:[PyVal]
+            this.walkInto(top out2)
+            return (ip.mkIter(out2))
+        }
+        ip.raise("AttributeError" ("module '" + mod + "' has no attribute '" + f + "'"))
+        return ip.NONE
+    }
+
+    fn walkInto:void (top:string out:[PyVal]) {
+        def fs:PyFileSystem ip.fs
+        if ((fs.isDir(top)) == false) {
+            return
+        }
+        def dirs:[PyVal]
+        def files:[PyVal]
+        def dnames:[string]
+        for (fs.listDir(top)) nm:string i {
+            def full:string (this.pathJoin(top nm))
+            if (fs.isDir(full)) {
+                push dirs (ip.mkStr(nm))
+                push dnames full
+            } {
+                push files (ip.mkStr(nm))
+            }
+        }
+        push out (ip.mkTuple(([] _:PyVal ((ip.mkStr(top)) (ip.mkList(dirs)) (ip.mkList(files))))))
+        for dnames d:string j {
+            this.walkInto(d out)
+        }
+    }
+
+    ; ---- collections
+
+    fn construct:PyVal (cls:PyVal args:[PyVal] kn:[string] kv:[PyVal]) {
+        def n:int (array_length args)
+        def kind:string cls.s
+        if (has cls.attrs "_fields") {
+            return (this.ntMake(cls args kn kv))
+        }
+        if (kind == "deque") {
+            def d (new PyVal(PyT.List))
+            d.mode = "deque"
+            set d.attrs "__class__" cls
+            if (n > 0) {
+                d.items = (this.listOf((itemAt args 0)))
+            }
+            def ml:PyVal (ip.bi.arg(args 1 kn kv "maxlen"))
+            if (ml.t != PyT.None) {
+                d.i3 = (ml.i + 1)
+                this.dequeTrim(d false)
+            }
+            return d
+        }
+        def dd:PyVal (ip.mkDict())
+        set dd.attrs "__class__" cls
+        def start:int 0
+        if (kind == "defaultdict") {
+            if ((n > 0) && ((ip.argAt(args 0)).t != PyT.None)) {
+                set dd.attrs "__missing__" (itemAt args 0)
+            }
+            start = 1
+        }
+        if (kind == "Counter") {
+            dd.mode = "counter"
+            if (n > 0) {
+                this.counterFeed(dd (itemAt args 0))
+            }
+            for kn k:string ki {
+                ip.dictSet(dd (ip.mkStr(k)) (itemAt kv ki))
+            }
+            return dd
+        }
+        if (n > start) {
+            ip.bi.fillDict(dd (itemAt args start))
+        }
+        for kn k2:string ki2 {
+            ip.dictSet(dd (ip.mkStr(k2)) (itemAt kv ki2))
+        }
+        return dd
+    }
+
+    fn counterFeed:void (d:PyVal src:PyVal) {
+        if (src.t == PyT.Dict) {
+            for src.items k:PyVal i {
+                def cur@(optional):PyVal (ip.dictGet(d k))
+                if (null? cur) {
+                    ip.dictSet(d k (itemAt src.vals i))
+                } {
+                    ip.dictSet(d k (ip.binop("+" (unwrap cur) (itemAt src.vals i))))
+                }
+            }
+            return
+        }
+        for (this.listOf(src)) v:PyVal j {
+            def cur2@(optional):PyVal (ip.dictGet(d v))
+            if (null? cur2) {
+                ip.dictSet(d v (ip.mkInt(1)))
+            } {
+                ip.dictSet(d v (ip.mkInt(((unwrap cur2).i + 1))))
+            }
+        }
+    }
+
+    ; a deque with maxlen drops from the far end
+    fn dequeTrim:void (d:PyVal fromLeft:boolean) {
+        if (d.i3 <= 0) {
+            return
+        }
+        def lim:int (d.i3 - 1)
+        while ((array_length d.items) > lim) {
+            if fromLeft {
+                removeLast d.items
+            } {
+                def rest:[PyVal]
+                def i:int 1
+                while (i < (array_length d.items)) {
+                    push rest (itemAt d.items i)
+                    i = i + 1
+                }
+                d.items = rest
+            }
+        }
+    }
+
+    fn namedTuple:PyVal (args:[PyVal] kn:[string] kv:[PyVal]) {
+        def name:string (ip.toStr((ip.bi.arg(args 0 kn kv "typename"))))
+        def fv:PyVal (ip.bi.arg(args 1 kn kv "field_names"))
+        def fields:[PyVal]
+        if (fv.t == PyT.Str) {
+            def txt:string (replace fv.s "," " ")
+            for (strsplit txt " ") p:string i {
+                if ((strlen p) > 0) {
+                    push fields (ip.mkStr(p))
+                }
+            }
+        } {
+            for (this.listOf(fv)) p2:PyVal j {
+                push fields p2
+            }
+        }
+        def cls:PyVal (this.nativeClass(name))
+        set cls.attrs "_fields" (ip.mkTuple(fields))
+        def dv@(optional):PyVal (ip.bi.kw(kn kv "defaults"))
+        if (!null? dv) {
+            set cls.attrs "__defaults__" (ip.mkTuple((this.listOf((unwrap dv)))))
+        }
+        def mk (new PyVal(PyT.Builtin))
+        mk.s = "collections._make"
+        mk.wrapped = cls
+        set cls.attrs "_make" mk
+        return cls
+    }
+
+    fn ntMake:PyVal (cls:PyVal args:[PyVal] kn:[string] kv:[PyVal]) {
+        def fields:PyVal (unwrap (get cls.attrs "_fields"))
+        def nf:int (array_length fields.items)
+        def vals:[PyVal]
+        def filled:[boolean]
+        for fields.items f:PyVal i {
+            if (i < (array_length args)) {
+                push vals (itemAt args i)
+                push filled true
+            } {
+                push vals ip.NONE
+                push filled false
+            }
+        }
+        if ((array_length args) > nf) {
+            ip.raise("TypeError" (cls.s + "() takes " + (to_string (nf + 1)) + " positional arguments but " + (to_string ((array_length args) + 1)) + " were given"))
+        }
+        for kn k:string ki {
+            def found:boolean false
+            for fields.items f2:PyVal fi {
+                if (f2.s == k) {
+                    set vals fi (itemAt kv ki)
+                    set filled fi true
+                    found = true
+                }
+            }
+            if (found == false) {
+                ip.raise("TypeError" (cls.s + "() got an unexpected keyword argument '" + k + "'"))
+            }
+        }
+        def dv@(optional):PyVal (get cls.attrs "__defaults__")
+        if (!null? dv) {
+            def ds:PyVal (unwrap dv)
+            def off:int (nf - (array_length ds.items))
+            for ds.items d:PyVal di {
+                if ((itemAt filled (off + di)) == false) {
+                    set vals (off + di) d
+                    set filled (off + di) true
+                }
+            }
+        }
+        for filled ok:boolean fi2 {
+            if (ok == false) {
+                ip.raise("TypeError" (cls.s + "() missing required argument: '" + ((itemAt fields.items fi2).s) + "'"))
+            }
+        }
+        def t:PyVal (ip.mkTuple(vals))
+        set t.attrs "__class__" cls
+        return t
+    }
+
+    fn ntAttr@(optional):PyVal (t:PyVal name:string) {
+        def none@(optional):PyVal
+        def cls:PyVal (unwrap (get t.attrs "__class__"))
+        def fv@(optional):PyVal (get cls.attrs "_fields")
+        if (null? fv) {
+            return none
+        }
+        def fields:PyVal (unwrap fv)
+        for fields.items f:PyVal i {
+            if (f.s == name) {
+                def optr2205@(optional):PyVal (itemAt t.items i)
+                return optr2205
+            }
+        }
+        if (name == "_fields") {
+            def optr2209@(optional):PyVal fields
+            return optr2209
+        }
+        if ((name == "_asdict") || (name == "_replace")) {
+            def optr2212@(optional):PyVal (ip.mkBuiltinMethod(t ("nt." + name)))
+            return optr2212
+        }
+        return none
+    }
+
+    fn ntMethod:PyVal (t:PyVal name:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def cls:PyVal (unwrap (get t.attrs "__class__"))
+        def fields:PyVal (unwrap (get cls.attrs "_fields"))
+        if (name == "nt._asdict") {
+            def d:PyVal (ip.mkDict())
+            for fields.items f:PyVal i {
+                ip.dictSet(d f (itemAt t.items i))
+            }
+            return d
+        }
+        def vals:[PyVal]
+        for t.items v:PyVal j {
+            push vals v
+        }
+        for kn k:string ki {
+            def found:boolean false
+            for fields.items f2:PyVal fi {
+                if (f2.s == k) {
+                    set vals fi (itemAt kv ki)
+                    found = true
+                }
+            }
+            if (found == false) {
+                ip.raise("ValueError" ("Got unexpected field names: ['" + k + "']"))
+            }
+        }
+        def t2:PyVal (ip.mkTuple(vals))
+        set t2.attrs "__class__" cls
+        return t2
+    }
+
+    ; repr of the collections types; empty when v is not one
+    fn reprOf:string (v:PyVal) {
+        def cv@(optional):PyVal (get v.attrs "__class__")
+        if (null? cv) {
+            return ""
+        }
+        def cls:PyVal (unwrap cv)
+        if ((v.t == PyT.Tuple) && (has cls.attrs "_fields")) {
+            def fields:PyVal (unwrap (get cls.attrs "_fields"))
+            def parts:[string]
+            for fields.items f:PyVal i {
+                push parts (f.s + "=" + (ip.toRepr((itemAt v.items i))))
+            }
+            return (cls.s + "(" + (join parts ", ") + ")")
+        }
+        if (v.t == PyT.List) {
+            def body:string ("[" + (ip.joinRepr(v.items)) + "]")
+            if (v.i3 > 0) {
+                return ("deque(" + body + ", maxlen=" + (to_string (v.i3 - 1)) + ")")
+            }
+            return ("deque(" + body + ")")
+        }
+        if (v.t == PyT.Dict) {
+            def plain (new PyVal(PyT.Dict))
+            plain.items = v.items
+            plain.vals = v.vals
+            plain.index = v.index
+            if (cls.s == "defaultdict") {
+                def fac:string "None"
+                def mv@(optional):PyVal (get v.attrs "__missing__")
+                if (!null? mv) {
+                    fac = (ip.toRepr((unwrap mv)))
+                }
+                return ("defaultdict(" + fac + ", " + (ip.toRepr(plain)) + ")")
+            }
+            if ((array_length v.items) == 0) {
+                return (cls.s + "()")
+            }
+            if (cls.s == "Counter") {
+                ; most common first, ties in insertion order
+                def pairs:[PyVal]
+                for v.items k:PyVal ki {
+                    push pairs (ip.pair(k (itemAt v.vals ki)))
+                }
+                def keyf:PyVal (ip.mkBuiltinMethod(ip.NONE "__counter_key__"))
+                def sorted:[PyVal] (ip.bi.sortVals(pairs keyf true))
+                def ps:[string]
+                for sorted p:PyVal pi {
+                    push ps ((ip.toRepr((itemAt p.items 0))) + ": " + (ip.toRepr((itemAt p.items 1))))
+                }
+                return ("Counter({" + (join ps ", ") + "})")
+            }
+            return (cls.s + "(" + (ip.toRepr(plain)) + ")")
+        }
+        return ""
+    }
+
+    ; ---- itertools
+
+    fn iterCall:PyVal (f:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def n:int (array_length args)
+        def out:[PyVal]
+        if ((f == "chain") || (f == "chain_from_iterable")) {
+            def srcs:[PyVal] args
+            if (f == "chain_from_iterable") {
+                srcs = (this.listOf((itemAt args 0)))
+            }
+            for srcs s:PyVal i {
+                for (this.listOf(s)) v:PyVal j {
+                    push out v
+                }
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "product") {
+            def rep:int 1
+            def rv@(optional):PyVal (ip.bi.kw(kn kv "repeat"))
+            if (!null? rv) {
+                def tv3:PyVal (unwrap rv)
+                rep = tv3.i
+            }
+            def pools:[PyVal]
+            def r:int 0
+            while (r < rep) {
+                for args a:PyVal ai {
+                    push pools (ip.mkList((this.listOf(a))))
+                }
+                r = r + 1
+            }
+            def acc:[PyVal]
+            push acc (ip.mkTuple(([] _:PyVal ())))
+            for pools pool:PyVal pi {
+                def next:[PyVal]
+                for acc t:PyVal ti {
+                    for pool.items y:PyVal yi {
+                        def items:[PyVal]
+                        for t.items x:PyVal xi {
+                            push items x
+                        }
+                        push items y
+                        push next (ip.mkTuple(items))
+                    }
+                }
+                acc = next
+            }
+            return (ip.mkIter(acc))
+        }
+        if ((f == "permutations") || (f == "combinations") || (f == "combinations_with_replacement")) {
+            def pool2:[PyVal] (this.listOf((itemAt args 0)))
+            def np:int (array_length pool2)
+            def rr:int np
+            def rv2:PyVal (ip.bi.arg(args 1 kn kv "r"))
+            if (rv2.t != PyT.None) {
+                rr = rv2.i
+            }
+            def cur:[int]
+            def used:[boolean]
+            for pool2 pv:PyVal pj {
+                push used false
+            }
+            this.combos(f pool2 rr 0 cur used out)
+            return (ip.mkIter(out))
+        }
+        if (f == "accumulate") {
+            def fn1:PyVal (ip.bi.arg(args 1 kn kv "func"))
+            def has:boolean false
+            def total:PyVal ip.NONE
+            def iv@(optional):PyVal (ip.bi.kw(kn kv "initial"))
+            if ((!null? iv) && ((ip.orNone(iv)).t != PyT.None)) {
+                total = (unwrap iv)
+                has = true
+                push out total
+            }
+            for (this.listOf((itemAt args 0))) v2:PyVal j2 {
+                if has {
+                    if (fn1.t == PyT.None) {
+                        total = (ip.binop("+" total v2))
+                    } {
+                        total = (this.call2(fn1 total v2))
+                    }
+                } {
+                    total = v2
+                    has = true
+                }
+                push out total
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "groupby") {
+            def keyf:PyVal (ip.bi.arg(args 1 kn kv "key"))
+            def curKey:PyVal ip.NONE
+            def group:[PyVal]
+            def started:boolean false
+            for (this.listOf((itemAt args 0))) v3:PyVal j3 {
+                def k:PyVal v3
+                if (keyf.t != PyT.None) {
+                    k = (this.call1(keyf v3))
+                }
+                if (started && (ip.eq(k curKey))) {
+                    push group v3
+                } {
+                    if started {
+                        push out (ip.pair(curKey (ip.mkIter(group))))
+                    }
+                    def fresh:[PyVal]
+                    group = fresh
+                    push group v3
+                    curKey = k
+                    started = true
+                }
+            }
+            if started {
+                push out (ip.pair(curKey (ip.mkIter(group))))
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "islice") {
+            def start:int 0
+            def stop:int -1
+            def step:int 1
+            if (n == 2) {
+                if ((itemAt args 1).t != PyT.None) {
+                    def tv4:PyVal (itemAt args 1)
+                    stop = tv4.i
+                }
+            } {
+                if ((itemAt args 1).t != PyT.None) {
+                    def tv5:PyVal (itemAt args 1)
+                    start = tv5.i
+                }
+                if ((itemAt args 2).t != PyT.None) {
+                    def tv6:PyVal (itemAt args 2)
+                    stop = tv6.i
+                }
+                if ((n > 3) && ((ip.argAt(args 3)).t != PyT.None)) {
+                    def tv7:PyVal (itemAt args 3)
+                    step = tv7.i
+                }
+            }
+            def src:PyVal (itemAt args 0)
+            def vals:[PyVal] (this.takeN(src stop))
+            def i4:int start
+            while (i4 < (array_length vals)) {
+                if ((stop >= 0) && (i4 >= stop)) {
+                    break
+                }
+                push out (itemAt vals i4)
+                i4 = i4 + step
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "zip_longest") {
+            def fill:PyVal ip.NONE
+            def fv@(optional):PyVal (ip.bi.kw(kn kv "fillvalue"))
+            if (!null? fv) {
+                fill = (unwrap fv)
+            }
+            def lists:[PyVal]
+            def longest:int 0
+            for args a2:PyVal ai2 {
+                def l:PyVal (ip.mkList((this.listOf(a2))))
+                push lists l
+                if ((array_length l.items) > longest) {
+                    longest = (array_length l.items)
+                }
+            }
+            def i5:int 0
+            while (i5 < longest) {
+                def row:[PyVal]
+                for lists l2:PyVal li {
+                    if (i5 < (array_length l2.items)) {
+                        push row (itemAt l2.items i5)
+                    } {
+                        push row fill
+                    }
+                }
+                push out (ip.mkTuple(row))
+                i5 = i5 + 1
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "starmap") {
+            def fn2:PyVal (itemAt args 0)
+            for (this.listOf((itemAt args 1))) t2:PyVal j4 {
+                def kn2:[string]
+                def kv2:[PyVal]
+                push out (ip.callValue(fn2 (this.listOf(t2)) kn2 kv2))
+            }
+            return (ip.mkIter(out))
+        }
+        if ((f == "takewhile") || (f == "dropwhile") || (f == "filterfalse")) {
+            def pred:PyVal (itemAt args 0)
+            def dropping:boolean true
+            for (this.listOf((itemAt args 1))) v4:PyVal j5 {
+                def ok:boolean false
+                if (pred.t == PyT.None) {
+                    ok = (ip.truthy(v4))
+                } {
+                    ok = (ip.truthy((this.call1(pred v4))))
+                }
+                if (f == "takewhile") {
+                    if (ok == false) {
+                        break
+                    }
+                    push out v4
+                }
+                if (f == "dropwhile") {
+                    if (dropping && ok) {
+                        continue
+                    }
+                    dropping = false
+                    push out v4
+                }
+                if ((f == "filterfalse") && (ok == false)) {
+                    push out v4
+                }
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "pairwise") {
+            def vs:[PyVal] (this.listOf((itemAt args 0)))
+            def i6:int 1
+            while (i6 < (array_length vs)) {
+                push out (ip.pair((itemAt vs (i6 - 1)) (itemAt vs i6)))
+                i6 = i6 + 1
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "batched") {
+            def size:int (ip.bi.toInt((itemAt args 1) "n"))
+            if (size < 1) {
+                ip.raise("ValueError" "n must be at least one")
+            }
+            def batch:[PyVal]
+            for (this.listOf((itemAt args 0))) v6:PyVal j7 {
+                push batch v6
+                if ((array_length batch) == size) {
+                    push out (ip.mkTuple(batch))
+                    def fresh2:[PyVal]
+                    batch = fresh2
+                }
+            }
+            if ((array_length batch) > 0) {
+                push out (ip.mkTuple(batch))
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "compress") {
+            def sel:[PyVal] (this.listOf((itemAt args 1)))
+            for (this.listOf((itemAt args 0))) v5:PyVal j6 {
+                if ((j6 < (array_length sel)) && (ip.truthy((itemAt sel j6)))) {
+                    push out v5
+                }
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "repeat") {
+            def times:PyVal (ip.bi.arg(args 1 kn kv "times"))
+            if (times.t == PyT.None) {
+                ip.raise("NotImplementedError" "itertools.repeat() without times is infinite; this runtime evaluates iterators eagerly")
+            }
+            def i7:int 0
+            while (i7 < times.i) {
+                push out (itemAt args 0)
+                i7 = i7 + 1
+            }
+            return (ip.mkIter(out))
+        }
+        if (f == "tee") {
+            def vs2:[PyVal] (this.listOf((itemAt args 0)))
+            def cnt:int 2
+            if (n > 1) {
+                def tv8:PyVal (itemAt args 1)
+                cnt = tv8.i
+            }
+            def i8:int 0
+            while (i8 < cnt) {
+                def copy:[PyVal]
+                for vs2 v7:PyVal j8 {
+                    push copy v7
+                }
+                push out (ip.mkIter(copy))
+                i8 = i8 + 1
+            }
+            return (ip.mkTuple(out))
+        }
+        ip.raise("NotImplementedError" ("itertools." + f + "() is infinite; this runtime evaluates iterators eagerly"))
+        return ip.NONE
+    }
+
+    ; the first `stop` values of an iterable (all of them when stop < 0)
+    fn takeN:[PyVal] (src:PyVal stop:int) {
+        if ((stop < 0) || (src.t != PyT.Iter)) {
+            return (this.listOf(src))
+        }
+        def out:[PyVal]
+        while ((array_length out) < stop) {
+            if (src.pos >= (array_length src.items)) {
+                break
+            }
+            push out (itemAt src.items src.pos)
+            src.pos = src.pos + 1
+        }
+        return out
+    }
+
+    fn combos:void (kind:string pool:[PyVal] r:int start:int cur:[int] used:[boolean] out:[PyVal]) {
+        if ((array_length cur) == r) {
+            def items:[PyVal]
+            for cur ix:int i {
+                push items (itemAt pool ix)
+            }
+            push out (ip.mkTuple(items))
+            return
+        }
+        def n:int (array_length pool)
+        def i2:int 0
+        if (kind != "permutations") {
+            i2 = start
+        }
+        while (i2 < n) {
+            if ((kind == "permutations") && (itemAt used i2)) {
+                i2 = i2 + 1
+                continue
+            }
+            push cur i2
+            set used i2 true
+            if (kind == "combinations") {
+                this.combos(kind pool r (i2 + 1) cur used out)
+            } {
+                this.combos(kind pool r i2 cur used out)
+            }
+            set used i2 false
+            removeLast cur
+            i2 = i2 + 1
+        }
+    }
+
+    ; ---- functools
+
+    fn funcCall:PyVal (f:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def n:int (array_length args)
+        if (f == "reduce") {
+            def fn1:PyVal (itemAt args 0)
+            def vals:[PyVal] (this.listOf((itemAt args 1)))
+            def acc:PyVal ip.NONE
+            def i:int 0
+            if (n > 2) {
+                acc = (itemAt args 2)
+            } {
+                if ((array_length vals) == 0) {
+                    ip.raise("TypeError" "reduce() of empty iterable with no initial value")
+                }
+                acc = (itemAt vals 0)
+                i = 1
+            }
+            while (i < (array_length vals)) {
+                acc = (this.call2(fn1 acc (itemAt vals i)))
+                i = i + 1
+            }
+            return acc
+        }
+        if (f == "partial") {
+            def p (new PyVal(PyT.Builtin))
+            p.s = "functools.partial"
+            p.wrapped = (itemAt args 0)
+            def i2:int 1
+            while (i2 < n) {
+                push p.items (itemAt args i2)
+                i2 = i2 + 1
+            }
+            for kn k:string ki {
+                set p.attrs k (itemAt kv ki)
+            }
+            return p
+        }
+        if ((f == "lru_cache") || (f == "cache")) {
+            if ((n > 0) && ((ip.argAt(args 0)).t != PyT.None) && ((ip.argAt(args 0)).t != PyT.Int)) {
+                def w (new PyVal(PyT.Builtin))
+                w.s = "functools._lru_wrapper"
+                w.wrapped = (itemAt args 0)
+                set w.attrs "__cache__" (ip.mkDict())
+                return w
+            }
+            def deco (new PyVal(PyT.Builtin))
+            deco.s = "functools.lru_cache"
+            return deco
+        }
+        if ((f == "wraps") || (f == "total_ordering")) {
+            if (f == "total_ordering") {
+                return (itemAt args 0)
+            }
+            def idf (new PyVal(PyT.Builtin))
+            idf.s = "functools._identity"
+            return idf
+        }
+        if (f == "_identity") {
+            return (itemAt args 0)
+        }
+        if (f == "cmp_to_key") {
+            def kf (new PyVal(PyT.Builtin))
+            kf.s = "functools._cmp_key"
+            kf.wrapped = (itemAt args 0)
+            return kf
+        }
+        if ((f == "_cmp_lt") || (f == "_cmp_gt") || (f == "_cmp_eq")) {
+            def a:PyVal (itemAt args 0)
+            def b:PyVal (itemAt args 1)
+            def cmp:PyVal (unwrap (get a.attrs "cmp"))
+            def r:PyVal (this.call2(cmp (unwrap (get a.attrs "obj")) (unwrap (get b.attrs "obj"))))
+            def rv:double (ip.toDouble(r))
+            if (f == "_cmp_lt") {
+                return (ip.mkBool((rv < 0.0)))
+            }
+            if (f == "_cmp_gt") {
+                return (ip.mkBool((rv > 0.0)))
+            }
+            return (ip.mkBool((rv == 0.0)))
+        }
+        ip.raise("AttributeError" ("module 'functools' has no attribute '" + f + "'"))
+        return ip.NONE
+    }
+
+    ; a builtin that carries state: partial, lru_cache wrappers, cmp_to_key, _make
+    fn callWrapped:PyVal (b:PyVal args:[PyVal] kn:[string] kv:[PyVal]) {
+        def target:PyVal (unwrap b.wrapped)
+        if (b.s == "functools.partial") {
+            def all:[PyVal]
+            for b.items a:PyVal i {
+                push all a
+            }
+            for args a2:PyVal j {
+                push all a2
+            }
+            def kn2:[string]
+            def kv2:[PyVal]
+            def ks:[string] (keys b.attrs)
+            for ks k:string ki {
+                if ((indexOf kn k) < 0) {
+                    push kn2 k
+                    push kv2 (unwrap (get b.attrs k))
+                }
+            }
+            for kn k2:string ki2 {
+                push kn2 k2
+                push kv2 (itemAt kv ki2)
+            }
+            return (ip.callValue(target all kn2 kv2))
+        }
+        if (b.s == "functools._lru_wrapper") {
+            def cache:PyVal (unwrap (get b.attrs "__cache__"))
+            def keyItems:[PyVal]
+            for args a3:PyVal i3 {
+                push keyItems a3
+            }
+            for kn k3:string ki3 {
+                push keyItems (ip.mkStr(k3))
+                push keyItems (itemAt kv ki3)
+            }
+            def key:PyVal (ip.mkTuple(keyItems))
+            def hit@(optional):PyVal (ip.dictGet(cache key))
+            if (!null? hit) {
+                return (unwrap hit)
+            }
+            def r:PyVal (ip.callValue(target args kn kv))
+            ip.dictSet(cache key r)
+            return r
+        }
+        if (b.s == "functools._cmp_key") {
+            def kc:PyVal (this.cmpKeyClass())
+            def o (new PyVal(PyT.Inst))
+            o.cls = kc
+            set o.attrs "cmp" target
+            set o.attrs "obj" (itemAt args 0)
+            return o
+        }
+        if (b.s == "collections._make") {
+            return (this.ntMake(target (this.listOf((itemAt args 0))) kn kv))
+        }
+        ip.raise("TypeError" ("'" + b.s + "' object is not callable"))
+        return ip.NONE
+    }
+
+    fn cmpKeyClass:PyVal () {
+        def kc@(optional):PyVal (get ip.builtins "__cmp_key_class__")
+        if (!null? kc) {
+            return (unwrap kc)
+        }
+        def c:PyVal (this.nativeClass("functools.KeyWrapper"))
+        c.mode = "builtin"
+        def lt (new PyVal(PyT.Builtin))
+        lt.s = "functools._cmp_lt"
+        set c.attrs "__lt__" lt
+        def gt (new PyVal(PyT.Builtin))
+        gt.s = "functools._cmp_gt"
+        set c.attrs "__gt__" gt
+        def eq (new PyVal(PyT.Builtin))
+        eq.s = "functools._cmp_eq"
+        set c.attrs "__eq__" eq
+        set ip.builtins "__cmp_key_class__" c
+        return c
+    }
+
+    ; ---- statistics
+
+    fn statErr:void (msg:string) {
+        def sm:PyVal (unwrap (this.make("statistics")))
+        ip.raiseVal((ip.makeExc((unwrap (get sm.attrs "StatisticsError")) msg)))
+    }
+
+    fn statCall:PyVal (f:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def data:[PyVal] (this.listOf((itemAt args 0)))
+        def n:int (array_length data)
+        def allInt:boolean true
+        for data v:PyVal i {
+            if ((ip.isIntLike(v)) == false) {
+                allInt = false
+            }
+        }
+        if (f == "mode") {
+            if (n == 0) {
+                this.statErr("no mode for empty data")
+            }
+            def counts:PyVal (ip.mkDict())
+            this.counterFeed(counts (ip.mkList(data)))
+            def best:int 0
+            def bestK:PyVal ip.NONE
+            for counts.items k:PyVal ki {
+                def c:int ((itemAt counts.vals ki).i)
+                if (c > best) {
+                    best = c
+                    bestK = k
+                }
+            }
+            return bestK
+        }
+        if ((f == "median") || (f == "median_low") || (f == "median_high")) {
+            if (n == 0) {
+                this.statErr("no median for empty data")
+            }
+            def s:[PyVal] (ip.bi.sortVals(data ip.NONE false))
+            def mid:int (idiv n 2)
+            if ((n % 2) == 1) {
+                return (itemAt s mid)
+            }
+            if (f == "median_low") {
+                return (itemAt s (mid - 1))
+            }
+            if (f == "median_high") {
+                return (itemAt s mid)
+            }
+            return (ip.binop("/" (ip.binop("+" (itemAt s (mid - 1)) (itemAt s mid))) (ip.mkInt(2))))
+        }
+        if ((f == "mean") || (f == "fmean")) {
+            if (n == 0) {
+                if (f == "fmean") {
+                    this.statErr("fmean requires at least one data point")
+                }
+                this.statErr("mean requires at least one data point")
+            }
+            if (allInt && (f == "mean")) {
+                def tot:int 0
+                for data v2:PyVal i2 {
+                    tot = tot + v2.i
+                }
+                if ((PyFormat.floorModInt(tot n)) == 0) {
+                    return (ip.mkInt((PyFormat.floorDivInt(tot n))))
+                }
+                return (ip.mkFloat(((py_i2d tot) / (py_i2d n))))
+            }
+            def ds:[double]
+            for data v3:PyVal i3 {
+                push ds (ip.bi.toNum(v3))
+            }
+            return (ip.mkFloat(((this.fsumD(ds)) / (py_i2d n))))
+        }
+        ; variance and standard deviation
+        def sample:boolean ((f == "stdev") || (f == "variance"))
+        def need:int 1
+        if sample {
+            need = 2
+        }
+        if (n < need) {
+            if sample {
+                this.statErr((f + " requires at least two data points"))
+            }
+            this.statErr((f + " requires at least one data point"))
+        }
+        def den:int n
+        if sample {
+            den = (n - 1)
+        }
+        if allInt {
+            ; exact: (n*sum(x^2) - sum(x)^2) / (n*den)
+            def sx:int 0
+            def sxx:int 0
+            for data v4:PyVal i4 {
+                sx = sx + v4.i
+                sxx = sxx + (v4.i * v4.i)
+            }
+            def num:int ((n * sxx) - (sx * sx))
+            def dd:int (n * den)
+            if ((f == "variance") || (f == "pvariance")) {
+                if ((num % dd) == 0) {
+                    return (ip.mkInt((idiv num dd)))
+                }
+                return (ip.mkFloat(((py_i2d num) / (py_i2d dd))))
+            }
+            return (ip.mkFloat((py_sqrt ((py_i2d num) / (py_i2d dd)))))
+        }
+        def xs:[double]
+        for data v5:PyVal i5 {
+            push xs (ip.bi.toNum(v5))
+        }
+        def m:double ((this.fsumD(xs)) / (py_i2d n))
+        def sq:[double]
+        for xs x:double i6 {
+            push sq ((x - m) * (x - m))
+        }
+        def var:double ((this.fsumD(sq)) / (py_i2d den))
+        if ((f == "variance") || (f == "pvariance")) {
+            return (ip.mkFloat(var))
+        }
+        return (ip.mkFloat((py_sqrt var)))
+    }
+
+    ; ---- copy
+
+    fn shallowCopy:PyVal (v:PyVal) {
+        switch v.t {
+            case PyT.List {
+                def l:PyVal (ip.mkList((this.listOf(v))))
+                l.mode = v.mode
+                l.i3 = v.i3
+                this.copyAttrs(v l)
+                return l
+            }
+            case PyT.Dict {
+                def d:PyVal (ip.copyDict(v))
+                d.mode = v.mode
+                this.copyAttrs(v d)
+                return d
+            }
+            case PyT.Set {
+                if (v.mode == "frozen") {
+                    return v
+                }
+                return (ip.copySet(v))
+            }
+            case PyT.Inst {
+                def o (new PyVal(PyT.Inst))
+                o.cls = v.cls
+                this.copyAttrs(v o)
+                return o
+            }
+        }
+        return v
+    }
+
+    fn copyAttrs:void (src:PyVal dst:PyVal) {
+        def ks:[string] (keys src.attrs)
+        for ks k:string i {
+            set dst.attrs k (unwrap (get src.attrs k))
+        }
+    }
+
+    fn deepCopy:PyVal (v:PyVal) {
+        switch v.t {
+            case PyT.List {
+                def items:[PyVal]
+                for v.items x:PyVal i {
+                    push items (this.deepCopy(x))
+                }
+                def l:PyVal (ip.mkList(items))
+                l.mode = v.mode
+                l.i3 = v.i3
+                this.copyAttrs(v l)
+                return l
+            }
+            case PyT.Tuple {
+                def items2:[PyVal]
+                for v.items x2:PyVal i2 {
+                    push items2 (this.deepCopy(x2))
+                }
+                def t:PyVal (ip.mkTuple(items2))
+                this.copyAttrs(v t)
+                return t
+            }
+            case PyT.Dict {
+                def d:PyVal (ip.mkDict())
+                d.mode = v.mode
+                this.copyAttrs(v d)
+                for v.items k:PyVal ki {
+                    ip.dictSet(d k (this.deepCopy((itemAt v.vals ki))))
+                }
+                return d
+            }
+            case PyT.Set {
+                if (v.mode == "frozen") {
+                    return v
+                }
+                return (ip.copySet(v))
+            }
+            case PyT.Inst {
+                if (ip.isExcInst(v)) {
+                    return v
+                }
+                def o (new PyVal(PyT.Inst))
+                o.cls = v.cls
+                def ks:[string] (keys v.attrs)
+                for ks k2:string i3 {
+                    set o.attrs k2 (this.deepCopy((unwrap (get v.attrs k2))))
+                }
+                return o
+            }
+        }
+        return v
+    }
+}

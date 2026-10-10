@@ -1,0 +1,34 @@
+{
+  "name": "ranger-python",
+  "version": "0.1.0",
+  "description": "A Python runtime written in Ranger: runs Python scripts on an in-memory filesystem in the browser, Node, Go or Python",
+  "license": "MIT",
+  "type": "module",
+  "main": "js/index.mjs",
+  "exports": {
+    ".": "./js/index.mjs",
+    "./sliqtly": "./js/sliqtly.mjs",
+    "./worker": "./js/worker.mjs",
+    "./runtime": "./dist/pyruntime.mjs",
+    "./runtime.cjs": "./dist/pyruntime.cjs"
+  },
+  "bin": {
+    "pyrun": "js/cli.mjs"
+  },
+  "files": [
+    "dist/",
+    "js/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:all": "node scripts/build.mjs --go --python",
+    "test": "node scripts/build.mjs && node tests/run.mjs && node tests/sliqtly.mjs",
+    "test:all": "node scripts/build.mjs --go --python && node tests/run.mjs --go --python && node tests/sliqtly.mjs"
+  },
+  "devDependencies": {
+    "ranger-compiler": "4.0.2"
+  }
+}

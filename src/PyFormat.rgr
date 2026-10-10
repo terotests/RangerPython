@@ -1,0 +1,839 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyFormat.rgr — numbers and strings written as CPython writes them.
+;
+;   floatRepr      repr(1.5), str(0.1), 1e+16, 1.5e-05, inf, nan
+;   fixed / sci / general   the f, e and g presentation types, rounded half
+;                  to even on the double's exact value (an error-free product
+;                  says which side of a tie the true value is on), so
+;                  f"{x:.1f}" gives CPython's digits
+;   PySpec         the format-spec mini language: [[fill]align][sign][z][#][0]
+;                  [width][grouping][.precision][type]
+;   strRepr        repr() of a str, with CPython's choice of quotes
+;
+; Only text and numbers here: what a value's str() or repr() is belongs to
+; PyInterp, which calls these.
+; ============================================================================
+
+Import "PyOps.rgr"
+
+class PySpec {
+    def fill:string " "
+    def align:string ""
+    def sign:string "-"
+    def alt:boolean false
+    def zero:boolean false
+    def width:int 0
+    def grouping:string ""
+    def prec:int -1
+    def type:string ""
+    def err:string ""
+}
+
+; a decimal number: digits with the point after `point` of them
+class PyDigits {
+    def neg:boolean false
+    def digits:string ""
+    def point:int 0
+}
+
+class PyFormat {
+
+    sfn isNegZero:boolean (x:double) {
+        if (x != 0.0) {
+            return false
+        }
+        def inv:double (1.0 / x)
+        return (inv < 0.0)
+    }
+
+    sfn zeros:string (n:int) {
+        def s:string ""
+        def i:int 0
+        while (i < n) {
+            s = s + "0"
+            i = i + 1
+        }
+        return s
+    }
+
+    sfn rep:string (str:string n:int) {
+        def s:string ""
+        def i:int 0
+        while (i < n) {
+            s = s + str
+            i = i + 1
+        }
+        return s
+    }
+
+    ; a non-negative integral double (below 2^53) as decimal digits
+    sfn intDigits:string (v:double) {
+        if (v < 1.0) {
+            return "0"
+        }
+        def n:int (py_trunc v)
+        return (to_string n)
+    }
+
+    ; shortest round-trip digits of a finite double
+    sfn decompose:PyDigits (x:double) {
+        def r (new PyDigits)
+        if (x < 0.0) {
+            r.neg = true
+        }
+        if (PyFormat.isNegZero(x)) {
+            r.neg = true
+        }
+        def a:double x
+        if (a < 0.0) {
+            a = (0.0 - a)
+        }
+        if (a == 0.0) {
+            r.digits = ""
+            r.point = 1
+            return r
+        }
+        def txt:string (py_float_digits a)
+        def cs:[int] (to_chars txt)
+        def mant:[int]
+        def before:int 0
+        def seenPoint:boolean false
+        def ex:int 0
+        def exSign:int 1
+        def inExp:boolean false
+        for cs c:int i {
+            if inExp {
+                if (c == 45) {
+                    exSign = -1
+                } {
+                    if ((c >= 48) && (c <= 57)) {
+                        ex = (ex * 10) + (c - 48)
+                    }
+                }
+            } {
+                if ((c == 101) || (c == 69)) {
+                    inExp = true
+                } {
+                    if (c == 46) {
+                        seenPoint = true
+                    } {
+                        if ((c >= 48) && (c <= 57)) {
+                            push mant c
+                            if (seenPoint == false) {
+                                before = before + 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        def point:int (before + (ex * exSign))
+        ; strip leading zeros
+        def start:int 0
+        def n:int (array_length mant)
+        while ((start < n) && ((itemAt mant start) == 48)) {
+            start = start + 1
+            point = point - 1
+        }
+        def end:int n
+        while ((end > start) && ((itemAt mant (end - 1)) == 48)) {
+            end = end - 1
+        }
+        r.digits = (py_codes_to_str mant start end)
+        r.point = point
+        return r
+    }
+
+    sfn floatRepr:string (x:double) {
+        if (py_isnan x) {
+            return "nan"
+        }
+        if (py_isinf x) {
+            if (x < 0.0) {
+                return "-inf"
+            }
+            return "inf"
+        }
+        def d:PyDigits (PyFormat.decompose(x))
+        def sign:string ""
+        if d.neg {
+            sign = "-"
+        }
+        if ((strlen d.digits) == 0) {
+            return (sign + "0.0")
+        }
+        def nd:int (strlen d.digits)
+        def e10:int (d.point - 1)
+        if ((e10 >= -4) && (e10 < 16)) {
+            if (d.point <= 0) {
+                return (sign + "0." + (PyFormat.zeros((0 - d.point))) + d.digits)
+            }
+            if (d.point >= nd) {
+                return (sign + d.digits + (PyFormat.zeros((d.point - nd))) + ".0")
+            }
+            return (sign + (substring d.digits 0 d.point) + "." + (substring d.digits d.point nd))
+        }
+        def m:string (substring d.digits 0 1)
+        if (nd > 1) {
+            m = m + "." + (substring d.digits 1 nd)
+        }
+        return (sign + m + "e" + (PyFormat.expText(e10)))
+    }
+
+    ; +05, -07, +123 (at least two digits)
+    sfn expText:string (e:int) {
+        def sg:string "+"
+        def v:int e
+        if (e < 0) {
+            sg = "-"
+            v = (0 - e)
+        }
+        def t:string (to_string v)
+        if ((strlen t) < 2) {
+            t = "0" + t
+        }
+        return (sg + t)
+    }
+
+    ; the low part of a * b: a * b == p + err exactly (Dekker)
+    sfn productError:double (a:double b:double p:double) {
+        def sp:double 134217729.0
+        def ca:double (sp * a)
+        def ah:double (ca - (ca - a))
+        def al:double (a - ah)
+        def cb:double (sp * b)
+        def bh:double (cb - (cb - b))
+        def bl:double (b - bh)
+        return ((((ah * bh) - p) + (ah * bl) + (al * bh)) + (al * bl))
+    }
+
+    sfn pow10:double (n:int) {
+        return (py_pow 10.0 (py_i2d n))
+    }
+
+    ; m rounded to an integer, half to even; `side` is the sign of the exact
+    ; value minus m (0 when m is exact)
+    sfn roundSide:double (m:double side:double) {
+        def f:double (py_floor m)
+        def diff:double (m - f)
+        if (diff > 0.5) {
+            return (f + 1.0)
+        }
+        if (diff < 0.5) {
+            return f
+        }
+        if (side > 0.0) {
+            return (f + 1.0)
+        }
+        if (side < 0.0) {
+            return f
+        }
+        def half:double (f / 2.0)
+        if ((py_floor half) == half) {
+            return f
+        }
+        return (f + 1.0)
+    }
+
+    ; a (>= 0) * 10^k rounded half even on the exact value; -1.0 when the
+    ; result would not be exact in a double
+    sfn scaledRound:double (a:double k:int) {
+        if ((k >= 0) && (k <= 22)) {
+            def q:double (PyFormat.pow10(k))
+            def m:double (a * q)
+            if (m >= 4000000000000000.0) {
+                return -1.0
+            }
+            def err:double (PyFormat.productError(a q m))
+            return (PyFormat.roundSide(m err))
+        }
+        if ((k < 0) && (k >= -22)) {
+            def q2:double (PyFormat.pow10((0 - k)))
+            def m2:double (a / q2)
+            if (m2 >= 4000000000000000.0) {
+                return -1.0
+            }
+            ; the sign of a - m2 * q2 says which side the true quotient is on
+            def hi:double (m2 * q2)
+            def lo:double (PyFormat.productError(m2 q2 hi))
+            def rest:double ((a - hi) - lo)
+            return (PyFormat.roundSide(m2 rest))
+        }
+        def m3:double (a * (PyFormat.pow10(k)))
+        if (m3 >= 4000000000000000.0) {
+            return -1.0
+        }
+        return (PyFormat.roundSide(m3 0.0))
+    }
+
+    ; |x| with prec digits after the point (no sign)
+    sfn fixedAbs:string (a:double prec:int) {
+        def r:double (PyFormat.scaledRound(a prec))
+        if (r >= 0.0) {
+            def ds:string (PyFormat.intDigits(r))
+            if ((strlen ds) <= prec) {
+                ds = (PyFormat.zeros(((prec + 1) - (strlen ds)))) + ds
+            }
+            if (prec == 0) {
+                return ds
+            }
+            def n:int (strlen ds)
+            return ((substring ds 0 (n - prec)) + "." + (substring ds (n - prec) n))
+        }
+        ; too many digits for a double: the shortest digits, padded
+        def d:PyDigits (PyFormat.decompose(a))
+        def nd:int (strlen d.digits)
+        def ip:string ""
+        def fp:string ""
+        if (d.point <= 0) {
+            ip = "0"
+            fp = (PyFormat.zeros((0 - d.point))) + d.digits
+        } {
+            if (d.point >= nd) {
+                ip = d.digits + (PyFormat.zeros((d.point - nd)))
+            } {
+                ip = (substring d.digits 0 d.point)
+                fp = (substring d.digits d.point nd)
+            }
+        }
+        if ((strlen fp) > prec) {
+            fp = (substring fp 0 prec)
+        } {
+            fp = fp + (PyFormat.zeros((prec - (strlen fp))))
+        }
+        if (prec == 0) {
+            return ip
+        }
+        return (ip + "." + fp)
+    }
+
+    ; |x| as d.ddddde+XX with prec digits after the point (no sign)
+    sfn sciAbs:string (a:double prec:int upper:boolean) {
+        def ech:string "e"
+        if upper {
+            ech = "E"
+        }
+        if (a == 0.0) {
+            def z:string "0"
+            if (prec > 0) {
+                z = z + "." + (PyFormat.zeros(prec))
+            }
+            return (z + ech + "+00")
+        }
+        def d:PyDigits (PyFormat.decompose(a))
+        def e:int (d.point - 1)
+        def r:double (PyFormat.scaledRound(a (prec - e)))
+        if (r < 0.0) {
+            ; out of the exact range: the shortest digits, cut
+            def ds0:string d.digits + (PyFormat.zeros((prec + 1)))
+            def body0:string (substring ds0 0 1)
+            if (prec > 0) {
+                body0 = body0 + "." + (substring ds0 1 (prec + 1))
+            }
+            return (body0 + ech + (PyFormat.expText(e)))
+        }
+        def ds:string (PyFormat.intDigits(r))
+        if ((strlen ds) > (prec + 1)) {
+            ; rounding carried into a new digit: 9.99 -> 10.0
+            e = e + 1
+            ds = (substring ds 0 (prec + 1))
+        }
+        while ((strlen ds) < (prec + 1)) {
+            ds = ds + "0"
+        }
+        def body:string (substring ds 0 1)
+        if (prec > 0) {
+            body = body + "." + (substring ds 1 (prec + 1))
+        }
+        return (body + ech + (PyFormat.expText(e)))
+    }
+
+    sfn stripZeros:string (s:string) {
+        def cs:[int] (to_chars s)
+        def epos:int -1
+        def dot:int -1
+        for cs c:int i {
+            if ((c == 101) || (c == 69)) {
+                epos = i
+            }
+            if (c == 46) {
+                dot = i
+            }
+        }
+        if (dot < 0) {
+            return s
+        }
+        def n:int (array_length cs)
+        def mantEnd:int n
+        if (epos >= 0) {
+            mantEnd = epos
+        }
+        def k:int mantEnd
+        while ((k > dot) && ((itemAt cs (k - 1)) == 48)) {
+            k = k - 1
+        }
+        if (k == (dot + 1)) {
+            k = dot
+        }
+        return ((py_codes_to_str cs 0 k) + (py_codes_to_str cs mantEnd n))
+    }
+
+    ; the g type: |x| with prec significant digits (no sign)
+    sfn generalAbs:string (a:double prec0:int upper:boolean alt:boolean) {
+        def prec:int prec0
+        if (prec == 0) {
+            prec = 1
+        }
+        if (a == 0.0) {
+            if alt {
+                return ("0." + (PyFormat.zeros((prec - 1))))
+            }
+            return "0"
+        }
+        def es:string (PyFormat.sciAbs(a (prec - 1) upper))
+        ; the exponent after rounding
+        def ei:int (indexOf (to_lowercase es) "e")
+        def ex:int (unwrap (str2int (PyFormat.plainInt((substring es (ei + 1) (strlen es))))))
+        if ((ex >= -4) && (ex < prec)) {
+            def f:string (PyFormat.fixedAbs(a ((prec - 1) - ex)))
+            if alt {
+                if ((indexOf f ".") < 0) {
+                    return (f + ".")
+                }
+                return f
+            }
+            return (PyFormat.stripZeros(f))
+        }
+        if alt {
+            return es
+        }
+        return (PyFormat.stripZeros(es))
+    }
+
+    sfn plainInt:string (s:string) {
+        if (startsWith s "+") {
+            return (substring s 1 (strlen s))
+        }
+        return s
+    }
+
+    ; repr-like text for the empty presentation type with a precision
+    sfn noTypeAbs:string (a:double prec:int) {
+        def g:string (PyFormat.generalAbs(a prec false false))
+        if (((indexOf g ".") < 0) && ((indexOf g "e") < 0) && ((indexOf g "n") < 0)) {
+            return (g + ".0")
+        }
+        return g
+    }
+
+    ; an integer in base 2, 8, 16 (no sign, no prefix)
+    sfn intBase:string (v0:int base:int upper:boolean) {
+        def v:int v0
+        if (v < 0) {
+            v = (0 - v)
+        }
+        if (v == 0) {
+            return "0"
+        }
+        def digs:string "0123456789abcdef"
+        if upper {
+            digs = "0123456789ABCDEF"
+        }
+        def out:[int]
+        while (v > 0) {
+            def q:int (PyFormat.floorDivInt(v base))
+            def r:int (v - (q * base))
+            push out (charAt digs r)
+            v = q
+        }
+        def rev:[int]
+        def i:int ((array_length out) - 1)
+        while (i >= 0) {
+            push rev (itemAt out i)
+            i = i - 1
+        }
+        return (py_codes_to_str rev 0 (array_length rev))
+    }
+
+    ; floor division of ints, the same on every target
+    sfn floorDivInt:int (a:int b:int) {
+        def q:double (py_floor ((py_i2d a) / (py_i2d b)))
+        def qi:int (py_trunc q)
+        ; correct a rounding of the double quotient
+        def r:int (a - (qi * b))
+        if (b > 0) {
+            while (r < 0) {
+                qi = qi - 1
+                r = r + b
+            }
+            while (r >= b) {
+                qi = qi + 1
+                r = r - b
+            }
+        } {
+            while (r > 0) {
+                qi = qi - 1
+                r = r + b
+            }
+            while (r <= b) {
+                if (r == b) {
+                    qi = qi + 1
+                    r = 0
+                    break
+                }
+                break
+            }
+        }
+        return qi
+    }
+
+    sfn floorModInt:int (a:int b:int) {
+        return (a - (b * (PyFormat.floorDivInt(a b))))
+    }
+
+    ; ---- the spec mini language
+
+    sfn parseSpec:PySpec (spec:string) {
+        def sp (new PySpec)
+        def cs:[int] (to_chars spec)
+        def n:int (array_length cs)
+        def i:int 0
+        if ((n >= 2) && (PyFormat.isAlign((itemAt cs 1)))) {
+            sp.fill = (py_chr (itemAt cs 0))
+            sp.align = (py_chr (itemAt cs 1))
+            i = 2
+        } {
+            if ((n >= 1) && (PyFormat.isAlign((itemAt cs 0)))) {
+                sp.align = (py_chr (itemAt cs 0))
+                i = 1
+            }
+        }
+        if (i < n) {
+            def c:int (itemAt cs i)
+            if ((c == 43) || (c == 45) || (c == 32)) {
+                sp.sign = (py_chr c)
+                i = i + 1
+            }
+        }
+        if ((i < n) && ((itemAt cs i) == 122)) {
+            i = i + 1
+        }
+        if ((i < n) && ((itemAt cs i) == 35)) {
+            sp.alt = true
+            i = i + 1
+        }
+        if ((i < n) && ((itemAt cs i) == 48)) {
+            sp.zero = true
+            i = i + 1
+        }
+        def w:int 0
+        while ((i < n) && ((itemAt cs i) >= 48) && ((itemAt cs i) <= 57)) {
+            w = (w * 10) + ((itemAt cs i) - 48)
+            i = i + 1
+        }
+        sp.width = w
+        if ((i < n) && (((itemAt cs i) == 44) || ((itemAt cs i) == 95))) {
+            sp.grouping = (py_chr (itemAt cs i))
+            i = i + 1
+        }
+        if ((i < n) && ((itemAt cs i) == 46)) {
+            i = i + 1
+            def pr:int 0
+            def any:boolean false
+            while ((i < n) && ((itemAt cs i) >= 48) && ((itemAt cs i) <= 57)) {
+                pr = (pr * 10) + ((itemAt cs i) - 48)
+                i = i + 1
+                any = true
+            }
+            if (any == false) {
+                sp.err = "Format specifier missing precision"
+                return sp
+            }
+            sp.prec = pr
+        }
+        if (i < n) {
+            sp.type = (py_chr (itemAt cs i))
+            i = i + 1
+        }
+        if (i < n) {
+            sp.err = ("Invalid format specifier '" + spec + "'")
+        }
+        return sp
+    }
+
+    sfn isAlign:boolean (c:int) {
+        return ((c == 60) || (c == 62) || (c == 94) || (c == 61))
+    }
+
+    ; digits grouped by `sep` every `every` from the right
+    sfn group:string (ds:string sep:string every:int) {
+        if ((strlen sep) == 0) {
+            return ds
+        }
+        def cs:[int] (to_chars ds)
+        def n:int (array_length cs)
+        def out:string ""
+        def i:int 0
+        while (i < n) {
+            if ((i > 0) && ((PyFormat.floorModInt((n - i) every)) == 0)) {
+                out = out + sep
+            }
+            out = out + (py_chr (itemAt cs i))
+            i = i + 1
+        }
+        return out
+    }
+
+    ; pad `body` (sign already split off as `sign`) to the spec's width
+    sfn pad:string (sign:string body:string sp:PySpec numeric:boolean) {
+        def align:string sp.align
+        def fill:string sp.fill
+        if ((strlen align) == 0) {
+            if numeric {
+                align = ">"
+                if sp.zero {
+                    align = "="
+                    fill = "0"
+                }
+            } {
+                align = "<"
+            }
+        }
+        def len:int ((char_length sign) + (char_length body))
+        if (len >= sp.width) {
+            return (sign + body)
+        }
+        def gap:int (sp.width - len)
+        if (align == "<") {
+            return (sign + body + (PyFormat.rep(fill gap)))
+        }
+        if (align == ">") {
+            return ((PyFormat.rep(fill gap)) + sign + body)
+        }
+        if (align == "=") {
+            return (sign + (PyFormat.rep(fill gap)) + body)
+        }
+        def left:int (idiv gap 2)
+        return ((PyFormat.rep(fill left)) + sign + body + (PyFormat.rep(fill (gap - left))))
+    }
+
+    sfn signText:string (neg:boolean sp:PySpec) {
+        if neg {
+            return "-"
+        }
+        if (sp.sign == "+") {
+            return "+"
+        }
+        if (sp.sign == " ") {
+            return " "
+        }
+        return ""
+    }
+
+    ; "" on success; else the error message
+    sfn formatInt:string (v:int sp:PySpec) {
+        def t:string sp.type
+        def neg:boolean (v < 0)
+        def a:int v
+        if neg {
+            a = (0 - v)
+        }
+        def body:string ""
+        def prefix:string ""
+        if ((t == "") || (t == "d") || (t == "n")) {
+            body = (PyFormat.group((to_string a) sp.grouping 3))
+        } {
+            if ((t == "x") || (t == "X")) {
+                body = (PyFormat.group((PyFormat.intBase(a 16 (t == "X"))) sp.grouping 4))
+                if sp.alt {
+                    prefix = "0" + t
+                }
+            } {
+                if (t == "o") {
+                    body = (PyFormat.group((PyFormat.intBase(a 8 false)) sp.grouping 4))
+                    if sp.alt {
+                        prefix = "0o"
+                    }
+                } {
+                    if (t == "b") {
+                        body = (PyFormat.group((PyFormat.intBase(a 2 false)) sp.grouping 4))
+                        if sp.alt {
+                            prefix = "0b"
+                        }
+                    } {
+                        if (t == "c") {
+                            return (PyFormat.pad("" (py_chr v) sp false))
+                        }
+                        return (PyFormat.formatFloat((py_i2d v) sp))
+                    }
+                }
+            }
+        }
+        if (sp.prec >= 0) {
+            return ((py_chr 0) + "!" + "Precision not allowed in integer format specifier")
+        }
+        return (PyFormat.pad(((PyFormat.signText(neg sp)) + prefix) body sp true))
+    }
+
+    sfn formatFloat:string (x:double sp:PySpec) {
+        def t:string sp.type
+        def neg:boolean ((x < 0.0) || (PyFormat.isNegZero(x)))
+        def a:double x
+        if (a < 0.0) {
+            a = (0.0 - a)
+        }
+        def body:string ""
+        def upper:boolean ((t == "F") || (t == "E") || (t == "G"))
+        if (py_isnan x) {
+            neg = false
+            body = "nan"
+        } {
+            if (py_isinf x) {
+                body = "inf"
+            } {
+                def prec:int sp.prec
+                if ((t == "f") || (t == "F")) {
+                    if (prec < 0) {
+                        prec = 6
+                    }
+                    body = (PyFormat.fixedAbs(a prec))
+                } {
+                    if ((t == "e") || (t == "E")) {
+                        if (prec < 0) {
+                            prec = 6
+                        }
+                        body = (PyFormat.sciAbs(a prec upper))
+                    } {
+                        if ((t == "g") || (t == "G") || (t == "n")) {
+                            if (prec < 0) {
+                                prec = 6
+                            }
+                            body = (PyFormat.generalAbs(a prec upper sp.alt))
+                        } {
+                            if (t == "%") {
+                                if (prec < 0) {
+                                    prec = 6
+                                }
+                                body = (PyFormat.fixedAbs((a * 100.0) prec)) + "%"
+                            } {
+                                if (t == "") {
+                                    if (prec < 0) {
+                                        body = (PyFormat.floatRepr(a))
+                                    } {
+                                        body = (PyFormat.noTypeAbs(a prec))
+                                    }
+                                } {
+                                    return (((py_chr 0) + "!" + "Unknown format code '" + t + "' for object of type 'float'"))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if upper {
+            body = (to_uppercase body)
+        }
+        if ((strlen sp.grouping) > 0) {
+            def dot:int (indexOf body ".")
+            def epos:int (indexOf body "e")
+            def cut:int (strlen body)
+            if (dot >= 0) {
+                cut = dot
+            } {
+                if (epos >= 0) {
+                    cut = epos
+                }
+            }
+            body = (PyFormat.group((substring body 0 cut) sp.grouping 3)) + (substring body cut (strlen body))
+        }
+        return (PyFormat.pad((PyFormat.signText(neg sp)) body sp true))
+    }
+
+    sfn formatStr:string (s:string sp:PySpec) {
+        if ((sp.type != "") && (sp.type != "s")) {
+            return (((py_chr 0) + "!" + "Unknown format code '" + sp.type + "' for object of type 'str'"))
+        }
+        if (sp.sign != "-") {
+            return ((py_chr 0) + "!" + "Sign not allowed in string format specifier")
+        }
+        def body:string s
+        if (sp.prec >= 0) {
+            def cs:[int] (to_chars s)
+            if ((array_length cs) > sp.prec) {
+                body = (py_codes_to_str cs 0 sp.prec)
+            }
+        }
+        if (sp.align == "=") {
+            return ((py_chr 0) + "!" + "'=' alignment not allowed in string format specifier")
+        }
+        return (PyFormat.pad("" body sp false))
+    }
+
+    ; repr() of a str
+    sfn strRepr:string (s:string) {
+        def cs:[int] (to_chars s)
+        def hasSingle:boolean false
+        def hasDouble:boolean false
+        for cs c:int i {
+            if (c == 39) {
+                hasSingle = true
+            }
+            if (c == 34) {
+                hasDouble = true
+            }
+        }
+        def q:int 39
+        if (hasSingle && (hasDouble == false)) {
+            q = 34
+        }
+        def out:[int]
+        push out q
+        for cs c2:int i2 {
+            if ((c2 == q) || (c2 == 92)) {
+                push out 92
+                push out c2
+                continue
+            }
+            if (c2 == 10) {
+                push out 92
+                push out 110
+                continue
+            }
+            if (c2 == 9) {
+                push out 92
+                push out 116
+                continue
+            }
+            if (c2 == 13) {
+                push out 92
+                push out 114
+                continue
+            }
+            if ((c2 < 32) || (c2 == 127) || ((c2 >= 128) && (c2 < 160)) || (c2 == 173)) {
+                def hx:string (PyFormat.intBase(c2 16 false))
+                if ((strlen hx) < 2) {
+                    hx = "0" + hx
+                }
+                def esc:[int] (to_chars ("\\x" + hx))
+                for esc ec:int ei {
+                    push out ec
+                }
+                continue
+            }
+            if ((c2 >= 55296) && (c2 <= 57343)) {
+                def hx2:string (PyFormat.intBase(c2 16 false))
+                def esc2:[int] (to_chars ("\\u" + hx2))
+                for esc2 ec2:int ei2 {
+                    push out ec2
+                }
+                continue
+            }
+            push out c2
+        }
+        push out q
+        return (py_codes_to_str out 0 (array_length out))
+    }
+}

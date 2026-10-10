@@ -1,0 +1,552 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyLexer.rgr — Python source text to tokens, with INDENT / DEDENT.
+;
+; The text is walked as code points (to_chars), so a column and a string's
+; contents mean the same on every target. Newlines inside (), [] and {} and
+; after a backslash join lines, as Python's tokenizer does. A string token
+; carries its decoded value; an f-string carries its body with the escapes
+; decoded and the braces left for PyParser to split.
+; ============================================================================
+
+Import "PyOps.rgr"
+Import "PyAst.rgr"
+
+class PyLexer {
+    def cs:[int]
+    def n:int 0
+    def pos:int 0
+    def line:int 1
+    def depth:int 0
+    def indents:[int]
+    def toks:[PyToken]
+    def err:string ""
+    def errLine:int 0
+    def atLineStart:boolean true
+
+    Constructor (src:string) {
+        cs = (to_chars src)
+        n = (array_length cs)
+        push indents 0
+    }
+
+    fn fail:void (msg:string) {
+        if ((strlen err) == 0) {
+            err = msg
+            errLine = line
+        }
+    }
+
+    fn ch:int (off:int) {
+        def p:int (pos + off)
+        if (p >= n) {
+            return 0
+        }
+        return (itemAt cs p)
+    }
+
+    fn add:void (k:PyTok text:string) {
+        def t (new PyToken)
+        t.kind = k
+        t.text = text
+        t.line = line
+        push toks t
+    }
+
+    fn text:string (a:int b:int) {
+        return (py_codes_to_str cs a b)
+    }
+
+    sfn isIdStart:boolean (c:int) {
+        if ((c >= 97) && (c <= 122)) {
+            return true
+        }
+        if ((c >= 65) && (c <= 90)) {
+            return true
+        }
+        if (c == 95) {
+            return true
+        }
+        return (c > 127)
+    }
+
+    sfn isDigit:boolean (c:int) {
+        return ((c >= 48) && (c <= 57))
+    }
+
+    sfn isIdChar:boolean (c:int) {
+        if (PyLexer.isIdStart(c)) {
+            return true
+        }
+        return PyLexer.isDigit(c)
+    }
+
+    ; the indentation of the line starting at pos; -1 for a blank or comment line
+    fn lineIndent:int () {
+        def w:int 0
+        def p:int pos
+        while (p < n) {
+            def c:int (itemAt cs p)
+            if (c == 32) {
+                w = w + 1
+            } {
+                if (c == 9) {
+                    w = ((idiv w 8) + 1) * 8
+                } {
+                    if (c == 12) {
+                        w = 0
+                    } {
+                        if ((c == 10) || (c == 13) || (c == 35)) {
+                            pos = p
+                            return -1
+                        }
+                        pos = p
+                        return w
+                    }
+                }
+            }
+            p = p + 1
+        }
+        pos = p
+        return -1
+    }
+
+    fn tokenize:[PyToken] () {
+        while (pos < n) {
+            if ((strlen err) > 0) {
+                return toks
+            }
+            if (atLineStart && (depth == 0)) {
+                def w:int (this.lineIndent())
+                if (w < 0) {
+                    ; blank line or comment only: skip to the end of it
+                    while ((pos < n) && ((this.ch(0)) != 10)) {
+                        pos = pos + 1
+                    }
+                    if (pos < n) {
+                        pos = pos + 1
+                        line = line + 1
+                    }
+                    continue
+                }
+                atLineStart = false
+                def top:int (last indents)
+                if (w > top) {
+                    push indents w
+                    this.add(PyTok.Indent "")
+                } {
+                    while (w < (last indents)) {
+                        removeLast indents
+                        this.add(PyTok.Dedent "")
+                    }
+                    if (w != (last indents)) {
+                        this.fail("unindent does not match any outer indentation level")
+                        return toks
+                    }
+                }
+            }
+            this.scanOne()
+        }
+        if ((strlen err) > 0) {
+            return toks
+        }
+        if ((array_length toks) > 0) {
+            def lt:PyToken (last toks)
+            if ((lt.kind != PyTok.Newline) && (lt.kind != PyTok.Dedent)) {
+                this.add(PyTok.Newline "")
+            }
+        }
+        while ((array_length indents) > 1) {
+            removeLast indents
+            this.add(PyTok.Dedent "")
+        }
+        this.add(PyTok.EOF "")
+        return toks
+    }
+
+    fn scanOne:void () {
+        def c:int (this.ch(0))
+        if ((c == 32) || (c == 9) || (c == 12)) {
+            pos = pos + 1
+            return
+        }
+        if (c == 13) {
+            pos = pos + 1
+            return
+        }
+        if (c == 35) {
+            while ((pos < n) && ((this.ch(0)) != 10)) {
+                pos = pos + 1
+            }
+            return
+        }
+        if (c == 92) {
+            ; a backslash joins the next line
+            def p:int (pos + 1)
+            if ((p < n) && ((itemAt cs p) == 13)) {
+                p = p + 1
+            }
+            if ((p < n) && ((itemAt cs p) == 10)) {
+                pos = p + 1
+                line = line + 1
+                return
+            }
+            this.fail("unexpected character after line continuation character")
+            return
+        }
+        if (c == 10) {
+            pos = pos + 1
+            if (depth == 0) {
+                this.add(PyTok.Newline "")
+                atLineStart = true
+            }
+            line = line + 1
+            return
+        }
+        if (PyLexer.isIdStart(c)) {
+            this.scanNameOrString()
+            return
+        }
+        if (PyLexer.isDigit(c) || ((c == 46) && (PyLexer.isDigit((this.ch(1)))))) {
+            this.scanNumber()
+            return
+        }
+        if ((c == 34) || (c == 39)) {
+            this.scanString(pos false false false)
+            return
+        }
+        this.scanOp()
+    }
+
+    fn scanNameOrString:void () {
+        def start:int pos
+        while ((pos < n) && (PyLexer.isIdChar((this.ch(0))))) {
+            pos = pos + 1
+        }
+        def word:string (this.text(start pos))
+        def q:int (this.ch(0))
+        if (((q == 34) || (q == 39)) && ((pos - start) <= 2)) {
+            def lw:string (to_lowercase word)
+            def raw:boolean false
+            def fmt:boolean false
+            def isBytes:boolean false
+            def ok:boolean true
+            def ws:[int] (to_chars lw)
+            for ws wc:int wi {
+                if (wc == 114) {
+                    raw = true
+                } {
+                    if (wc == 102) {
+                        fmt = true
+                    } {
+                        if (wc == 98) {
+                            isBytes = true
+                        } {
+                            if (wc != 117) {
+                                ok = false
+                            }
+                        }
+                    }
+                }
+            }
+            if ok {
+                this.scanString(pos raw fmt isBytes)
+                return
+            }
+        }
+        this.add(PyTok.Name word)
+    }
+
+    fn scanNumber:void () {
+        def start:int pos
+        def c:int (this.ch(0))
+        def c1:int (this.ch(1))
+        if ((c == 48) && ((c1 == 120) || (c1 == 88) || (c1 == 111) || (c1 == 79) || (c1 == 98) || (c1 == 66))) {
+            pos = pos + 2
+            def ds:int pos
+            while ((pos < n) && (PyLexer.isIdChar((this.ch(0))))) {
+                pos = pos + 1
+            }
+            def digits:string (this.text(ds pos))
+            def base:int 16
+            if ((c1 == 111) || (c1 == 79)) {
+                base = 8
+            }
+            if ((c1 == 98) || (c1 == 66)) {
+                base = 2
+            }
+            def v:int 0
+            def dcs:[int] (to_chars digits)
+            if ((array_length dcs) == 0) {
+                this.fail("invalid number literal")
+                return
+            }
+            for dcs d:int di {
+                if (d != 95) {
+                    def dv:int (PyLexer.digitValue(d))
+                    if ((dv < 0) || (dv >= base)) {
+                        this.fail(("invalid digit in number literal " + (this.text(start pos))))
+                        return
+                    }
+                    v = (v * base) + dv
+                }
+            }
+            this.add(PyTok.Int (to_string v))
+            return
+        }
+        def isFloat:boolean false
+        while ((pos < n) && ((PyLexer.isDigit((this.ch(0)))) || ((this.ch(0)) == 95))) {
+            pos = pos + 1
+        }
+        if ((this.ch(0)) == 46) {
+            isFloat = true
+            pos = pos + 1
+            while ((pos < n) && ((PyLexer.isDigit((this.ch(0)))) || ((this.ch(0)) == 95))) {
+                pos = pos + 1
+            }
+        }
+        def e:int (this.ch(0))
+        if ((e == 101) || (e == 69)) {
+            def p:int (pos + 1)
+            def sg:int (this.ch(1))
+            if ((sg == 43) || (sg == 45)) {
+                p = p + 1
+            }
+            if ((p < n) && (PyLexer.isDigit((itemAt cs p)))) {
+                isFloat = true
+                pos = p
+                while ((pos < n) && (PyLexer.isDigit((this.ch(0))))) {
+                    pos = pos + 1
+                }
+            }
+        }
+        def jc:int (this.ch(0))
+        if ((jc == 106) || (jc == 74)) {
+            this.fail("complex numbers are not supported")
+            return
+        }
+        def raw:[int]
+        def i:int start
+        while (i < pos) {
+            def rc:int (itemAt cs i)
+            if (rc != 95) {
+                push raw rc
+            }
+            i = i + 1
+        }
+        def t:string (py_codes_to_str raw 0 (array_length raw))
+        if isFloat {
+            this.add(PyTok.Float t)
+        } {
+            this.add(PyTok.Int t)
+        }
+    }
+
+    sfn digitValue:int (d:int) {
+        if ((d >= 48) && (d <= 57)) {
+            return (d - 48)
+        }
+        if ((d >= 97) && (d <= 102)) {
+            return (d - 87)
+        }
+        if ((d >= 65) && (d <= 70)) {
+            return (d - 55)
+        }
+        return -1
+    }
+
+    fn scanString:void (at:int raw:boolean fmt:boolean isBytes:boolean) {
+        pos = at
+        def q:int (this.ch(0))
+        def triple:boolean (((this.ch(1)) == q) && ((this.ch(2)) == q))
+        if triple {
+            pos = pos + 3
+        } {
+            pos = pos + 1
+        }
+        def out:[int]
+        def startLine:int line
+        while true {
+            if (pos >= n) {
+                line = startLine
+                this.fail("unterminated string literal")
+                return
+            }
+            def c:int (this.ch(0))
+            if (c == q) {
+                if triple {
+                    if (((this.ch(1)) == q) && ((this.ch(2)) == q)) {
+                        pos = pos + 3
+                        break
+                    }
+                    push out c
+                    pos = pos + 1
+                    continue
+                }
+                pos = pos + 1
+                break
+            }
+            if (c == 10) {
+                if (triple == false) {
+                    this.fail("unterminated string literal")
+                    return
+                }
+                line = line + 1
+                push out c
+                pos = pos + 1
+                continue
+            }
+            if (c == 92) {
+                def c2:int (this.ch(1))
+                if raw {
+                    push out c
+                    if ((c2 == q) || (c2 == 92)) {
+                        push out c2
+                        pos = pos + 2
+                    } {
+                        pos = pos + 1
+                    }
+                    continue
+                }
+                pos = pos + 2
+                if (c2 == 10) {
+                    line = line + 1
+                    continue
+                }
+                if (c2 == 110) {
+                    push out 10
+                    continue
+                }
+                if (c2 == 116) {
+                    push out 9
+                    continue
+                }
+                if (c2 == 114) {
+                    push out 13
+                    continue
+                }
+                if ((c2 == 92) || (c2 == 39) || (c2 == 34)) {
+                    push out c2
+                    continue
+                }
+                if (c2 == 48) {
+                    if (PyLexer.isDigit((this.ch(0))) == false) {
+                        push out 0
+                        continue
+                    }
+                }
+                if ((c2 >= 48) && (c2 <= 55)) {
+                    ; up to three octal digits
+                    def v:int (c2 - 48)
+                    def k:int 0
+                    while ((k < 2) && ((this.ch(0)) >= 48) && ((this.ch(0)) <= 55)) {
+                        v = (v * 8) + ((this.ch(0)) - 48)
+                        pos = pos + 1
+                        k = k + 1
+                    }
+                    push out v
+                    continue
+                }
+                if (c2 == 97) {
+                    push out 7
+                    continue
+                }
+                if (c2 == 98) {
+                    push out 8
+                    continue
+                }
+                if (c2 == 102) {
+                    push out 12
+                    continue
+                }
+                if (c2 == 118) {
+                    push out 11
+                    continue
+                }
+                if ((c2 == 120) || (c2 == 117) || (c2 == 85)) {
+                    def cnt:int 2
+                    if (c2 == 117) {
+                        cnt = 4
+                    }
+                    if (c2 == 85) {
+                        cnt = 8
+                    }
+                    def v:int 0
+                    def k:int 0
+                    while (k < cnt) {
+                        def dv:int (PyLexer.digitValue((this.ch(0))))
+                        if (dv < 0) {
+                            this.fail("truncated \\x, \\u or \\U escape")
+                            return
+                        }
+                        v = (v * 16) + dv
+                        pos = pos + 1
+                        k = k + 1
+                    }
+                    push out v
+                    continue
+                }
+                if (c2 == 78) {
+                    this.fail("\\N{...} escapes are not supported")
+                    return
+                }
+                ; an unknown escape keeps its backslash
+                push out 92
+                push out c2
+                continue
+            }
+            push out c
+            pos = pos + 1
+        }
+        def t (new PyToken)
+        if fmt {
+            t.kind = PyTok.FStr
+        } {
+            t.kind = PyTok.Str
+        }
+        t.text = (py_codes_to_str out 0 (array_length out))
+        t.line = startLine
+        t.bytes = isBytes
+        push toks t
+    }
+
+    fn scanOp:void () {
+        def c:int (this.ch(0))
+        def three:string (this.text(pos (this.minN((pos + 3)))))
+        def two:string (this.text(pos (this.minN((pos + 2)))))
+        def one:string (py_chr c)
+        if ((three == "**=") || (three == "//=") || (three == ">>=") || (three == "<<=") || (three == "...")) {
+            pos = pos + 3
+            this.add(PyTok.Op three)
+            return
+        }
+        if ((two == "**") || (two == "//") || (two == "==") || (two == "!=") || (two == "<=") || (two == ">=") || (two == "<<") || (two == ">>") || (two == "+=") || (two == "-=") || (two == "*=") || (two == "/=") || (two == "%=") || (two == "&=") || (two == "|=") || (two == "^=") || (two == "@=") || (two == "->") || (two == ":=")) {
+            pos = pos + 2
+            this.add(PyTok.Op two)
+            return
+        }
+        if ((c == 40) || (c == 91) || (c == 123)) {
+            depth = depth + 1
+        }
+        if ((c == 41) || (c == 93) || (c == 125)) {
+            if (depth > 0) {
+                depth = depth - 1
+            }
+        }
+        def ops:string "+-*/%@&|^~<>()[]{},:.;=!"
+        if ((indexOf ops one) >= 0) {
+            pos = pos + 1
+            this.add(PyTok.Op one)
+            return
+        }
+        this.fail(("invalid character '" + one + "' in the source"))
+    }
+
+    fn minN:int (p:int) {
+        if (p > n) {
+            return n
+        }
+        return p
+    }
+}

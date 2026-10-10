@@ -1,0 +1,128 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyAst.rgr — the tokens and the syntax tree of the Python runtime.
+;
+; One node class for every statement and expression: `kind` says which, and
+; the fields below are used as each kind's comment says. A tagged node keeps
+; the tree walk a switch and the same on every target.
+; ============================================================================
+
+Enum PyTok:int (
+    Name
+    Int
+    Float
+    Str
+    FStr
+    Op
+    Newline
+    Indent
+    Dedent
+    EOF
+)
+
+class PyToken {
+    def kind:PyTok PyTok.EOF
+    ; the name, the operator, a string's decoded value, a number's text
+    def text:string ""
+    def line:int 0
+    ; Str: a bytes literal (b"…")
+    def bytes:boolean false
+}
+
+Enum PyK:int (
+    ; ---- expressions
+    Name        ; s
+    IntLit      ; i (and s: the literal's text)
+    FloatLit    ; d
+    StrLit      ; s
+    FStr        ; kids: StrLit and FmtPart
+    FmtPart     ; k1 expression, s conversion ("", "r", "s", "a"), k2 spec (FStr) or none, i 1 for "{x=}"
+    TrueLit
+    FalseLit
+    NoneLit
+    Ellipsis
+    Tuple       ; kids
+    List        ; kids
+    Set         ; kids
+    Dict        ; kids: key value key value …; a DictSpread key with none value for **d
+    DictSpread  ; k1
+    BinOp       ; s op, k1 k2
+    Unary       ; s op ("-", "+", "~"), k1
+    Not         ; k1
+    And         ; k1 k2
+    Or          ; k1 k2
+    Compare     ; kids operands, strs ops ("<", "in", "not in", "is", "is not", …)
+    IfExp       ; k1 body, k2 test, k3 orelse
+    Lambda      ; kids params, k1 body
+    Call        ; k1 function, kids args (Keyword, Starred, StarStar, or expressions)
+    Keyword     ; s name, k1 value
+    Starred     ; k1
+    StarStar    ; k1
+    Attr        ; k1 object, s name
+    Subscript   ; k1 object, k2 index
+    Slice       ; k1 k2 k3 (any may be none)
+    ListComp    ; k1 element, kids clauses
+    SetComp     ; k1 element, kids clauses
+    GenExp      ; k1 element, kids clauses
+    DictComp    ; k1 key, k2 value, kids clauses
+    CompFor     ; k1 target, k2 iterable
+    CompIf      ; k1 condition
+    Walrus      ; s name, k1 value
+    Yield       ; k1 value (or none)
+    YieldFrom   ; k1
+    Param       ; s name, k1 default (or none), i 0 plain, 1 *args, 2 **kwargs, 3 bare * marker, 4 / marker
+    ; ---- statements
+    ExprStmt    ; k1
+    Assign      ; kids targets, k1 value
+    AugAssign   ; s op ("+", …), k1 target, k2 value
+    AnnAssign   ; k1 target, k2 value (or none)
+    If          ; k1 test, body, orelse
+    While       ; k1 test, body, orelse
+    For         ; k1 target, k2 iterable, body, orelse
+    Break
+    Continue
+    Pass
+    Return      ; k1 (or none)
+    Def         ; s name, kids params, body, decos, i 1 when it yields
+    Class       ; s name, kids bases (and Keyword for metaclass=…, ignored), body, decos
+    Try         ; body, handlers (Handler), orelse, final
+    Handler     ; k1 type (or none), s name (or ""), body
+    Raise       ; k1 (or none), k2 cause (or none)
+    Import      ; strs module names, names aliases ("" for none)
+    FromImport  ; s module, strs names ("*" for all), names aliases
+    Global      ; strs
+    Nonlocal    ; strs
+    Assert      ; k1, k2 message (or none)
+    Del         ; kids targets
+    With        ; kids WithItem, body
+    WithItem    ; k1 context, k2 target (or none)
+    Module      ; body
+)
+
+class PyNode {
+    def kind:PyK PyK.Pass
+    def line:int 0
+    def s:string ""
+    def i:int 0
+    def d:double 0.0
+    def k1@(optional):PyNode
+    def k2@(optional):PyNode
+    def k3@(optional):PyNode
+    def kids:[PyNode]
+    def strs:[string]
+    def names:[string]
+    def body:[PyNode]
+    def orelse:[PyNode]
+    def final:[PyNode]
+    def handlers:[PyNode]
+    def decos:[PyNode]
+    ; Def / Lambda: the local names (assigned in the body), worked out once
+    def locals:[string:boolean]
+    def localsKnown:boolean false
+
+    Constructor (k:PyK ln:int) {
+        kind = k
+        line = ln
+    }
+}

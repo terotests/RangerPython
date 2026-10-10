@@ -1,0 +1,284 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyFs.rgr — the virtual filesystem a script's open(), os and os.path see.
+;
+; Files are text kept in memory by absolute POSIX path ("/data/sales.csv").
+; Nothing here touches the host's disk: a host fills the store before a run
+; (`put`) and reads back what the script wrote (`changed`, `get`) after it.
+; That is how a Sliqtly deck's files reach a script and the SVG it writes
+; reaches the deck (js/sliqtly.mjs), and how the command line maps a folder
+; (js/cli.mjs).
+;
+; Reads are synchronous, so a host whose storage is asynchronous (IndexedDB)
+; loads first and writes back after; a host with synchronous storage can
+; extend the class and override read / write / remove.
+;
+; Directories exist when made (mkdirs) or when a file is below them; writing
+; a file makes its parent directories, so open("/tmp/x.svg", "w") works in an
+; empty store.
+; ============================================================================
+
+Import "PyOps.rgr"
+
+class PyFileSystem {
+    def files:[string:string]
+    def dirs:[string:boolean]
+    ; paths written or removed during the run, each once, in order
+    def changed:[string]
+    def changedSet:[string:boolean]
+    ; the files the host put in (removedFiles reports these)
+    def hostFiles:[string:boolean]
+    def cwd:string "/"
+
+    Constructor () {
+        set dirs "/" true
+        set dirs "/tmp" true
+    }
+
+    ; an absolute path with . and .. resolved and no trailing slash
+    fn normalize:string (path:string) {
+        def p:string path
+        if ((startsWith p "/") == false) {
+            if (cwd == "/") {
+                p = "/" + p
+            } {
+                p = cwd + "/" + p
+            }
+        }
+        def parts:[string] (strsplit p "/")
+        def out:[string]
+        for parts part:string i {
+            if (((strlen part) == 0) || (part == ".")) {
+                continue
+            }
+            if (part == "..") {
+                if ((array_length out) > 0) {
+                    removeLast out
+                }
+                continue
+            }
+            push out part
+        }
+        return ("/" + (join out "/"))
+    }
+
+    fn parentOf:string (abs:string) {
+        def i:int (lastIndexOf abs "/")
+        if (i <= 0) {
+            return "/"
+        }
+        return (substring abs 0 i)
+    }
+
+    fn markChanged:void (abs:string) {
+        if ((has changedSet abs) == false) {
+            set changedSet abs true
+            push changed abs
+        }
+    }
+
+    fn isFile:boolean (path:string) {
+        return (has files (this.normalize(path)))
+    }
+
+    fn isDir:boolean (path:string) {
+        def abs:string (this.normalize(path))
+        if (has dirs abs) {
+            return true
+        }
+        ; a folder that only exists because a file is below it
+        def prefix:string (abs + "/")
+        if (abs == "/") {
+            return true
+        }
+        def ks:[string] (keys files)
+        for ks k:string i {
+            if (startsWith k prefix) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn exists:boolean (path:string) {
+        if (this.isFile(path)) {
+            return true
+        }
+        return (this.isDir(path))
+    }
+
+    ; the text of a file, or none
+    fn read@(optional):string (path:string) {
+        def abs:string (this.normalize(path))
+        return (get files abs)
+    }
+
+    fn mkdirs:void (path:string) {
+        def abs:string (this.normalize(path))
+        while ((abs != "/") && ((has dirs abs) == false)) {
+            set dirs abs true
+            abs = (this.parentOf(abs))
+        }
+    }
+
+    fn write:void (path:string text:string) {
+        def abs:string (this.normalize(path))
+        this.mkdirs((this.parentOf(abs)))
+        set files abs text
+        this.markChanged(abs)
+    }
+
+    fn append:void (path:string text:string) {
+        def abs:string (this.normalize(path))
+        def old:string ""
+        if (has files abs) {
+            old = (unwrap (get files abs))
+        }
+        this.write(abs (old + text))
+    }
+
+    fn remove:boolean (path:string) {
+        def abs:string (this.normalize(path))
+        if (has files abs) {
+            py_map_del files abs
+            this.markChanged(abs)
+            return true
+        }
+        return false
+    }
+
+    fn removeDir:boolean (path:string) {
+        def abs:string (this.normalize(path))
+        if ((has dirs abs) == false) {
+            return false
+        }
+        def kids:[string] (this.listDir(abs))
+        if ((array_length kids) > 0) {
+            return false
+        }
+        py_map_del dirs abs
+        return true
+    }
+
+    ; the names directly inside a folder, sorted
+    fn listDir:[string] (path:string) {
+        def abs:string (this.normalize(path))
+        def prefix:string (abs + "/")
+        if (abs == "/") {
+            prefix = "/"
+        }
+        def seen:[string:boolean]
+        def out:[string]
+        def all:[string]
+        def fk:[string] (keys files)
+        for fk f:string i {
+            push all f
+        }
+        def dk:[string] (keys dirs)
+        for dk d:string j {
+            push all d
+        }
+        for all a:string k {
+            if ((startsWith a prefix) && (a != abs)) {
+                def rest:string (substring a (strlen prefix) (strlen a))
+                def cut:int (indexOf rest "/")
+                if (cut >= 0) {
+                    rest = (substring rest 0 cut)
+                }
+                if (((strlen rest) > 0) && ((has seen rest) == false)) {
+                    set seen rest true
+                    push out rest
+                }
+            }
+        }
+        return (PyFileSystem.sortStrings(out))
+    }
+
+    ; every file, sorted
+    fn allFiles:[string] () {
+        def ks:[string] (keys files)
+        return (PyFileSystem.sortStrings(ks))
+    }
+
+    ; a host's own put: no change is recorded
+    fn put:void (path:string text:string) {
+        def abs:string (this.normalize(path))
+        this.mkdirs((this.parentOf(abs)))
+        set files abs text
+        set hostFiles abs true
+    }
+
+    fn get@(optional):string (path:string) {
+        return (this.read(path))
+    }
+
+    ; the files written since clearChanges that still exist, in the order
+    ; first written
+    fn changedFiles:[string] () {
+        def out:[string]
+        for changed p:string i {
+            if (has files p) {
+                push out p
+            }
+        }
+        return out
+    }
+
+    ; the host's files the script deleted
+    fn removedFiles:[string] () {
+        def out:[string]
+        for changed p:string i {
+            if ((has hostFiles p) && ((has files p) == false)) {
+                push out p
+            }
+        }
+        return out
+    }
+
+    fn clearChanges:void () {
+        def e:[string]
+        changed = e
+        def m:[string:boolean]
+        changedSet = m
+    }
+
+    ; code point order, the same on every target
+    sfn lessStr:boolean (a:string b:string) {
+        def ca:[int] (to_chars a)
+        def cb:[int] (to_chars b)
+        def na:int (array_length ca)
+        def nb:int (array_length cb)
+        def i:int 0
+        while ((i < na) && (i < nb)) {
+            def x:int (itemAt ca i)
+            def y:int (itemAt cb i)
+            if (x != y) {
+                return (x < y)
+            }
+            i = i + 1
+        }
+        return (na < nb)
+    }
+
+    sfn sortStrings:[string] (xs:[string]) {
+        def out:[string]
+        for xs x:string i {
+            push out x
+        }
+        ; insertion sort: folder listings are short
+        def n:int (array_length out)
+        def k:int 1
+        while (k < n) {
+            def v:string (itemAt out k)
+            def j:int (k - 1)
+            while ((j >= 0) && (PyFileSystem.lessStr(v (itemAt out j)))) {
+                set_at out (j + 1) (itemAt out j)
+                j = j - 1
+            }
+            set_at out (j + 1) v
+            k = k + 1
+        }
+        return out
+    }
+}

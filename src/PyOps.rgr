@@ -1,0 +1,354 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyOps.rgr — the host operations the Python runtime needs that Ranger's own
+; operator table does not have, or has with a meaning that differs between
+; targets (floor returns an int, strfromcode is a UTF-16 unit on JavaScript).
+;
+; Targets: es6 (Node and the browser), go and python. Each operator answers
+; the same on all three; tests/run.mjs checks the suite on each.
+; ============================================================================
+
+operators {
+    ; raise: unwinds to the nearest Ranger `try`. The Python exception itself
+    ; is kept in PyInterp.excValue; the message is only for a host that sees
+    ; the unwinding without the interpreter around it.
+    py_raise _:void (msg:string) {
+        templates {
+            es6 ( "throw new Error(" (e 1) ")" )
+            go ( "panic(" (e 1) ")" )
+            python ( "raise Exception(" (e 1) ")" )
+        }
+    }
+    py_pow _:double (a:double b:double) {
+        templates {
+            es6 ( "Math.pow(" (e 1) ", " (e 2) ")" )
+            go ( "math.Pow(" (e 1) ", " (e 2) ")" (imp "math") )
+            python ( "py_rt_pow(" (e 1) ", " (e 2) ")" (imp "math")
+(create_polyfill "
+def py_rt_pow(a, b):
+    try:
+        return math.pow(a, b)
+    except OverflowError:
+        return math.inf
+    except ValueError:
+        return math.nan
+") )
+        }
+    }
+    py_exp _:double (a:double) {
+        templates {
+            es6 ( "Math.exp(" (e 1) ")" )
+            go ( "math.Exp(" (e 1) ")" (imp "math") )
+            python ( "py_rt_exp(" (e 1) ")" (imp "math")
+(create_polyfill "
+def py_rt_exp(a):
+    try:
+        return math.exp(a)
+    except OverflowError:
+        return math.inf
+") )
+        }
+    }
+    py_log _:double (a:double) {
+        templates {
+            es6 ( "Math.log(" (e 1) ")" )
+            go ( "math.Log(" (e 1) ")" (imp "math") )
+            python ( "py_rt_log(" (e 1) ")" (imp "math")
+(create_polyfill "
+def py_rt_log(a):
+    if a > 0:
+        return math.log(a)
+    return -math.inf if a == 0 else math.nan
+") )
+        }
+    }
+    py_log10 _:double (a:double) {
+        templates {
+            es6 ( "Math.log10(" (e 1) ")" )
+            go ( "math.Log10(" (e 1) ")" (imp "math") )
+            python ( "py_rt_log10(" (e 1) ")" (imp "math")
+(create_polyfill "
+def py_rt_log10(a):
+    if a > 0:
+        return math.log10(a)
+    return -math.inf if a == 0 else math.nan
+") )
+        }
+    }
+    py_log2 _:double (a:double) {
+        templates {
+            es6 ( "Math.log2(" (e 1) ")" )
+            go ( "math.Log2(" (e 1) ")" (imp "math") )
+            python ( "py_rt_log2(" (e 1) ")" (imp "math")
+(create_polyfill "
+def py_rt_log2(a):
+    if a > 0:
+        return math.log2(a)
+    return -math.inf if a == 0 else math.nan
+") )
+        }
+    }
+    py_sin _:double (a:double) {
+        templates {
+            es6 ( "Math.sin(" (e 1) ")" )
+            go ( "math.Sin(" (e 1) ")" (imp "math") )
+            python ( "math.sin(" (e 1) ")" (imp "math") )
+        }
+    }
+    py_cos _:double (a:double) {
+        templates {
+            es6 ( "Math.cos(" (e 1) ")" )
+            go ( "math.Cos(" (e 1) ")" (imp "math") )
+            python ( "math.cos(" (e 1) ")" (imp "math") )
+        }
+    }
+    py_tan _:double (a:double) {
+        templates {
+            es6 ( "Math.tan(" (e 1) ")" )
+            go ( "math.Tan(" (e 1) ")" (imp "math") )
+            python ( "math.tan(" (e 1) ")" (imp "math") )
+        }
+    }
+    py_asin _:double (a:double) {
+        templates {
+            es6 ( "Math.asin(" (e 1) ")" )
+            go ( "math.Asin(" (e 1) ")" (imp "math") )
+            python ( "math.asin(" (e 1) ")" (imp "math") )
+        }
+    }
+    py_acos _:double (a:double) {
+        templates {
+            es6 ( "Math.acos(" (e 1) ")" )
+            go ( "math.Acos(" (e 1) ")" (imp "math") )
+            python ( "math.acos(" (e 1) ")" (imp "math") )
+        }
+    }
+    py_atan _:double (a:double) {
+        templates {
+            es6 ( "Math.atan(" (e 1) ")" )
+            go ( "math.Atan(" (e 1) ")" (imp "math") )
+            python ( "math.atan(" (e 1) ")" (imp "math") )
+        }
+    }
+    py_atan2 _:double (a:double b:double) {
+        templates {
+            es6 ( "Math.atan2(" (e 1) ", " (e 2) ")" )
+            go ( "math.Atan2(" (e 1) ", " (e 2) ")" (imp "math") )
+            python ( "math.atan2(" (e 1) ", " (e 2) ")" (imp "math") )
+        }
+    }
+    py_sqrt _:double (a:double) {
+        templates {
+            es6 ( "Math.sqrt(" (e 1) ")" )
+            go ( "math.Sqrt(" (e 1) ")" (imp "math") )
+            python ( "py_rt_sqrt(" (e 1) ")" (imp "math")
+(create_polyfill "
+def py_rt_sqrt(a):
+    if a >= 0:
+        return math.sqrt(a)
+    return math.nan
+") )
+        }
+    }
+    py_floor _:double (a:double) {
+        templates {
+            es6 ( "Math.floor(" (e 1) ")" )
+            go ( "math.Floor(" (e 1) ")" (imp "math") )
+            python ( "py_rt_floor(" (e 1) ")" (imp "math")
+(create_polyfill "
+def py_rt_floor(a):
+    if a != a or a in (math.inf, -math.inf):
+        return a
+    return float(math.floor(a))
+") )
+        }
+    }
+    py_ceil _:double (a:double) {
+        templates {
+            es6 ( "Math.ceil(" (e 1) ")" )
+            go ( "math.Ceil(" (e 1) ")" (imp "math") )
+            python ( "py_rt_ceil(" (e 1) ")" (imp "math")
+(create_polyfill "
+def py_rt_ceil(a):
+    if a != a or a in (math.inf, -math.inf):
+        return a
+    return float(math.ceil(a))
+") )
+        }
+    }
+    py_isnan _:boolean (a:double) {
+        templates {
+            es6 ( "Number.isNaN(" (e 1) ")" )
+            go ( "math.IsNaN(" (e 1) ")" (imp "math") )
+            python ( "math.isnan(" (e 1) ")" (imp "math") )
+        }
+    }
+    py_isinf _:boolean (a:double) {
+        templates {
+            es6 ( "(Math.abs(" (e 1) ") === Infinity)" )
+            go ( "math.IsInf(" (e 1) ", 0)" (imp "math") )
+            python ( "math.isinf(" (e 1) ")" (imp "math") )
+        }
+    }
+    py_inf _:double () {
+        templates {
+            es6 ( "Infinity" )
+            go ( "math.Inf(1)" (imp "math") )
+            python ( "math.inf" (imp "math") )
+        }
+    }
+    py_nan _:double () {
+        templates {
+            es6 ( "NaN" )
+            go ( "math.NaN()" (imp "math") )
+            python ( "math.nan" (imp "math") )
+        }
+    }
+    ; int -> double, the same on every target
+    py_i2d _:double (a:int) {
+        templates {
+            es6 ( "(" (e 1) ")" )
+            go ( "float64(" (e 1) ")" )
+            python ( "float(" (e 1) ")" )
+        }
+    }
+    ; double -> int toward zero (Python's int(x)); the caller checks the range
+    py_trunc _:int (a:double) {
+        templates {
+            es6 ( "Math.trunc(" (e 1) ")" )
+            go ( "int64(" (e 1) ")" )
+            python ( "int(" (e 1) ")" )
+        }
+    }
+    ; one code point as text
+    py_chr _:string (code:int) {
+        templates {
+            es6 ( "String.fromCodePoint(" (e 1) ")" )
+            go ( "string(rune(" (e 1) "))" )
+            python ( "chr(" (e 1) ")" )
+        }
+    }
+    ; code points [start, end) as text
+    py_codes_to_str _:string (cs:[int] start:int end:int) {
+        templates {
+            es6 ( "py_rt_codes(" (e 1) ", " (e 2) ", " (e 3) ")"
+(create_polyfill "
+function py_rt_codes(cs, s, e) {
+  let out = \"\";
+  for (let i = s; i < e; i += 4096) {
+    out += String.fromCodePoint.apply(null, cs.slice(i, Math.min(e, i + 4096)));
+  }
+  return out;
+}
+") )
+            go ( "py_rt_codes(" (e 1) ", " (e 2) ", " (e 3) ")" (imp "strings")
+(create_polyfill "
+func py_rt_codes(cs []int64, s int64, e int64) string {
+	var b strings.Builder
+	for i := s; i < e; i++ {
+		b.WriteRune(rune(cs[i]))
+	}
+	return b.String()
+}
+") )
+            python ( "\"\".join(map(chr, " (e 1) "[" (e 2) ":" (e 3) "]))" )
+        }
+    }
+    ; the shortest text that reads back as the same double, in whatever
+    ; notation the target writes; PyFormat.floatRepr rewrites it as Python does
+    py_float_digits _:string (a:double) {
+        templates {
+            es6 ( "String(" (e 1) ")" )
+            go ( "strconv.FormatFloat(" (e 1) ", 'e', -1, 64)" (imp "strconv") )
+            python ( "repr(" (e 1) ")" )
+        }
+    }
+    ; parse a float literal (already checked to be one); NaN if not
+    py_parse_float _:double (s:string) {
+        templates {
+            es6 ( "Number(" (e 1) ")" )
+            go ( "py_rt_parse_float(" (e 1) ")" (imp "strconv") (imp "math")
+(create_polyfill "
+func py_rt_parse_float(s string) float64 {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
+			return v
+		}
+		return math.NaN()
+	}
+	return v
+}
+") )
+            python ( "py_rt_parse_float(" (e 1) ")"
+(create_polyfill "
+def py_rt_parse_float(s):
+    try:
+        return float(s)
+    except ValueError:
+        return float('nan')
+") )
+        }
+    }
+    ; milliseconds since the epoch
+    py_now_ms _:double () {
+        templates {
+            es6 ( "Date.now()" )
+            go ( "float64(time.Now().UnixNano()) / 1e6" (imp "time") )
+            python ( "(time.time() * 1000.0)" (imp "time") )
+        }
+    }
+    ; unsigned 32-bit bit operations (random's Mersenne Twister)
+    py_xor32 _:int (a:int b:int) {
+        templates {
+            es6 ( "((" (e 1) " ^ " (e 2) ") >>> 0)" )
+            go ( "int64(uint32(" (e 1) ") ^ uint32(" (e 2) "))" )
+            python ( "((" (e 1) " ^ " (e 2) ") & 0xffffffff)" )
+        }
+    }
+    py_and32 _:int (a:int b:int) {
+        templates {
+            es6 ( "((" (e 1) " & " (e 2) ") >>> 0)" )
+            go ( "int64(uint32(" (e 1) ") & uint32(" (e 2) "))" )
+            python ( "((" (e 1) " & " (e 2) ") & 0xffffffff)" )
+        }
+    }
+    py_or32 _:int (a:int b:int) {
+        templates {
+            es6 ( "((" (e 1) " | " (e 2) ") >>> 0)" )
+            go ( "int64(uint32(" (e 1) ") | uint32(" (e 2) "))" )
+            python ( "((" (e 1) " | " (e 2) ") & 0xffffffff)" )
+        }
+    }
+    py_shr32 _:int (a:int n:int) {
+        templates {
+            es6 ( "(" (e 1) " >>> " (e 2) ")" )
+            go ( "int64(uint32(" (e 1) ") >> uint(" (e 2) "))" )
+            python ( "((" (e 1) " & 0xffffffff) >> " (e 2) ")" )
+        }
+    }
+    py_shl32 _:int (a:int n:int) {
+        templates {
+            es6 ( "((" (e 1) " << " (e 2) ") >>> 0)" )
+            go ( "int64(uint32(" (e 1) ") << uint(" (e 2) "))" )
+            python ( "((" (e 1) " << " (e 2) ") & 0xffffffff)" )
+        }
+    }
+    ; drop a key from a map (Ranger has no map delete)
+    py_map_del _:void (m@(mutates):[K:T] key:K) {
+        templates {
+            es6 ( "delete " (e 1) "[" (e 2) "]" )
+            go ( "delete(" (e 1) ", " (e 2) ")" )
+            python ( (e 1) ".pop(" (e 2) ", None)" )
+        }
+    }
+    ; host setup before a run: Python-built runtimes need a deeper stack
+    py_host_setup _:void () {
+        templates {
+            es6 ( "" )
+            go ( "" )
+            python ( "sys.setrecursionlimit(200000)" (imp "sys") )
+        }
+    }
+}

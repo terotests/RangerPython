@@ -1,0 +1,55 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyMain.rgr — command line runner for the Go and Python builds (Node uses
+; js/cli.mjs):  pyrun script.py [outdir]
+; Prints the script's output; the files it wrote are saved under outdir.
+; ============================================================================
+
+Import "PyRuntime.rgr"
+
+class PyMain {
+    sfn m@(main):void () {
+        if ((shell_arg_cnt) < 1) {
+            print "usage: pyrun script.py [outdir]"
+            return
+        }
+        def script:string (shell_arg 0)
+        def dir:string "."
+        def base:string script
+        def slash:int (lastIndexOf script "/")
+        if (slash >= 0) {
+            dir = (substring script 0 slash)
+            base = (substring script (slash + 1) (strlen script))
+            if ((strlen dir) == 0) {
+                dir = "/"
+            }
+        }
+        def src@(optional):string (read_file_sync dir base)
+        if (null? src) {
+            print ("cannot read " + script)
+            return
+        }
+        py_host_setup
+        def rt (new PyRuntime)
+        rt.addArg(script)
+        def ok:boolean (rt.run((unwrap src)))
+        if ((strlen rt.stdout) > 0) {
+            def out:string rt.stdout
+            if (endsWith out "\n") {
+                out = (substring out 0 ((strlen out) - 1))
+            }
+            print out
+        }
+        if (ok == false) {
+            print rt.traceback
+        }
+        if ((shell_arg_cnt) > 1) {
+            def outdir:string (shell_arg 1)
+            for (rt.changedFiles()) p:string i {
+                def name:string (replace (substring p 1 (strlen p)) "/" "__")
+                write_file outdir name (rt.readFile(p))
+            }
+        }
+    }
+}

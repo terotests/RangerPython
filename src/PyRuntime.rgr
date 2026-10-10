@@ -1,0 +1,155 @@
+; SPDX-License-Identifier: MIT
+
+; ============================================================================
+; PyRuntime.rgr — the public face of the runtime.
+;
+;   def rt (new PyRuntime)
+;   rt.writeFile("/data/in.csv" text)      ; host puts files in
+;   def ok:boolean (rt.run(source))
+;   rt.stdout  rt.error  rt.errorType  rt.errorLine
+;   rt.changedFiles()                      ; paths the script wrote
+;   rt.removedFiles()                      ; host files it deleted
+;   rt.readFile(path)                      ; and their contents
+;
+; The filesystem is in memory and synchronous; a host with an async store
+; (Sliqtly's IndexedDB) loads the files the script may read before run and
+; writes back changedFiles after it.
+; ============================================================================
+
+Import "PyInterp.rgr"
+
+class PyRuntime {
+    def fs:PyFileSystem (new PyFileSystem)
+    def stdout:string ""
+    def error:string ""
+    def errorType:string ""
+    def errorLine:int 0
+    ; CPython-style report of an uncaught exception, last line = error
+    def traceback:string ""
+    def maxSteps:int 0
+    def echo:boolean false
+    def argv:[string]
+
+    Constructor () {
+        fs = (new PyFileSystem)
+    }
+
+    fn writeFile:void (path:string text:string) {
+        fs.put(path text)
+    }
+
+    fn readFile:string (path:string) {
+        def t@(optional):string (fs.get(path))
+        if (null? t) {
+            return ""
+        }
+        return (unwrap t)
+    }
+
+    fn hasFile:boolean (path:string) {
+        return (fs.isFile(path))
+    }
+
+    fn listFiles:[string] () {
+        return (fs.allFiles())
+    }
+
+    fn changedFiles:[string] () {
+        return (fs.changedFiles())
+    }
+
+    fn removedFiles:[string] () {
+        return (fs.removedFiles())
+    }
+
+    fn clearChanges:void () {
+        fs.clearChanges()
+    }
+
+    fn setCwd:void (path:string) {
+        fs.mkdirs(path)
+        fs.cwd = (fs.normalize(path))
+    }
+
+    fn addArg:void (a:string) {
+        push argv a
+    }
+
+    ; runs a script; false when it raised (error, errorType, errorLine say what)
+    fn run:boolean (code:string) {
+        stdout = ""
+        error = ""
+        errorType = ""
+        errorLine = 0
+        traceback = ""
+        def ps (new PyParser)
+        def tree@(optional):PyNode
+        try {
+            tree = (ps.parseModule(code))
+        } {
+            if ((strlen ps.err) == 0) {
+                ps.err = (error_msg)
+            }
+        }
+        if ((strlen ps.err) > 0) {
+            errorType = "SyntaxError"
+            error = ("SyntaxError: " + ps.err)
+            errorLine = ps.errLine
+            traceback = ("  File \"<script>\", line " + (to_string errorLine) + "\n" + error)
+            return false
+        }
+        def ip (new PyInterp(fs))
+        ip.maxSteps = maxSteps
+        ip.echo = echo
+        ip.argv = argv
+        def ok:boolean true
+        try {
+            ip.runTree((unwrap tree))
+        } {
+            def ex:PyVal (ip.takeException((error_msg)))
+            def cname:string "Exception"
+            if (!null? ex.cls) {
+                def c:PyVal (unwrap ex.cls)
+                cname = c.s
+            }
+            ok = false
+            if (cname == "SystemExit") {
+                ; exit(0) / exit() / sys.exit(None) are a normal end
+                def args:PyVal (ip.excArgs(ex))
+                if ((array_length args.items) == 0) {
+                    ok = true
+                } {
+                    def code0:PyVal (itemAt args.items 0)
+                    if ((code0.t == PyT.None) || ((code0.t == PyT.Int) && (code0.i == 0))) {
+                        ok = true
+                    } {
+                        if (code0.t != PyT.Int) {
+                            ip.writeOut(((ip.toStr(code0)) + "\n"))
+                        }
+                    }
+                }
+            }
+            if (ok == false) {
+                errorType = cname
+                error = (ip.excMessage(ex))
+                def lv@(optional):PyVal (get ex.attrs "__line__")
+                if (!null? lv) {
+                    def tv1:PyVal (unwrap lv)
+                    errorLine = tv1.i
+                }
+                def tv@(optional):PyVal (get ex.attrs "__trace__")
+                if (!null? tv) {
+                    def tv2:PyVal (unwrap tv)
+                    traceback = tv2.s
+                }
+                if ((strlen traceback) == 0) {
+                    traceback = "Traceback (most recent call last):"
+                }
+                traceback = (traceback + "\n" + error)
+            }
+        }
+        ip.flushEcho()
+        stdout = (ip.output())
+        return ok
+    }
+}
