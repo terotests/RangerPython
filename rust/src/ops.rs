@@ -774,16 +774,28 @@ impl Vm {
         }
         match &*name.s {
             "__name__" => {
-                if let Value::Str(s) = &v {
-                    *c.name.borrow_mut() = s.clone();
+                match &v {
+                    Value::Str(s) if s.s.contains('\0') => return Err(self.value_error("type name must not contain null characters")),
+                    Value::Str(s) => *c.name.borrow_mut() = s.clone(),
+                    other => {
+                        let tn = self.type_name(other);
+                        return Err(self.type_error(format!("can only assign string to {}.__name__, not '{}'", c.name(), tn)));
+                    }
                 }
                 return Ok(());
             }
             "__qualname__" => {
-                if let Value::Str(s) = &v {
-                    *c.qualname.borrow_mut() = s.clone();
+                match &v {
+                    Value::Str(s) => *c.qualname.borrow_mut() = s.clone(),
+                    other => {
+                        let tn = self.type_name(other);
+                        return Err(self.type_error(format!("can only assign string to {}.__qualname__, not '{}'", c.name(), tn)));
+                    }
                 }
                 return Ok(());
+            }
+            "__module__" => {
+                c.dict.borrow_mut().remove_str(&crate::builtins::ps("__firstlineno__"));
             }
             "__bases__" => {
                 let bs: Vec<Rc<Class>> = self.to_vec(&v)?.into_iter().filter_map(|b| if let Value::Class(c) = b { Some(c) } else { None }).collect();

@@ -550,6 +550,8 @@ pub fn install_types(vm: &mut Vm) {
     def(&sl, "slice.indices", slice_indices_m);
     def(&sl, "slice.__eq__", d_eq);
     def(&sl, "slice.__repr__", d_repr);
+    def(&sl, "slice.__hash__", slice_hash);
+    def(&sl, "slice.__reduce__", slice_reduce);
     let n = t.none.clone();
     def(&n, "NoneType.__new__", none_new);
     def(&n, "NoneType.__bool__", false_fn);
@@ -991,12 +993,37 @@ fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     }
     let meta = cls_arg(vm, &a[0], "type.__new__")?;
     let name = as_pystr(vm, &a[1], "type.__new__() argument 1")?;
+    if name.s.contains('\0') {
+        return Err(vm.value_error("type name must not contain null characters"));
+    }
+    if !matches!(vm.base_of(&a[2]), Value::Tuple(_)) {
+        let tn = vm.type_name(&a[2]);
+        return Err(vm.type_error(format!("type.__new__() argument 2 must be tuple, not {}", tn)));
+    }
     let bases_v = vm.to_vec(&a[2])?;
     let mut bases = vec![];
     for b in bases_v {
         match b {
             Value::Class(c) => bases.push(c),
             _ => return Err(vm.type_error("bases must be types")),
+        }
+    }
+    // the built-in layout each base carries; two unrelated ones conflict
+    let mut solid: Option<Rc<crate::value::Class>> = None;
+    for b in &bases {
+        if matches!(&*b.name(), "bool" | "NoneType" | "NotImplementedType" | "ellipsis" | "slice" | "range" | "function" | "builtin_function_or_method" | "method" | "generator" | "coroutine" | "code" | "frame" | "traceback" | "memoryview" | "mappingproxy")
+            && b.builtin.get() != Builtin::User
+        {
+            return Err(vm.type_error(format!("type '{}' is not an acceptable base type", b.name())));
+        }
+        let s = b.mro.borrow().iter().find(|m| !matches!(m.builtin.get(), Builtin::User | Builtin::Object)).cloned();
+        if let Some(s) = s {
+            match &solid {
+                None => solid = Some(s),
+                Some(cur) if cur.is_subclass(&s) => {}
+                Some(cur) if s.is_subclass(cur) => solid = Some(s),
+                Some(_) => return Err(vm.type_error("multiple bases have instance lay-out conflict")),
+            }
         }
     }
     // the most derived metaclass; one with its own __new__ makes the class
@@ -1030,10 +1057,26 @@ fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let ns = match &a[3] {
         Value::Dict(d) => d.clone(),
         other => match vm.base_of(other) {
-            Value::Dict(d) => d,
-            _ => return Err(vm.type_error("type.__new__() argument 3 must be dict")),
+            // a dict subclass is read through its own order (OrderedDict)
+            Value::Dict(_) => {
+                let d = Rc::new(RefCell::new(crate::value::Dict::new()));
+                for (key, v) in vm.mapping_items(other)? {
+                    vm.dict_set(&d, key, v)?;
+                }
+                d
+            }
+            _ => {
+                let tn = vm.type_name(other);
+                return Err(vm.type_error(format!("type.__new__() argument 3 must be dict, not {}", tn)));
+            }
         },
     };
+    if let Some(q) = ns.borrow().get_s("__qualname__") {
+        if !matches!(q, Value::Str(_)) {
+            let tn = vm.type_name(&q);
+            return Err(vm.type_error(format!("type __qualname__ must be a str, not {}", tn)));
+        }
+    }
     let cls = vm.type_new(&meta, &name.s, bases, &ns)?;
     if cls.dict.borrow().get_s("__module__").is_none() {
         let m = vm.current_frame().and_then(|f| f.globals.borrow().get_s("__name__")).unwrap_or(Value::str("__main__"));
@@ -2644,9 +2687,66 @@ fn slice_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Slice(Rc::new(s)))
 }
 
+fn slice_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let h = vm.hash(&a[0])?;
+    Ok(Value::Int(h as i64))
+}
+
+fn slice_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    match &a[0] {
+        Value::Slice(s) => Ok(Value::tuple(vec![Value::Class(vm.t.slice.clone()), Value::tuple(vec![s.0.clone(), s.1.clone(), s.2.clone()])])),
+        _ => Err(vm.type_error("descriptor '__reduce__' requires a 'slice' object")),
+    }
+}
+
+/// slice.indices with arbitrary-size integers (CPython's _PySlice_GetLongIndices)
+fn slice_indices_big(vm: &mut Vm, s: &(Value, Value, Value), length: BigInt) -> PyResult<Value> {
+    let zero = BigInt::zero();
+    let one = BigInt::from_i64(1);
+    let step = if s.2.is_none() { one.clone() } else { crate::mathmod::index_big(vm, &s.2)? };
+    if step.is_zero() {
+        return Err(vm.value_error("slice step cannot be zero"));
+    }
+    let back = step.neg;
+    let (lower, upper) = if back { (one.neg(), length.sub(&one)) } else { (zero.clone(), length.clone()) };
+    let clip = |vm: &mut Vm, v: &Value, dflt: &BigInt| -> PyResult<BigInt> {
+        if v.is_none() {
+            return Ok(dflt.clone());
+        }
+        let mut x = crate::mathmod::index_big(vm, v)?;
+        if x.neg {
+            x = x.add(&length);
+            if x.cmp(&lower) == std::cmp::Ordering::Less {
+                x = lower.clone();
+            }
+        } else if x.cmp(&upper) == std::cmp::Ordering::Greater {
+            x = upper.clone();
+        }
+        Ok(x)
+    };
+    let start = clip(vm, &s.0, if back { &upper } else { &lower })?;
+    let stop = clip(vm, &s.1, if back { &lower } else { &upper })?;
+    Ok(Value::tuple(vec![Value::from_big(start), Value::from_big(stop), Value::from_big(step)]))
+}
+
 fn slice_indices_m(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     margs(vm, "indices", a, 1, 1)?;
+    if let Value::Slice(s) = &a[0] {
+        for v in [&s.0, &s.1, &s.2] {
+            if !v.is_none() && !matches!(v, Value::Int(_) | Value::Big(_) | Value::Bool(_)) && vm.lookup_special(v, &vm.n.index.clone()).is_none() {
+                return Err(vm.type_error("slice indices must be integers or None or have an __index__ method"));
+            }
+        }
+        let n = crate::mathmod::index_big(vm, &a[1])?;
+        if n.neg {
+            return Err(vm.value_error("length should not be negative"));
+        }
+        let s = s.clone();
+        return slice_indices_big(vm, &s, n);
+    }
     let n = vm.to_index(&a[1])?;
     if n < 0 {
         return Err(vm.value_error("length should not be negative"));

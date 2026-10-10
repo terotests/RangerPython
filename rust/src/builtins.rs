@@ -1174,10 +1174,15 @@ pub fn class_special(vm: &mut Vm, c: &Rc<Class>, name: &str) -> PyResult<Option<
             let bs = c.bases.borrow();
             Value::tuple(bs.iter().map(|k| Value::Class(k.clone())).collect())
         }
-        "__base__" => match c.bases.borrow().first() {
-            Some(b) => Value::Class(b.clone()),
-            None => Value::None,
-        },
+        "__base__" => {
+            // the base carrying the built-in layout, else the first
+            let bs = c.bases.borrow();
+            let solid = bs.iter().find(|b| b.mro.borrow().iter().any(|m| !matches!(m.builtin.get(), Builtin::User | Builtin::Object)));
+            match solid.or(bs.first()) {
+                Some(b) => Value::Class(b.clone()),
+                None => Value::None,
+            }
+        }
         "__dict__" => crate::methods::mappingproxy(vm, Value::Dict(c.dict.clone())),
         "__module__" => Value::str("builtins"),
         "__doc__" => Value::None,
