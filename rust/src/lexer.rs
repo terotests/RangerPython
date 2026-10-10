@@ -40,6 +40,12 @@ pub struct Token {
     pub line: u32,
     /// 1-based column
     pub col: u32,
+    /// where the token ends: the line, and the 1-based column after it
+    pub end_line: u32,
+    pub end_col: u32,
+    /// the start and end columns as 0-based UTF-8 byte offsets, as the ast has them
+    pub bcol: u32,
+    pub end_bcol: u32,
 }
 
 pub struct LexError {
@@ -47,6 +53,8 @@ pub struct LexError {
     pub line: u32,
     /// 1-based column, 0 when unknown
     pub col: u32,
+    /// the column after the bad part, on the error's own line; 0 when only its start is known
+    pub end_col: u32,
 }
 
 /// a SyntaxWarning found while tokenizing or compiling
@@ -153,9 +161,13 @@ pub fn tokenize(src: &str) -> Vec<Token> {
         fstrs: vec![],
     };
     if let Err(e) = lx.run() {
-        lx.toks.push(Token { tok: Tok::Error(Rc::from(e.msg.as_str())), line: e.line, col: e.col });
-        lx.toks.push(Token { tok: Tok::Eof, line: e.line, col: e.col });
+        lx.push(Tok::Error(Rc::from(e.msg.as_str())), e.line, e.col);
+        if e.end_col > 0 {
+            lx.toks.last_mut().unwrap().end_col = e.end_col;
+        }
+        lx.push(Tok::Eof, e.line, e.col);
     }
+    lx.byte_columns();
     lx.toks
 }
 
@@ -165,11 +177,61 @@ impl Lexer {
     }
 
     fn err(&self, msg: &str) -> LexError {
-        LexError { msg: msg.to_string(), line: self.line, col: self.col() }
+        LexError { msg: msg.to_string(), line: self.line, col: self.col(), end_col: 0 }
+    }
+
+    /// an error whose offset is the character before index `at`, as CPython's
+    /// tokenizer reports one with the bad character put back
+    fn err_before(&self, msg: &str, at: usize) -> LexError {
+        LexError { msg: msg.to_string(), line: self.line, col: (at - self.line_start) as u32, end_col: 0 }
     }
 
     fn push(&mut self, tok: Tok, line: u32, col: u32) {
-        self.toks.push(Token { tok, line, col });
+        // set_ends gives the real end; a newline or the end is one character
+        let end_col = if matches!(tok, Tok::Newline | Tok::Eof) { col + 1 } else { col };
+        self.toks.push(Token { tok, line, col, end_line: line, end_col, bcol: 0, end_bcol: 0 });
+    }
+
+    /// sets each token's byte columns from its character columns
+    fn byte_columns(&mut self) {
+        if self.chars.iter().all(char::is_ascii) {
+            for t in &mut self.toks {
+                (t.bcol, t.end_bcol) = (t.col.saturating_sub(1), t.end_col.saturating_sub(1));
+            }
+            return;
+        }
+        // the byte offset of each character, and where each line starts
+        let mut offs = Vec::with_capacity(self.chars.len() + 1);
+        let mut starts = vec![0];
+        let mut b = 0u32;
+        for (i, c) in self.chars.iter().enumerate() {
+            offs.push(b);
+            b += c.len_utf8() as u32;
+            if *c == '\n' {
+                starts.push(i + 1);
+            }
+        }
+        offs.push(b);
+        let at = |line: u32, col: u32| {
+            let start = starts.get((line as usize).saturating_sub(1)).copied().unwrap_or(0);
+            let i = (start + (col as usize).saturating_sub(1)).min(offs.len() - 1);
+            offs[i] - offs[start.min(offs.len() - 1)]
+        };
+        for t in &mut self.toks {
+            (t.bcol, t.end_bcol) = (at(t.line, t.col), at(t.end_line, t.end_col));
+        }
+    }
+
+    /// Ends the tokens from `first` on, pushed by one step: each where the
+    /// next begins, the last where the step stopped.
+    fn set_ends(&mut self, first: usize) {
+        let (line, col) = (self.line, self.col());
+        for k in first..self.toks.len() {
+            let (l, c) = self.toks.get(k + 1).map_or((line, col), |t| (t.line, t.col));
+            let t = &mut self.toks[k];
+            // a newline, or the end, is one character wide on its own line
+            (t.end_line, t.end_col) = if matches!(t.tok, Tok::Newline | Tok::Eof) { (t.line, t.col + 1) } else { (l, c) };
+        }
     }
 
     /// steps over a newline at `i`
@@ -196,8 +258,10 @@ impl Lexer {
     fn run(&mut self) -> Result<(), LexError> {
         let n = self.chars.len();
         loop {
+            let first = self.toks.len();
             if self.in_fstring_text() {
                 self.fstring_text()?;
+                self.set_ends(first);
                 continue;
             }
             if self.i >= n {
@@ -210,9 +274,10 @@ impl Lexer {
                 continue;
             }
             self.token()?;
+            self.set_ends(first);
         }
         if let Some((o, l, c)) = self.opens.last() {
-            return Err(LexError { msg: format!("'{}' was never closed", o), line: *l, col: *c });
+            return Err(LexError { msg: format!("'{}' was never closed", o), line: *l, col: *c, end_col: 0 });
         }
         if let Some(t) = self.toks.last() {
             if t.tok != Tok::Newline && t.tok != Tok::Dedent {
@@ -291,7 +356,9 @@ impl Lexer {
                 self.push(Tok::Dedent, line, 1);
             }
             if col != *self.indents.last().unwrap() {
-                return Err(self.err("unindent does not match any outer indentation level"));
+                // CPython puts this one after the end of the line
+                let len = self.chars[self.line_start..].iter().take_while(|c| **c != '\n').count();
+                return Err(LexError { msg: "unindent does not match any outer indentation level".into(), line: self.line, col: len as u32 + 1, end_col: 0 });
             }
             if alt != *self.alts.last().unwrap_or(&0) {
                 return Err(self.err(tab_err));
@@ -362,7 +429,7 @@ impl Lexer {
             return self.string(false, false, false, line, col);
         }
         if c.is_ascii_digit() || (c == '.' && self.peek_at(1).is_ascii_digit()) {
-            let (t, ni) = read_number(&self.chars, self.i).map_err(|m| self.err(&m))?;
+            let (t, ni) = read_number(&self.chars, self.i).map_err(|(m, at)| self.err_before(&m, at))?;
             let kind = match (self.peek_at(1).to_ascii_lowercase(), &t) {
                 (_, Tok::Imag(_)) => "imaginary",
                 ('x', _) if c == '0' => "hexadecimal",
@@ -377,7 +444,7 @@ impl Lexer {
             if after("and") || after("else") || after("for") || after("if") || after("in") || after("is") || after("or") || after("not") {
                 push_warning(format!("invalid {} literal", kind), line, col);
             } else if self.i < n && (self.chars[self.i].is_ascii_alphanumeric() || self.chars[self.i] == '_') {
-                return Err(self.err(&format!("invalid {} literal", kind)));
+                return Err(self.err_before(&format!("invalid {} literal", kind), self.i));
             }
             return Ok(());
         }
@@ -470,7 +537,7 @@ impl Lexer {
         self.i += if triple { 3 } else { 1 };
         if f {
             if self.fstrs.len() >= MAX_FSTRINGS {
-                return Err(LexError { msg: "too many nested f-strings".into(), line, col });
+                return Err(LexError { msg: "too many nested f-strings".into(), line, col, end_col: 0 });
             }
             self.fstrs.push(FStr { quote: q, triple, raw, line, col, fields: vec![] });
             self.push(Tok::FStart, line, col);
@@ -482,12 +549,12 @@ impl Lexer {
                 // in a replacement field, the f-string's own quote means a missing '}'
                 if let Some(fs) = self.fstrs.last() {
                     if fs.quote == q && fs.triple == triple {
-                        return Err(LexError { msg: "f-string: expecting '}'".into(), line, col });
+                        return Err(LexError { msg: "f-string: expecting '}'".into(), line, col, end_col: 0 });
                     }
                 }
                 let msg = if triple { "unterminated triple-quoted string literal" } else { "unterminated string literal" };
                 let msg = format!("{} (detected at line {})", msg, self.line);
-                return Err(LexError { msg, line, col });
+                return Err(LexError { msg, line, col, end_col: 0 });
             }
             let c = self.chars[self.i];
             if c == '\\' && self.i + 1 < n {
@@ -511,7 +578,9 @@ impl Lexer {
         }
         if bytes {
             if body.chars().any(|c| !c.is_ascii()) {
-                return Err(LexError { msg: "bytes can only contain ASCII literal characters".into(), line, col });
+                // the whole literal, when it is on one line
+                let end_col = if self.line == line { self.col() } else { 0 };
+                return Err(LexError { msg: "bytes can only contain ASCII literal characters".into(), line, col, end_col });
             }
         }
         let s = if raw { body } else { self.decode(&body, bytes, line, col)? };
@@ -521,7 +590,7 @@ impl Lexer {
 
     /// decodes a literal's escapes, recording an invalid escape's warning
     fn decode(&self, body: &str, bytes: bool, line: u32, col: u32) -> Result<String, LexError> {
-        let (s, warn) = unescape(body, bytes).map_err(|msg| LexError { msg, line, col })?;
+        let (s, warn) = unescape(body, bytes).map_err(|msg| LexError { msg, line, col, end_col: 0 })?;
         if let Some(w) = warn {
             push_warning(w, line, col);
         }
@@ -552,7 +621,7 @@ impl Lexer {
         loop {
             if self.i >= n {
                 let msg = if triple { "unterminated triple-quoted f-string literal" } else { "unterminated f-string literal" };
-                return Err(LexError { msg: format!("{} (detected at line {})", msg, self.line), line: fline, col: fcol });
+                return Err(LexError { msg: format!("{} (detected at line {})", msg, self.line), line: fline, col: fcol, end_col: 0 });
             }
             let c = self.chars[self.i];
             if c == q && (!triple || (self.peek_at(1) == q && self.peek_at(2) == q)) {
@@ -572,7 +641,7 @@ impl Lexer {
             if c == '\n' {
                 if !triple {
                     let msg = format!("unterminated f-string literal (detected at line {})", self.line);
-                    return Err(LexError { msg, line: fline, col: fcol });
+                    return Err(LexError { msg, line: fline, col: fcol, end_col: 0 });
                 }
                 self.newline_at(self.i);
                 pending.push(c);
@@ -766,10 +835,14 @@ pub fn unescape(s: &str, bytes: bool) -> Result<(String, Option<String>), String
 }
 
 /// digit (['_'] digit)*, from i; the index after it
-fn digit_run(chars: &[char], mut i: usize, radix: u32, what: &str) -> Result<usize, String> {
+/// a bad number literal: the message, and the index CPython's tokenizer
+/// stands at, whose column is the error's offset
+type NumError = (String, usize);
+
+fn digit_run(chars: &[char], mut i: usize, radix: u32, what: &str) -> Result<usize, NumError> {
     let n = chars.len();
     if i >= n || !chars[i].is_digit(radix) {
-        return Err(format!("invalid {} literal", what));
+        return Err((format!("invalid {} literal", what), i));
     }
     while i < n {
         if chars[i].is_digit(radix) {
@@ -778,7 +851,7 @@ fn digit_run(chars: &[char], mut i: usize, radix: u32, what: &str) -> Result<usi
             if i + 1 < n && chars[i + 1].is_digit(radix) {
                 i += 1;
             } else {
-                return Err(format!("invalid {} literal", what));
+                return Err((format!("invalid {} literal", what), i + 1));
             }
         } else {
             break;
@@ -787,7 +860,7 @@ fn digit_run(chars: &[char], mut i: usize, radix: u32, what: &str) -> Result<usi
     Ok(i)
 }
 
-fn read_number(chars: &[char], start: usize) -> Result<(Tok, usize), String> {
+fn read_number(chars: &[char], start: usize) -> Result<(Tok, usize), NumError> {
     let n = chars.len();
     let mut i = start;
     if chars[i] == '0' && i + 1 < n && "xXoObB".contains(chars[i + 1]) {
@@ -801,15 +874,20 @@ fn read_number(chars: &[char], start: usize) -> Result<(Tok, usize), String> {
             i += 1;
         }
         let s0 = i;
+        // a decimal digit past the radix's own
+        let bad_digit = |i: usize| (format!("invalid digit '{}' in {} literal", chars[i], what), i + 1);
+        if i < n && radix < 10 && chars[i].is_ascii_digit() && !chars[i].is_digit(radix) {
+            return Err(bad_digit(i));
+        }
         i = digit_run(chars, i, radix, what)?;
         if i < n && chars[i].is_ascii_digit() {
-            return Err(format!("invalid digit '{}' in {} literal", chars[i], what));
+            return Err(bad_digit(i));
         }
         let digits: String = chars[s0..i].iter().filter(|c| **c != '_').collect();
         return match i64::from_str_radix(&digits, radix) {
             Ok(v) => Ok((Tok::Int(v), i)),
             Err(_) => {
-                let big = crate::bigint::BigInt::from_radix(&digits, radix).ok_or("invalid digit")?;
+                let big = crate::bigint::BigInt::from_radix(&digits, radix).ok_or(("invalid digit".to_string(), i))?;
                 Ok((Tok::BigInt(big.to_string()), i))
             }
         };
@@ -824,33 +902,35 @@ fn read_number(chars: &[char], start: usize) -> Result<(Tok, usize), String> {
         if i < n && chars[i].is_ascii_digit() {
             i = digit_run(chars, i, 10, "decimal")?;
         } else if i < n && chars[i] == '_' {
-            return Err("invalid decimal literal".into());
+            return Err(("invalid decimal literal".into(), i));
         }
     }
     if i < n && (chars[i] == 'e' || chars[i] == 'E') {
         let save = i;
         i += 1;
-        if i < n && (chars[i] == '+' || chars[i] == '-') {
+        let signed = i < n && (chars[i] == '+' || chars[i] == '-');
+        if signed {
             i += 1;
         }
         if i < n && chars[i].is_ascii_digit() {
             is_float = true;
             i = digit_run(chars, i, 10, "decimal")?;
-        } else if i < n && chars[i] == '_' {
-            return Err("invalid decimal literal".into());
+        } else if signed || (i < n && chars[i] == '_') {
+            // an exponent's sign must have digits after it
+            return Err(("invalid decimal literal".into(), i));
         } else {
             i = save;
         }
     }
     let text: String = chars[start..i].iter().filter(|c| **c != '_').collect();
     if i < n && (chars[i] == 'j' || chars[i] == 'J') {
-        return Ok((Tok::Imag(text.parse::<f64>().map_err(|_| "invalid number")?), i + 1));
+        return Ok((Tok::Imag(text.parse::<f64>().map_err(|_| ("invalid number".to_string(), i))?), i + 1));
     }
     if is_float {
-        Ok((Tok::Float(text.parse::<f64>().map_err(|_| "invalid number")?), i))
+        Ok((Tok::Float(text.parse::<f64>().map_err(|_| ("invalid number".to_string(), i))?), i))
     } else {
         if text.len() > 1 && text.starts_with('0') && text.chars().any(|c| c != '0') {
-            return Err("leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers".into());
+            return Err(("leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers".into(), start + 1));
         }
         match text.parse::<i64>() {
             Ok(v) => Ok((Tok::Int(v), i)),

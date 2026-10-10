@@ -92,7 +92,7 @@ impl Vm {
             }
             // SAFETY: see Vm::current_frame
             let f = unsafe { &*self.frames[i] };
-            let line = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(0);
+            let line = f.code.line_at(f.ip.saturating_sub(1)).unwrap_or(0);
             let back = if i > 0 { self.frame_objs[i - 1].clone() } else { Value::None };
             let back = if back.is_undef() { Value::None } else { back };
             let v = self.frame_obj(f, line);

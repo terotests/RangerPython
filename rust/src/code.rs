@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Bytecode: the instruction set and compiled code objects.
 
-use crate::ast::{BinOp, CmpOp, UnOp};
+use crate::ast::{BinOp, CmpOp, Pos, UnOp};
 use crate::value::{Name, PyStr, Value};
 use std::rc::Rc;
 
@@ -135,7 +135,8 @@ pub struct Code {
     /// for each cell var: the argument slot it starts from
     pub cell_from_arg: Vec<Option<u32>>,
     pub ops: Vec<Op>,
-    pub lines: Vec<u32>,
+    /// the source span of each instruction
+    pub positions: Vec<Pos>,
     pub consts: Vec<Value>,
     pub names: Vec<Rc<PyStr>>,
     pub doc: Value,
@@ -147,43 +148,64 @@ impl Code {
     pub fn ncells(&self) -> usize {
         self.cellvars.len() + self.freevars.len()
     }
+
+    /// the line of the instruction at `ip`
+    pub fn line_at(&self, ip: usize) -> Option<u32> {
+        self.positions.get(ip).map(|p| p.line)
+    }
 }
 
 // co_linetable in CPython's location table format, taking each op here as
 // one code unit; a line of 0 is "no location"
 
-/// entries of "line, no columns" (code 13) and "no location" (code 15)
+/// a position without columns, as the location table can say
+fn no_columns(p: &Pos) -> bool {
+    (p.col, p.end_line, p.end_col) == (0, p.line, 0)
+}
+
+/// entries of "no location" (code 15), "line, no columns" (code 13) and the
+/// long form (code 14)
 pub fn encode_linetable(c: &Code) -> Vec<u8> {
+    fn varint(out: &mut Vec<u8>, mut v: u64) {
+        while v >= 64 {
+            out.push(0x40 | (v & 63) as u8);
+            v >>= 6;
+        }
+        out.push(v as u8);
+    }
+    fn svarint(out: &mut Vec<u8>, d: i64) {
+        varint(out, if d < 0 { ((-d as u64) << 1) | 1 } else { (d as u64) << 1 });
+    }
     let mut out = vec![];
     let mut prev = c.firstline as i64;
     let mut i = 0;
-    while i < c.lines.len() {
-        let line = c.lines[i];
+    while i < c.positions.len() {
+        let p = c.positions[i];
         let mut n = 1;
-        while n < 8 && i + n < c.lines.len() && c.lines[i + n] == line {
+        while n < 8 && i + n < c.positions.len() && c.positions[i + n] == p {
             n += 1;
         }
-        if line == 0 {
+        if p.line == 0 {
             out.push(0x80 | (15 << 3) | (n as u8 - 1));
         } else {
-            out.push(0x80 | (13 << 3) | (n as u8 - 1));
-            let d = line as i64 - prev;
-            let mut v = if d < 0 { ((-d as u64) << 1) | 1 } else { (d as u64) << 1 };
-            while v >= 64 {
-                out.push(0x40 | (v & 63) as u8);
-                v >>= 6;
+            let code = if no_columns(&p) { 13 } else { 14 };
+            out.push(0x80 | (code << 3) | (n as u8 - 1));
+            svarint(&mut out, p.line as i64 - prev);
+            if code == 14 {
+                varint(&mut out, p.end_line.saturating_sub(p.line) as u64);
+                varint(&mut out, p.col as u64 + 1);
+                varint(&mut out, p.end_col as u64 + 1);
             }
-            out.push(v as u8);
-            prev = line as i64;
+            prev = p.line as i64;
         }
         i += n;
     }
     out
 }
 
-/// the line of each op from a location table; ops past its end have none
-pub fn decode_linetable(table: &[u8], firstline: u32, nops: usize) -> Vec<u32> {
-    let mut lines = Vec::with_capacity(nops);
+/// the position of each op from a location table; ops past its end have none
+pub fn decode_linetable(table: &[u8], firstline: u32, nops: usize) -> Vec<Pos> {
+    let mut positions = Vec::with_capacity(nops);
     let mut line = firstline as i64;
     let mut i = 0;
     let varint = |i: &mut usize| -> u64 {
@@ -203,37 +225,46 @@ pub fn decode_linetable(table: &[u8], firstline: u32, nops: usize) -> Vec<u32> {
         let v = varint(i);
         if v & 1 != 0 { -((v >> 1) as i64) } else { (v >> 1) as i64 }
     };
+    let byte = |i: &mut usize| -> u32 {
+        let b = table.get(*i).copied().unwrap_or(0);
+        *i += 1;
+        b as u32
+    };
     while i < table.len() {
         let b = table[i];
         i += 1;
         let (code, len) = ((b >> 3) & 15, (b & 7) as usize + 1);
+        let at = |line: i64| line.max(0) as u32;
         let here = match code {
-            15 => None,
+            15 => Pos::default(),
             13 => {
                 line += svarint(&mut i);
-                Some(line)
+                Pos { line: at(line), col: 0, end_line: at(line), end_col: 0 }
             }
             14 => {
                 line += svarint(&mut i);
-                for _ in 0..3 {
-                    varint(&mut i);
-                }
-                Some(line)
+                let end_line = at(line) + varint(&mut i) as u32;
+                // columns are stored plus one, 0 being "unknown"
+                let col = (varint(&mut i) as u32).saturating_sub(1);
+                let end_col = (varint(&mut i) as u32).saturating_sub(1);
+                Pos { line: at(line), col, end_line, end_col }
             }
             10..=12 => {
                 line += (code - 10) as i64;
-                i += 2;
-                Some(line)
+                let (col, end_col) = (byte(&mut i), byte(&mut i));
+                Pos { line: at(line), col, end_line: at(line), end_col }
             }
             _ => {
-                i += 1;
-                Some(line)
+                // the short form: a column in 0..80 and a width under 16
+                let b = byte(&mut i);
+                let col = code as u32 * 8 + (b >> 4);
+                Pos { line: at(line), col, end_line: at(line), end_col: col + (b & 15) }
             }
         };
         for _ in 0..len {
-            lines.push(here.map_or(0, |l| l.max(0) as u32));
+            positions.push(here);
         }
     }
-    lines.resize(nops, 0);
-    lines
+    positions.resize(nops, Pos::default());
+    positions
 }

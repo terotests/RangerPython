@@ -19,6 +19,7 @@ pub mod compile;
 pub mod format;
 pub mod fs;
 pub mod lexer;
+pub mod lower;
 pub mod mathmod;
 pub mod matching;
 pub mod methods;
@@ -26,6 +27,7 @@ pub mod modules;
 pub mod ops;
 pub mod parser;
 pub mod process;
+pub mod pyast;
 pub mod range;
 pub mod stdlib;
 pub mod strmethods;
@@ -257,5 +259,20 @@ fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
     };
     res.error = if msg.is_empty() { name } else { format!("{}: {}", name, msg) };
     lines.push(res.error.clone());
-    res.traceback = lines.join("\n");
+    res.traceback = python_traceback(vm, exc).unwrap_or_else(|| lines.join("\n"));
+}
+
+/// the traceback module's rendering of an uncaught exception, with source
+/// lines, carets and chained exceptions, as CPython prints it; None when the
+/// module cannot run, leaving the plain report
+fn python_traceback(vm: &mut vm::Vm, exc: &Value) -> Option<String> {
+    let m = vm.import_one("traceback").ok()?;
+    let f = vm.getattr(&m, &builtins::ps("format_exception")).ok()?;
+    let parts = vm.call_vec(&f, vec![exc.clone()], &[]).ok()?;
+    let parts = vm.to_vec(&parts).ok()?;
+    let mut text = String::new();
+    for p in &parts {
+        text.push_str(p.as_str()?);
+    }
+    Some(text.trim_end_matches('\n').to_string())
 }

@@ -682,7 +682,19 @@ impl Vm {
             Some(b) => self.map_get(b, name)?,
             None => self.builtins.borrow().get_str(name).cloned(),
         };
-        v.ok_or_else(|| self.name_error(name))
+        match v {
+            Some(v) => Ok(v),
+            None => self.unbound_name(name),
+        }
+    }
+
+    /// a name no namespace holds: the builtins made on first use, or a NameError
+    fn unbound_name(&mut self, name: &Rc<PyStr>) -> PyResult<Value> {
+        if &*name.s == "ExceptionGroup" || &*name.s == "BaseExceptionGroup" {
+            self.lazy_builtin(&name.s)
+        } else {
+            Err(self.name_error(name))
+        }
     }
 
     /// a builtin as the running frame sees it (its `__builtins__` mapping);
@@ -716,7 +728,7 @@ impl Vm {
             Some(l) => l,
             None => {
                 let ip = f.ip.saturating_sub(1);
-                f.code.lines.get(ip).copied().unwrap_or(0)
+                f.code.line_at(ip).unwrap_or(0)
             }
         };
         if !reraised {
@@ -726,7 +738,7 @@ impl Vm {
             let with_exit = matches!(f.code.ops.get(f.ip.saturating_sub(1)), Some(Op::WithExcept));
             if !with_exit && self.frames.last().map(|p| std::ptr::eq(*p as *const Frame, f)).unwrap_or(false) {
                 if let ObjKind::Frame { line: l, .. } = &mut *o.kind.borrow_mut() {
-                    *l = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(line);
+                    *l = f.code.line_at(f.ip.saturating_sub(1)).unwrap_or(line);
                 }
             }
         }
@@ -857,7 +869,7 @@ impl Vm {
                                     let bd = self.builtins.clone();
                                     match self.dict_get(&bd, &Value::Str(name.clone()))? {
                                         Some(v) => v,
-                                        None => return Err(self.name_error(name)),
+                                        None => self.unbound_name(name)?,
                                     }
                                 }
                             }
@@ -911,12 +923,8 @@ impl Vm {
                     match v {
                         Some(v) => f.stack.push(v),
                         None => {
-                            if &*name.s == "ExceptionGroup" || &*name.s == "BaseExceptionGroup" {
-                                let v = self.lazy_builtin(&name.s)?;
-                                f.stack.push(v);
-                            } else {
-                                return Err(self.name_error(name));
-                            }
+                            let v = self.unbound_name(name)?;
+                            f.stack.push(v);
                         }
                     }
                 }
@@ -3072,23 +3080,35 @@ impl Vm {
     /// SyntaxWarnings found go through the warnings machinery first; one
     /// that a filter turns into an error is raised as a SyntaxError.
     pub fn compile_source(&mut self, src: &str, file: &str, eval: bool) -> PyResult<Rc<Code>> {
-        self.compile_source_flags(src, file, eval, false)
+        self.from_source(src, file, || {
+            if eval {
+                crate::parser::parse_expression(src).map(|e| crate::compile::compile_eval(&e, file))
+            } else {
+                crate::parser::parse_module(src).map(|b| crate::compile::compile_module(b, file))
+            }
+        })
     }
 
-    /// compile_source with compile()'s PyCF_ALLOW_TOP_LEVEL_AWAIT
-    pub fn compile_source_flags(&mut self, src: &str, file: &str, eval: bool, top_await: bool) -> PyResult<Rc<Code>> {
+    /// Runs `f`, which parses `src` and maybe compiles it, raising its errors
+    /// as SyntaxError and emitting the SyntaxWarnings it records.
+    pub fn from_source<T>(
+        &mut self,
+        src: &str,
+        file: &str,
+        f: impl FnOnce() -> Result<Result<T, crate::compile::CompileError>, crate::parser::SyntaxError>,
+    ) -> PyResult<T> {
         crate::lexer::take_warnings();
-        let code = if eval {
-            crate::parser::parse_expression(src).map(|e| crate::compile::compile_eval_flags(&e, file, top_await))
-        } else {
-            crate::parser::parse_module(src).map(|b| crate::compile::compile_module_flags(&b, file, top_await))
-        };
+        let code = f();
         for w in crate::lexer::take_warnings() {
             self.syntax_warning(&w, src, file)?;
         }
         match code {
             Ok(Ok(c)) => Ok(c),
-            Ok(Err(e)) => Err(self.syntax_error(&e.msg, e.line, file)),
+            Ok(Err(e)) => {
+                let x = self.parse_error(&e.syntax_error(Some(src)), file);
+                set_error_text(&x, src, e.line);
+                Err(x)
+            }
             Err(e) => {
                 let x = self.parse_error(&e, file);
                 set_error_text(&x, src, e.line);
@@ -3105,7 +3125,7 @@ impl Vm {
         let args = vec![Value::str(&w.msg), cat, Value::str(file), Value::Int(w.line as i64)];
         match self.call_vec(&f, args, &[]) {
             Err(e) if self.exc_is(&e, "SyntaxWarning") => {
-                let e = crate::parser::SyntaxError { msg: w.msg.clone(), line: w.line, col: w.col };
+                let e = crate::parser::SyntaxError::new(w.msg.clone(), w.line, w.col);
                 let x = self.parse_error(&e, file);
                 set_error_text(&x, src, w.line);
                 Err(x)
@@ -3118,7 +3138,11 @@ impl Vm {
     pub fn parse_error(&mut self, e: &crate::parser::SyntaxError, file: &str) -> Exc {
         let x = self.syntax_error(&e.msg, e.line, file);
         if e.col > 0 {
-            crate::builtins::exc_set_field(&x.value, "offset", Value::Int(e.col as i64));
+            // a span's end, or else the start again, as the tokenizer's errors have it
+            let (end_line, end_col) = if e.end_col > 0 { (e.end_line, e.end_col) } else { (e.line, e.col) };
+            for (k, v) in [("offset", e.col), ("end_lineno", end_line), ("end_offset", end_col)] {
+                crate::builtins::exc_set_field(&x.value, k, Value::Int(v as i64));
+            }
         }
         x
     }

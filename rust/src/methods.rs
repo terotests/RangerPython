@@ -579,6 +579,8 @@ pub fn install_types(vm: &mut Vm) {
     def(&f, "function.__call__", function_call);
     def(&t.code, "code.replace", code_replace);
     def(&t.code, "code.__replace__", code_replace);
+    def(&t.code, "code.co_positions", code_positions);
+    def(&t.code, "code.co_lines", code_lines);
     let m = t.method.clone();
     def_static(&m, "method.__new__", method_new);
     def(&m, "method.__call__", function_call);
@@ -964,6 +966,46 @@ fn set_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::string(r?))
 }
 
+fn code_of(vm: &mut Vm, a: &[Value], what: &str) -> PyResult<Rc<crate::code::Code>> {
+    match a.first() {
+        Some(Value::Code(c)) => Ok(c.clone()),
+        _ => Err(vm.type_error(format!("descriptor '{}' requires a 'code' object", what))),
+    }
+}
+
+/// code.co_positions(): (line, end_line, col, end_col) of each instruction
+fn code_positions(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let c = code_of(vm, a, "co_positions")?;
+    let opt = |v: u32, known: bool| if known { Value::Int(v as i64) } else { Value::None };
+    let items = c
+        .positions
+        .iter()
+        .map(|p| {
+            let known = p.line > 0;
+            let cols = known && (p.col, p.end_line, p.end_col) != (0, p.line, 0);
+            Value::tuple(vec![opt(p.line, known), opt(p.end_line, known), opt(p.col, cols), opt(p.end_col, cols)])
+        })
+        .collect();
+    vm.iter(&Value::list(items))
+}
+
+/// code.co_lines(): (start, end, line) for each run of instructions on one line
+fn code_lines(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let c = code_of(vm, a, "co_lines")?;
+    let mut runs: Vec<(usize, usize, u32)> = vec![];
+    for (i, p) in c.positions.iter().enumerate() {
+        match runs.last_mut() {
+            Some(r) if r.2 == p.line => r.1 = 2 * i + 2,
+            _ => runs.push((2 * i, 2 * i + 2, p.line)),
+        }
+    }
+    let items = runs
+        .into_iter()
+        .map(|(s, e, l)| Value::tuple(vec![Value::Int(s as i64), Value::Int(e as i64), if l > 0 { Value::Int(l as i64) } else { Value::None }]))
+        .collect();
+    vm.iter(&Value::list(items))
+}
+
 /// code.replace(**changes): a copy with some co_* fields changed
 fn code_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     margs(vm, "replace", a, 0, 0)?;
@@ -1006,7 +1048,7 @@ fn code_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             // CPython's location table, one op here taken as one code unit
             "co_linetable" => {
                 let t = crate::builtins::bytes_of(vm, v)?;
-                c.lines = crate::code::decode_linetable(&t, c.firstline, c.ops.len());
+                c.positions = crate::code::decode_linetable(&t, c.firstline, c.ops.len());
             }
             "co_names" | "co_varnames" | "co_freevars" | "co_cellvars" | "co_code" | "co_exceptiontable"
             | "co_argcount" | "co_posonlyargcount" | "co_kwonlyargcount" | "co_nlocals" | "co_stacksize" => {

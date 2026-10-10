@@ -10,6 +10,16 @@ pub struct SyntaxError {
     pub line: u32,
     /// 1-based column, 0 when unknown
     pub col: u32,
+    /// where the bad part ends: the line, and the 1-based column after it;
+    /// 0 when it is only the start that is known
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+impl SyntaxError {
+    pub fn new(msg: impl Into<String>, line: u32, col: u32) -> SyntaxError {
+        SyntaxError { msg: msg.into(), line, col, end_line: 0, end_col: 0 }
+    }
 }
 
 type PResult<T> = Result<T, SyntaxError>;
@@ -17,20 +27,12 @@ type PResult<T> = Result<T, SyntaxError>;
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
-    /// PEP 695 type parameters of the def or class just parsed
-    tparams: Option<Vec<TypeParam>>,
-}
-
-/// `T`, `T: bound`, `T = default`, `*Ts` (kind 1) or `**P` (kind 2)
-struct TypeParam {
-    kind: u8,
-    name: Name,
-    bound: Option<Expr>,
-    default: Option<Expr>,
+    /// the start of the last `or` expression parsed, and the token after it
+    last_disj: Option<(Pos, usize)>,
 }
 
 pub fn parse_module(src: &str) -> PResult<Vec<Stmt>> {
-    let mut p = Parser { toks: tokenize(src), pos: 0, tparams: None };
+    let mut p = Parser { toks: tokenize(src), pos: 0, last_disj: None };
     let mut body = Vec::new();
     while !p.at_eof() {
         if p.eat_tok(&Tok::Newline) {
@@ -42,7 +44,7 @@ pub fn parse_module(src: &str) -> PResult<Vec<Stmt>> {
 }
 
 pub fn parse_expression(src: &str) -> PResult<Expr> {
-    let mut p = Parser { toks: tokenize(src.trim_matches([' ', '\t', '\n', '\r', '\x0c'])), pos: 0, tparams: None };
+    let mut p = Parser { toks: tokenize(src.trim_matches([' ', '\t', '\n', '\r', '\x0c'])), pos: 0, last_disj: None };
     let e = p.expressions().map_err(|e| p.settle(e))?;
     while p.eat_tok(&Tok::Newline) {}
     if !p.at_eof() {
@@ -67,6 +69,20 @@ impl Parser {
     fn line(&self) -> u32 {
         self.toks[self.pos].line
     }
+    /// where the current token starts
+    fn start(&self) -> Pos {
+        let t = &self.toks[self.pos];
+        Pos { line: t.line, col: t.bcol, end_line: t.line, end_col: t.bcol }
+    }
+    /// from `start` to the end of the last token taken
+    fn span(&self, start: Pos) -> Pos {
+        let t = &self.toks[self.pos.saturating_sub(1)];
+        Pos { end_line: t.end_line, end_col: t.end_bcol, ..start }
+    }
+    /// an expression node spanning from `start` to the last token taken
+    fn node(&self, start: Pos, kind: ExprKind) -> Expr {
+        Expr::new(kind, self.span(start))
+    }
     fn at_eof(&self) -> bool {
         matches!(self.peek(), Tok::Eof)
     }
@@ -79,10 +95,43 @@ impl Parser {
     }
     /// an error at the current token; at a tokenizer error, that error
     fn err(&self, msg: &str) -> SyntaxError {
-        match &self.toks[self.pos] {
-            Token { tok: Tok::Error(m), line, col } => SyntaxError { msg: m.to_string(), line: *line, col: *col },
-            _ => SyntaxError { msg: msg.to_string(), line: self.line(), col: 0 },
+        let t = &self.toks[self.pos];
+        match &t.tok {
+            Tok::Error(m) => Self::token_error(m, t),
+            _ => SyntaxError { msg: msg.to_string(), line: t.line, col: t.col, end_line: t.end_line, end_col: t.end_col },
         }
+    }
+    /// an error at the first part of target `t` that is not one, which
+    /// the statement would `verb` ("assign to", "delete")
+    fn check_store(&self, t: &Expr, verb: &str) -> PResult<()> {
+        match t.invalid_target() {
+            Some(bad) => Err(self.err_at(&format!("cannot {} {}", verb, bad.describe()), bad.pos)),
+            None => Ok(()),
+        }
+    }
+    /// whether the current token closes a bracket opened before it
+    fn closes_bracket(&self) -> bool {
+        let depth = self.toks[..self.pos].iter().fold(0i32, |d, t| match t.tok {
+            Tok::Op("(" | "[" | "{") => d + 1,
+            Tok::Op(")" | "]" | "}") => d - 1,
+            _ => d,
+        });
+        depth > 0
+    }
+    /// the tokenizer's error that token `t` stands for
+    fn token_error(msg: &str, t: &Token) -> SyntaxError {
+        let mut e = SyntaxError::new(msg, t.line, t.col);
+        if t.end_col != t.col {
+            (e.end_line, e.end_col) = (t.end_line, t.end_col);
+        }
+        e
+    }
+    /// an error spanning the source at `p`, a node's span
+    fn err_at(&self, msg: &str, p: Pos) -> SyntaxError {
+        // a node starts and ends where tokens do: their character columns
+        let col = self.toks.iter().find(|t| t.line == p.line && t.bcol == p.col).map_or(p.col + 1, |t| t.col);
+        let end = self.toks.iter().find(|t| t.end_line == p.end_line && t.end_bcol == p.end_col);
+        SyntaxError { msg: msg.to_string(), line: p.line, col, end_line: p.end_line, end_col: end.map_or(p.end_col + 1, |t| t.end_col) }
     }
     /// As CPython does, lets a tokenizer error later in the source replace
     /// the parser's error: an unclosed bracket only when the error is on a
@@ -91,15 +140,16 @@ impl Parser {
         let Some(at) = self.toks.iter().position(|t| matches!(t.tok, Tok::Error(_))) else {
             return e;
         };
-        let Token { tok: Tok::Error(m), line, col } = &self.toks[at] else { unreachable!() };
+        let t = &self.toks[at];
+        let Token { tok: Tok::Error(m), line, .. } = t else { unreachable!() };
         let in_fstring = self.toks[..self.pos.min(at)].iter().fold(0i32, |d, t| match t.tok {
             Tok::FStart => d + 1,
             Tok::FEnd => d - 1,
             _ => d,
         }) > 0;
-        let replace = if m.ends_with("was never closed") { e.line > *line } else { !in_fstring };
+        let replace = if m.ends_with("was never closed") { e.line.max(e.end_line) > *line } else { !in_fstring };
         if replace {
-            SyntaxError { msg: m.to_string(), line: *line, col: *col }
+            Self::token_error(m, t)
         } else {
             e
         }
@@ -133,9 +183,24 @@ impl Parser {
                     "]" => "[",
                     _ => "{",
                 }))),
-                _ if (o == ")" || o == "]" || o == "}") && self.starts_expr() && !self.after_name_before_str() => Err(self.err("invalid syntax. Perhaps you forgot a comma?")),
+                _ if (o == ")" || o == "]" || o == "}") && self.starts_expr() && !self.after_name_before_str() => Err(self.missing_comma()),
                 _ => Err(self.err(if o == ":" { "expected ':'" } else { "invalid syntax" })),
             }
+        }
+    }
+    /// "Perhaps you forgot a comma?", spanning the expression before the
+    /// current token and the one at it, as CPython's invalid_expression rule
+    fn missing_comma(&mut self) -> SyntaxError {
+        let msg = "invalid syntax. Perhaps you forgot a comma?";
+        let Some((a, _)) = self.last_disj.filter(|(_, end)| *end == self.pos) else {
+            return self.err(msg);
+        };
+        let save = (self.pos, self.last_disj);
+        let span = self.expression().ok().map(|_| self.span(a));
+        (self.pos, self.last_disj) = save;
+        match span {
+            Some(p) => self.err_at(msg, p),
+            None => self.err(msg),
         }
     }
     /// `name "string"`, which CPython does not take for a missing comma
@@ -220,12 +285,12 @@ impl Parser {
     }
 
     fn statement(&mut self, out: &mut Vec<Stmt>) -> PResult<()> {
-        let line = self.line();
+        let start = self.start();
         if let Tok::Name(n) = self.peek().clone() {
             match &*n {
                 "if" => {
                     self.advance();
-                    let s = self.if_rest(line)?;
+                    let s = self.if_rest(start)?;
                     out.push(s);
                     return Ok(());
                 }
@@ -234,57 +299,56 @@ impl Parser {
                     let cond = self.named_expr()?;
                     let body = self.block()?;
                     let orelse = if self.eat_kw("else") { self.block()? } else { vec![] };
-                    out.push(Stmt { line, kind: StmtKind::While(cond, body, orelse) });
+                    let pos = block_end(start, &body, &orelse);
+                    out.push(Stmt { pos, kind: StmtKind::While(cond, body, orelse) });
                     return Ok(());
                 }
                 "for" => {
                     self.advance();
-                    out.push(self.for_rest(line)?);
+                    out.push(self.for_rest(start, false)?);
                     return Ok(());
                 }
                 "try" => {
                     self.advance();
-                    out.push(self.try_rest(line)?);
+                    out.push(self.try_rest(start)?);
                     return Ok(());
                 }
                 "with" => {
                     self.advance();
-                    out.push(self.with_rest(line)?);
+                    out.push(self.with_rest(start, false)?);
                     return Ok(());
                 }
                 "def" => {
                     self.advance();
-                    let f = self.funcdef(vec![], line, false)?;
-                    self.push_func(out, f, line);
+                    let f = self.funcdef(vec![], start.line, false)?;
+                    out.push(func_stmt(start, f));
                     return Ok(());
                 }
                 "class" => {
                     self.advance();
-                    let c = self.classdef(vec![], line)?;
-                    self.push_class(out, c, line);
+                    let c = self.classdef(vec![], start.line)?;
+                    out.push(class_stmt(start, c));
                     return Ok(());
                 }
                 "async" => {
                     self.advance();
                     if self.eat_kw("def") {
-                        let f = self.funcdef(vec![], line, true)?;
-                        self.push_func(out, f, line);
+                        let f = self.funcdef(vec![], start.line, true)?;
+                        out.push(func_stmt(start, f));
                         return Ok(());
                     }
                     if self.eat_kw("for") {
-                        let st = self.for_rest(line)?;
-                        out.push(self.async_for(st));
+                        out.push(self.for_rest(start, true)?);
                         return Ok(());
                     }
                     if self.eat_kw("with") {
-                        let st = self.with_rest(line)?;
-                        out.push(self.async_with(st));
+                        out.push(self.with_rest(start, true)?);
                         return Ok(());
                     }
                     return Err(self.err("invalid syntax"));
                 }
                 "match" => {
-                    if let Some(s) = self.try_match(line)? {
+                    if let Some(s) = self.try_match(start)? {
                         out.push(s);
                         return Ok(());
                     }
@@ -300,14 +364,14 @@ impl Parser {
                     return Err(self.err("invalid syntax"));
                 }
             }
-            let line = self.line();
+            let start = self.start();
             let is_async = self.eat_kw("async");
             if self.eat_kw("def") {
-                let f = self.funcdef(decos, line, is_async)?;
-                self.push_func(out, f, line);
+                let f = self.funcdef(decos, start.line, is_async)?;
+                out.push(func_stmt(start, f));
             } else if self.eat_kw("class") {
-                let c = self.classdef(decos, line)?;
-                self.push_class(out, c, line);
+                let c = self.classdef(decos, start.line)?;
+                out.push(class_stmt(start, c));
             } else {
                 return Err(self.err("invalid syntax"));
             }
@@ -318,9 +382,9 @@ impl Parser {
 
     fn simple_statements(&mut self, out: &mut Vec<Stmt>) -> PResult<()> {
         loop {
-            let line = self.line();
+            let start = self.start();
             let s = self.small_statement()?;
-            out.push(Stmt { line, kind: s });
+            out.push(Stmt { pos: self.span(start), kind: s });
             if self.eat_op(";") {
                 if matches!(self.peek(), Tok::Newline | Tok::Eof) {
                     break;
@@ -330,7 +394,7 @@ impl Parser {
             break;
         }
         if !self.eat_tok(&Tok::Newline) && !self.at_eof() {
-            if let Some(Stmt { kind: StmtKind::Expr(Expr::Name(n)), .. }) = out.last() {
+            if let Some(Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Name(n), .. }), .. }) = out.last() {
                 if (&**n == "print" || &**n == "exec") && self.starts_expr() {
                     // only when what follows is an expression
                     let save = self.pos;
@@ -356,123 +420,48 @@ impl Parser {
         }
     }
 
-    fn if_rest(&mut self, line: u32) -> PResult<Stmt> {
+    fn if_rest(&mut self, start: Pos) -> PResult<Stmt> {
         let cond = self.named_expr()?;
         let body = self.block()?;
         let orelse = if self.at_kw("elif") {
-            let l = self.line();
+            let s = self.start();
             self.advance();
-            vec![self.if_rest(l)?]
+            vec![self.if_rest(s)?]
         } else if self.eat_kw("else") {
             self.block()?
         } else {
             vec![]
         };
-        Ok(Stmt { line, kind: StmtKind::If(cond, body, orelse) })
+        Ok(Stmt { pos: block_end(start, &body, &orelse), kind: StmtKind::If(cond, body, orelse) })
     }
 
-    fn for_rest(&mut self, line: u32) -> PResult<Stmt> {
+    fn for_rest(&mut self, start: Pos, is_async: bool) -> PResult<Stmt> {
         let target = self.target_list()?;
+        self.check_store(&target, "assign to")?;
         self.expect_kw("in")?;
         let iter = self.expressions()?;
         let body = self.block()?;
         let orelse = if self.eat_kw("else") { self.block()? } else { vec![] };
-        Ok(Stmt { line, kind: StmtKind::For(target, iter, body, orelse) })
+        Ok(Stmt { pos: block_end(start, &body, &orelse), kind: StmtKind::For(target, iter, body, orelse, is_async) })
     }
 
-    /// `async for` as a loop over `await anext(it)`
-    fn async_for(&self, st: Stmt) -> Stmt {
-        let line = st.line;
-        let StmtKind::For(target, iter, body, orelse) = st.kind else { return st };
-        let it: Name = Rc::from(format!(".aiter{}", self.pos));
-        let name = |n: &str| Expr::Name(Rc::from(n));
-        let call = |f: &str, a: Expr| Expr::Call { func: Box::new(name(f)), args: vec![Arg::Pos(a)] };
-        let stmt = |kind| Stmt { line, kind };
-        let mut on_end = orelse;
-        on_end.push(stmt(StmtKind::Break));
-        let get = stmt(StmtKind::Try {
-            body: vec![stmt(StmtKind::Assign(vec![target], Expr::Await(Box::new(call("anext", Expr::Name(it.clone()))))))],
-            handlers: vec![Handler { typ: Some(name("StopAsyncIteration")), name: None, body: on_end, line }],
-            orelse: vec![],
-            finally: vec![],
-            star: false,
-        });
-        let mut loop_body = vec![get];
-        loop_body.extend(body);
-        stmt(StmtKind::If(
-            Expr::Const(Const::True),
-            vec![
-                stmt(StmtKind::Assign(vec![Expr::Name(it.clone())], call("aiter", iter))),
-                stmt(StmtKind::While(Expr::Const(Const::True), loop_body, vec![])),
-            ],
-            vec![],
-        ))
-    }
-
-    /// `async with` as awaited `__aenter__`/`__aexit__` calls around a try
-    fn async_with(&self, st: Stmt) -> Stmt {
-        let line = st.line;
-        let StmtKind::With(items, body) = st.kind else { return st };
-        let mut inner = body;
-        for (k, (mgr, target)) in items.into_iter().enumerate().rev() {
-            let tag = format!("{}_{}", self.pos, k);
-            let m: Name = Rc::from(format!(".amgr{}", tag));
-            let ex: Name = Rc::from(format!(".aexit{}", tag));
-            let ok: Name = Rc::from(format!(".aok{}", tag));
-            let e: Name = Rc::from(format!(".aexc{}", tag));
-            let n = |x: &Name| Expr::Name(x.clone());
-            let stmt = |kind| Stmt { line, kind };
-            let type_of = |x: Expr| Expr::Call { func: Box::new(Expr::Name(Rc::from("type"))), args: vec![Arg::Pos(x)] };
-            let call = |f: Expr, args: Vec<Expr>| Expr::Call { func: Box::new(f), args: args.into_iter().map(Arg::Pos).collect() };
-            let none = || Expr::Const(Const::None);
-            let mut s = vec![
-                stmt(StmtKind::Assign(vec![n(&m)], mgr)),
-                stmt(StmtKind::Assign(vec![n(&ex)], Expr::Attr(Box::new(type_of(n(&m))), Rc::from("__aexit__")))),
-            ];
-            let enter = Expr::Await(Box::new(call(Expr::Attr(Box::new(type_of(n(&m))), Rc::from("__aenter__")), vec![n(&m)])));
-            match target {
-                Some(t) => s.push(stmt(StmtKind::Assign(vec![t], enter))),
-                None => s.push(stmt(StmtKind::Expr(enter))),
-            }
-            s.push(stmt(StmtKind::Assign(vec![n(&ok)], Expr::Const(Const::True))));
-            let exit_exc = Expr::Await(Box::new(call(n(&ex), vec![n(&m), type_of(n(&e)), n(&e), Expr::Attr(Box::new(n(&e)), Rc::from("__traceback__"))])));
-            let handler = vec![
-                stmt(StmtKind::Assign(vec![n(&ok)], Expr::Const(Const::False))),
-                stmt(StmtKind::If(Expr::Unary(UnOp::Not, Box::new(exit_exc)), vec![stmt(StmtKind::Raise(None, None))], vec![])),
-            ];
-            let guarded = stmt(StmtKind::Try {
-                body: inner,
-                handlers: vec![Handler { typ: Some(Expr::Name(Rc::from("BaseException"))), name: Some(e.clone()), body: handler, line }],
-                orelse: vec![],
-                finally: vec![],
-                star: false,
-            });
-            let exit_ok = stmt(StmtKind::Expr(Expr::Await(Box::new(call(n(&ex), vec![n(&m), none(), none(), none()])))));
-            s.push(stmt(StmtKind::Try {
-                body: vec![guarded],
-                handlers: vec![],
-                orelse: vec![],
-                finally: vec![stmt(StmtKind::If(n(&ok), vec![exit_ok], vec![]))],
-                star: false,
-            }));
-            inner = s;
-        }
-        Stmt { line, kind: StmtKind::If(Expr::Const(Const::True), inner, vec![]) }
-    }
-
-    fn try_rest(&mut self, line: u32) -> PResult<Stmt> {
+    fn try_rest(&mut self, start: Pos) -> PResult<Stmt> {
         let body = self.block()?;
         let mut handlers = Vec::new();
         let mut star = false;
         while self.at_kw("except") {
-            let hl = self.line();
+            let hs = self.start();
             self.advance();
             if self.eat_op("*") {
                 star = true;
+                if self.at_op(":") {
+                    return Err(self.err("expected one or more exception types"));
+                }
             }
             let mut typ = None;
             let mut name = None;
             if !self.at_op(":") {
+                let ts = self.start();
                 let t = self.expression()?;
                 let t = if self.at_op(",") {
                     let mut items = vec![t];
@@ -482,7 +471,7 @@ impl Parser {
                         }
                         items.push(self.expression()?);
                     }
-                    Expr::Tuple(items)
+                    self.node(ts, ExprKind::Tuple(items))
                 } else {
                     t
                 };
@@ -492,17 +481,23 @@ impl Parser {
                 }
             }
             let hbody = self.block()?;
-            handlers.push(Handler { typ, name, body: hbody, line: hl });
+            let pos = block_end(hs, &hbody, &[]);
+            handlers.push(Handler { typ, name, body: hbody, pos });
         }
         let orelse = if self.eat_kw("else") { self.block()? } else { vec![] };
         let finally = if self.eat_kw("finally") { self.block()? } else { vec![] };
         if handlers.is_empty() && finally.is_empty() {
             return Err(self.err("expected 'except' or 'finally' block"));
         }
-        Ok(Stmt { line, kind: StmtKind::Try { body, handlers, orelse, finally, star } })
+        let mut pos = block_end(start, &body, &[]);
+        if let Some(h) = handlers.last() {
+            pos = pos.to(h.pos);
+        }
+        let pos = block_end(pos, &orelse, &finally);
+        Ok(Stmt { pos, kind: StmtKind::Try { body, handlers, orelse, finally, star } })
     }
 
-    fn with_rest(&mut self, line: u32) -> PResult<Stmt> {
+    fn with_rest(&mut self, start: Pos, is_async: bool) -> PResult<Stmt> {
         let mut items = Vec::new();
         let paren = self.at_op("(") && self.paren_with_items();
         if paren {
@@ -514,6 +509,9 @@ impl Parser {
             }
             let e = self.expression()?;
             let t = if self.eat_kw("as") { Some(self.target()?) } else { None };
+            if let Some(t) = &t {
+                self.check_store(t, "assign to")?;
+            }
             items.push((e, t));
             if !self.eat_op(",") {
                 break;
@@ -523,7 +521,7 @@ impl Parser {
             self.expect_op(")")?;
         }
         let body = self.block()?;
-        Ok(Stmt { line, kind: StmtKind::With(items, body) })
+        Ok(Stmt { pos: block_end(start, &body, &[]), kind: StmtKind::With(items, body, is_async) })
     }
 
     /// `with (a as b, c as d):` — a parenthesised item list, told apart from a
@@ -553,6 +551,7 @@ impl Parser {
         self.expect_op("[")?;
         let mut out = vec![];
         while !self.eat_op("]") {
+            let start = self.start();
             let kind = if self.eat_op("**") {
                 2
             } else if self.eat_op("*") {
@@ -563,7 +562,7 @@ impl Parser {
             let name = self.name()?;
             let bound = if kind == 0 && self.eat_op(":") { Some(self.expression()?) } else { None };
             let default = if self.eat_op("=") { Some(self.expression()?) } else { None };
-            out.push(TypeParam { kind, name, bound, default });
+            out.push(TypeParam { kind, name, bound, default, pos: self.span(start) });
             if !self.eat_op(",") {
                 self.expect_op("]")?;
                 break;
@@ -572,43 +571,16 @@ impl Parser {
         Ok(out)
     }
 
-    fn push_func(&mut self, out: &mut Vec<Stmt>, mut f: FuncDef, line: u32) {
-        match self.tparams.take() {
-            None => out.push(Stmt { line, kind: StmtKind::FuncDef(Rc::new(f)) }),
-            Some(tps) => {
-                let decos = std::mem::take(&mut f.decorators);
-                let name = f.name.clone();
-                let body = generic_body(&name, &tps, Stmt { line, kind: StmtKind::FuncDef(Rc::new(f)) }, line);
-                generic_wrap(out, &name, tps, body, decos, line);
-            }
-        }
-    }
-
-    fn push_class(&mut self, out: &mut Vec<Stmt>, mut c: ClassDef, line: u32) {
-        match self.tparams.take() {
-            None => out.push(Stmt { line, kind: StmtKind::ClassDef(Rc::new(c)) }),
-            Some(tps) => {
-                let decos = std::mem::take(&mut c.decorators);
-                let name = c.name.clone();
-                let plain: Vec<Expr> = tps.iter().map(|t| if t.kind == 1 { Expr::Starred(Box::new(Expr::Name(t.name.clone()))) } else { Expr::Name(t.name.clone()) }).collect();
-                let idx = if plain.len() == 1 { plain.into_iter().next().unwrap() } else { Expr::Tuple(plain) };
-                c.bases.push(Arg::Pos(Expr::Subscript(Box::new(typing_attr("Generic")), Box::new(idx))));
-                let body = generic_body(&name, &tps, Stmt { line, kind: StmtKind::ClassDef(Rc::new(c)) }, line);
-                generic_wrap(out, &name, tps, body, decos, line);
-            }
-        }
-    }
-
     fn funcdef(&mut self, decorators: Vec<Expr>, line: u32, is_async: bool) -> PResult<FuncDef> {
         let name = self.name()?;
-        let tparams = if self.at_op("[") { Some(self.type_params()?) } else { None };
+        let type_params = if self.at_op("[") { self.type_params()? } else { vec![] };
         self.expect_op("(")?;
         let params = self.params(")", true)?;
         self.expect_op(")")?;
         let returns = if self.eat_op("->") { Some(self.expression()?) } else { None };
         let body = self.block()?;
-        self.tparams = tparams;
-        Ok(FuncDef { name, params, body, decorators, returns, is_lambda: false, is_async, line })
+        let line = decorators.first().map_or(line, |d| d.pos.line);
+        Ok(FuncDef { name, params, body, decorators, returns, is_lambda: false, is_async, line, type_params })
     }
 
     fn params(&mut self, end: &str, annotations: bool) -> PResult<Params> {
@@ -619,49 +591,57 @@ impl Parser {
             if self.eat_op("/") {
                 p.posonly = p.args.len();
             } else if self.eat_op("**") {
+                let start = self.start();
                 let name = self.name()?;
                 let annotation = if annotations && self.eat_op(":") { Some(self.expression()?) } else { None };
-                p.kwarg = Some(Param { name, default: None, annotation });
-            } else if self.eat_op("*") {
+                p.kwarg = Some(Param { name, default: None, annotation, pos: self.span(start) });
+            } else if self.at_op("*") {
+                let star = self.start();
+                self.advance();
                 seen_star = true;
                 let bare_end = |t: &Tok| is_op(t, end) || is_op(t, "**");
                 if self.at_op(end) || (self.at_op(",") && bare_end(self.peek_at(1))) {
-                    return Err(self.err("named arguments must follow bare *"));
+                    return Err(self.err_at("named arguments must follow bare *", self.span(star)));
                 }
                 if !self.at_op(",") && !self.at_op(end) {
+                    let start = self.start();
                     let name = self.name()?;
                     let annotation = if annotations && self.eat_op(":") { Some(self.star_or_expr()?) } else { None };
-                    p.vararg = Some(Param { name, default: None, annotation });
+                    p.vararg = Some(Param { name, default: None, annotation, pos: self.span(start) });
                 }
             } else {
+                let start = self.start();
                 let name = self.name()?;
                 let annotation = if annotations && self.eat_op(":") { Some(self.expression()?) } else { None };
+                let pos = self.span(start);
                 let default = if self.eat_op("=") { Some(self.expression()?) } else { None };
                 if seen_star {
-                    p.kwonly.push(Param { name, default, annotation });
+                    p.kwonly.push(Param { name, default, annotation, pos });
                 } else {
                     if default.is_some() {
                         seen_default = true;
                     } else if seen_default {
                         return Err(self.err("non-default argument follows default argument"));
                     }
-                    p.args.push(Param { name, default, annotation });
+                    p.args.push(Param { name, default, annotation, pos });
                 }
             }
             if !self.eat_op(",") {
                 break;
             }
         }
-        let all: Vec<&Name> = p.args.iter().chain(p.vararg.iter()).chain(p.kwonly.iter()).chain(p.kwarg.iter()).map(|a| &a.name).collect();
-        if let Some(d) = all.iter().enumerate().find(|(i, n)| all[..*i].contains(n)).map(|(_, n)| n) {
-            return Err(self.err(&format!("duplicate argument '{}' in function definition", d)));
+        let all: Vec<&Param> = p.args.iter().chain(p.vararg.iter()).chain(p.kwonly.iter()).chain(p.kwarg.iter()).collect();
+        if let Some(d) = all.iter().enumerate().find(|(i, a)| all[..*i].iter().any(|b| b.name == a.name)).map(|(_, a)| a) {
+            return Err(self.err_at(&format!("duplicate argument '{}' in function definition", d.name), d.pos));
         }
         Ok(p)
     }
 
     fn star_or_expr(&mut self) -> PResult<Expr> {
+        let start = self.start();
         if self.eat_op("*") {
-            Ok(Expr::Starred(Box::new(self.expression()?)))
+            let e = self.expression()?;
+            Ok(self.node(start, ExprKind::Starred(Box::new(e))))
         } else {
             self.expression()
         }
@@ -669,17 +649,27 @@ impl Parser {
 
     fn classdef(&mut self, decorators: Vec<Expr>, line: u32) -> PResult<ClassDef> {
         let name = self.name()?;
-        let tparams = if self.at_op("[") { Some(self.type_params()?) } else { None };
-        let bases = if self.eat_op("(") {
-            let a = self.call_args()?;
+        let type_params = if self.at_op("[") { self.type_params()? } else { vec![] };
+        let bases = if self.at_op("(") {
+            let open = self.start();
+            self.advance();
+            let a = self.call_args(open)?;
             self.expect_op(")")?;
             a
         } else {
             vec![]
         };
         let body = self.block()?;
-        self.tparams = tparams;
-        Ok(ClassDef { name, bases, body, decorators, line })
+        let line = decorators.first().map_or(line, |d| d.pos.line);
+        Ok(ClassDef { name, bases, body, decorators, line, type_params })
+    }
+
+    /// `name [as asname]`, a dotted name for `import`
+    fn alias(&mut self, dotted: bool) -> PResult<Alias> {
+        let start = self.start();
+        let name = if dotted { self.dotted_name()? } else { self.name()? };
+        let asname = if self.eat_kw("as") { Some(self.name()?) } else { None };
+        Ok(Alias { name, asname, pos: self.span(start) })
     }
 
     fn small_statement(&mut self) -> PResult<StmtKind> {
@@ -721,6 +711,9 @@ impl Parser {
                         }
                         ts.push(self.target()?);
                     }
+                    for t in &ts {
+                        self.check_store(t, "delete")?;
+                    }
                     return Ok(StmtKind::Del(ts));
                 }
                 "raise" => {
@@ -740,14 +733,9 @@ impl Parser {
                 }
                 "import" => {
                     self.advance();
-                    let mut names = Vec::new();
-                    loop {
-                        let m = self.dotted_name()?;
-                        let alias = if self.eat_kw("as") { Some(self.name()?) } else { None };
-                        names.push((m, alias));
-                        if !self.eat_op(",") {
-                            break;
-                        }
+                    let mut names = vec![self.alias(true)?];
+                    while self.eat_op(",") {
+                        names.push(self.alias(true)?);
                     }
                     return Ok(StmtKind::Import(names));
                 }
@@ -766,17 +754,16 @@ impl Parser {
                     let module: Name = if self.at_kw("import") { Rc::from("") } else { self.dotted_name()? };
                     self.expect_kw("import")?;
                     let mut names = Vec::new();
+                    let star = self.start();
                     if self.eat_op("*") {
-                        names.push((Rc::from("*"), None));
+                        names.push(Alias { name: Rc::from("*"), asname: None, pos: self.span(star) });
                     } else {
                         let paren = self.eat_op("(");
                         loop {
                             if paren && self.at_op(")") {
                                 break;
                             }
-                            let nm = self.name()?;
-                            let alias = if self.eat_kw("as") { Some(self.name()?) } else { None };
-                            names.push((nm, alias));
+                            names.push(self.alias(false)?);
                             if !self.eat_op(",") {
                                 break;
                             }
@@ -791,20 +778,13 @@ impl Parser {
                     // `type X = ...` (PEP 695)
                     if matches!(self.peek_at(1), Tok::Name(_)) && matches!(self.peek_at(2), Tok::Op("=") | Tok::Op("[")) {
                         self.advance();
-                        let line = self.line();
+                        let start = self.start();
                         let name = self.name()?;
+                        let name = self.node(start, ExprKind::Name(name));
                         let tps = if self.at_op("[") { self.type_params()? } else { vec![] };
                         self.expect_op("=")?;
                         let v = self.expression()?;
-                        let mut args = vec![Arg::Pos(str_const(&name)), Arg::Pos(v)];
-                        if tps.is_empty() {
-                            return Ok(StmtKind::Assign(vec![Expr::Name(name)], call(typing_attr("TypeAliasType"), args)));
-                        }
-                        args.push(Arg::Kw(Rc::from("type_params"), Expr::Tuple(tps.iter().map(|t| Expr::Name(t.name.clone())).collect())));
-                        let ret = Stmt { line, kind: StmtKind::Return(Some(call(typing_attr("TypeAliasType"), args))) };
-                        let mut out = vec![];
-                        generic_wrap(&mut out, &name, tps, vec![ret], vec![], line);
-                        return Ok(StmtKind::If(Expr::Const(Const::True), out, vec![]));
+                        return Ok(StmtKind::TypeAlias(name, tps, v));
                     }
                 }
                 _ => {}
@@ -816,13 +796,17 @@ impl Parser {
         if self.eat_op(":") {
             let ann = self.expression()?;
             let value = if self.eat_op("=") { Some(self.star_expressions_or_yield()?) } else { None };
-            match &first {
-                Expr::Name(_) | Expr::Attr(..) | Expr::Subscript(..) => {}
-                Expr::Tuple(_) => return Err(self.err("only single target (not tuple) can be annotated")),
-                Expr::List(_) => return Err(self.err("only single target (not list) can be annotated")),
-                _ => return Err(self.err("illegal target for annotation")),
+            match &first.kind {
+                ExprKind::Name(_) | ExprKind::Attr(..) | ExprKind::Subscript(..) => {}
+                // CPython points at the first of an unparenthesized tuple
+                ExprKind::Tuple(items) => {
+                    let at = if paren { first.pos } else { items[0].pos };
+                    return Err(self.err_at("only single target (not tuple) can be annotated", at));
+                }
+                ExprKind::List(_) => return Err(self.err_at("only single target (not list) can be annotated", first.pos)),
+                _ => return Err(self.err_at("illegal target for annotation", first.pos)),
             }
-            let simple = !paren && matches!(first, Expr::Name(_));
+            let simple = !paren && matches!(first.kind, ExprKind::Name(_));
             return Ok(StmtKind::AnnAssign(first, ann, value, simple));
         }
         if let Tok::Op(o) = self.peek().clone() {
@@ -844,8 +828,8 @@ impl Parser {
             };
             if let Some(op) = aug {
                 self.advance();
-                match &first {
-                    Expr::Name(_) | Expr::Attr(..) | Expr::Subscript(..) => {}
+                match &first.kind {
+                    ExprKind::Name(_) | ExprKind::Attr(..) | ExprKind::Subscript(..) => {}
                     _ => return Err(self.err("'expression' is an illegal expression for augmented assignment")),
                 }
                 let v = self.star_expressions_or_yield()?;
@@ -865,7 +849,13 @@ impl Parser {
                 break;
             }
             for t in &targets {
-                check_target(t).map_err(|m| self.err(&m))?;
+                if let Some(bad) = t.invalid_target() {
+                    // `f() = 1` reads as a mistyped comparison, as in CPython's
+                    // invalid_named_expression rule
+                    let here = targets.len() == 1 && std::ptr::eq(bad, t) && reads_as_comparison(t) && !matches!(value.kind, ExprKind::Lambda(_) | ExprKind::Yield(_) | ExprKind::YieldFrom(_) | ExprKind::Unary(UnOp::Not, _));
+                    let suffix = if here { " here. Maybe you meant '==' instead of '='?" } else { "" };
+                    return Err(self.err_at(&format!("cannot assign to {}{}", bad.describe(), suffix), bad.pos));
+                }
             }
             return Ok(StmtKind::Assign(targets, value));
         }
@@ -883,7 +873,7 @@ impl Parser {
 
     // ---------------- match ----------------
 
-    fn try_match(&mut self, line: u32) -> PResult<Option<Stmt>> {
+    fn try_match(&mut self, start: Pos) -> PResult<Option<Stmt>> {
         // `match` is a soft keyword: only a statement when a block follows
         let save = self.pos;
         self.advance();
@@ -907,6 +897,7 @@ impl Parser {
             return Err(self.err("expected an indented block"));
         }
         let mut cases = Vec::new();
+        let mut pos = start;
         while !self.eat_tok(&Tok::Dedent) {
             if self.eat_tok(&Tok::Newline) {
                 continue;
@@ -917,12 +908,19 @@ impl Parser {
             let pat = self.pattern_top()?;
             let guard = if self.eat_kw("if") { Some(self.named_expr()?) } else { None };
             let body = self.block()?;
+            pos = block_end(pos, &body, &[]);
             cases.push(MatchCase { pat, guard, body });
         }
-        Ok(Some(Stmt { line, kind: StmtKind::Match(subject, cases) }))
+        Ok(Some(Stmt { pos, kind: StmtKind::Match(subject, cases) }))
+    }
+
+    /// a pattern node spanning from `start` to the last token taken
+    fn pat(&self, start: Pos, kind: PatternKind) -> Pattern {
+        Pattern { kind, pos: self.span(start) }
     }
 
     fn pattern_top(&mut self) -> PResult<Pattern> {
+        let start = self.start();
         let p = self.pattern_as()?;
         if self.at_op(",") {
             let mut items = vec![p];
@@ -932,40 +930,43 @@ impl Parser {
                 }
                 items.push(self.pattern_as()?);
             }
-            return Ok(Pattern::Sequence(items));
+            return Ok(self.pat(start, PatternKind::Sequence(items)));
         }
         Ok(p)
     }
 
     fn pattern_as(&mut self) -> PResult<Pattern> {
+        let start = self.start();
         let p = self.pattern_or()?;
         if self.eat_kw("as") {
             let n = self.name()?;
-            return Ok(Pattern::As(Box::new(p), n));
+            return Ok(self.pat(start, PatternKind::As(Box::new(p), n)));
         }
         Ok(p)
     }
 
     fn pattern_or(&mut self) -> PResult<Pattern> {
+        let start = self.start();
         let p = self.pattern_closed()?;
         if self.at_op("|") {
             let mut alts = vec![p];
             while self.eat_op("|") {
                 alts.push(self.pattern_closed()?);
             }
-            return Ok(Pattern::Or(alts));
+            return Ok(self.pat(start, PatternKind::Or(alts)));
         }
         Ok(p)
     }
 
     fn pattern_closed(&mut self) -> PResult<Pattern> {
+        let start = self.start();
         if self.eat_op("*") {
             let n = self.name()?;
-            return Ok(Pattern::Star(if &*n == "_" { None } else { Some(n) }));
+            return Ok(self.pat(start, PatternKind::Star(if &*n == "_" { None } else { Some(n) })));
         }
         if self.eat_op("(") {
             if self.eat_op(")") {
-                return Ok(Pattern::Sequence(vec![]));
+                return Ok(self.pat(start, PatternKind::Sequence(vec![])));
             }
             let p = self.pattern_as()?;
             if self.at_op(",") {
@@ -977,7 +978,7 @@ impl Parser {
                     items.push(self.pattern_as()?);
                 }
                 self.expect_op(")")?;
-                return Ok(Pattern::Sequence(items));
+                return Ok(self.pat(start, PatternKind::Sequence(items)));
             }
             self.expect_op(")")?;
             return Ok(p);
@@ -991,7 +992,7 @@ impl Parser {
                 }
             }
             self.expect_op("]")?;
-            return Ok(Pattern::Sequence(items));
+            return Ok(self.pat(start, PatternKind::Sequence(items)));
         }
         if self.eat_op("{") {
             let mut keys = Vec::new();
@@ -1000,6 +1001,12 @@ impl Parser {
             while !self.at_op("}") {
                 if self.eat_op("**") {
                     rest = Some(self.name()?);
+                    // the rest comes last
+                    self.eat_op(",");
+                    if !self.at_op("}") {
+                        return Err(self.err("invalid syntax"));
+                    }
+                    break;
                 } else {
                     let k = self.pattern_value_expr()?;
                     self.expect_op(":")?;
@@ -1011,31 +1018,26 @@ impl Parser {
                 }
             }
             self.expect_op("}")?;
-            return Ok(Pattern::Mapping { keys, pats, rest });
+            return Ok(self.pat(start, PatternKind::Mapping { keys, pats, rest }));
         }
         if let Tok::Name(n) = self.peek().clone() {
-            match &*n {
-                "None" => {
-                    self.advance();
-                    return Ok(Pattern::Singleton(Const::None));
-                }
-                "True" => {
-                    self.advance();
-                    return Ok(Pattern::Singleton(Const::True));
-                }
-                "False" => {
-                    self.advance();
-                    return Ok(Pattern::Singleton(Const::False));
-                }
-                _ => {}
+            let singleton = match &*n {
+                "None" => Some(Const::None),
+                "True" => Some(Const::True),
+                "False" => Some(Const::False),
+                _ => None,
+            };
+            if let Some(c) = singleton {
+                self.advance();
+                return Ok(self.pat(start, PatternKind::Singleton(c)));
             }
             // capture, value (dotted) or class pattern
             self.advance();
-            let mut e = Expr::Name(n.clone());
+            let mut e = self.node(start, ExprKind::Name(n.clone()));
             let mut dotted = false;
             while self.eat_op(".") {
                 let a = self.name()?;
-                e = Expr::Attr(Box::new(e), a);
+                e = self.node(start, ExprKind::Attr(Box::new(e), a));
                 dotted = true;
             }
             if self.eat_op("(") {
@@ -1054,15 +1056,15 @@ impl Parser {
                     }
                 }
                 self.expect_op(")")?;
-                return Ok(Pattern::Class { cls: e, args, kw });
+                return Ok(self.pat(start, PatternKind::Class { cls: e, args, kw }));
             }
             if dotted {
-                return Ok(Pattern::Value(e));
+                return Ok(self.pat(start, PatternKind::Value(e)));
             }
-            return Ok(Pattern::Capture(if &*n == "_" { None } else { Some(n) }));
+            return Ok(self.pat(start, PatternKind::Capture(if &*n == "_" { None } else { Some(n) })));
         }
         let v = self.pattern_value_expr()?;
-        Ok(Pattern::Value(v))
+        Ok(self.pat(start, PatternKind::Value(v)))
     }
 
     fn pattern_value_expr(&mut self) -> PResult<Expr> {
@@ -1079,13 +1081,16 @@ impl Parser {
     }
 
     fn star_or_bitor(&mut self) -> PResult<Expr> {
+        let start = self.start();
         if self.eat_op("*") {
-            return Ok(Expr::Starred(Box::new(self.bitor()?)));
+            let e = self.bitor()?;
+            return Ok(self.node(start, ExprKind::Starred(Box::new(e))));
         }
         self.bitor()
     }
 
     fn target_list(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let first = self.star_or_bitor()?;
         if self.at_op(",") {
             let mut items = vec![first];
@@ -1095,7 +1100,7 @@ impl Parser {
                 }
                 items.push(self.star_or_bitor()?);
             }
-            return Ok(Expr::Tuple(items));
+            return Ok(self.node(start, ExprKind::Tuple(items)));
         }
         Ok(first)
     }
@@ -1108,18 +1113,22 @@ impl Parser {
     }
 
     fn yield_expr(&mut self) -> PResult<Expr> {
+        let start = self.start();
         self.expect_kw("yield")?;
         if self.eat_kw("from") {
-            return Ok(Expr::YieldFrom(Box::new(self.expression()?)));
+            let e = self.expression()?;
+            return Ok(self.node(start, ExprKind::YieldFrom(Box::new(e))));
         }
         if matches!(self.peek(), Tok::Newline | Tok::Eof) || self.at_op(")") || self.at_op("=") || self.at_op(";") || self.at_op("]") || self.at_op("}") {
-            return Ok(Expr::Yield(None));
+            return Ok(self.node(start, ExprKind::Yield(None)));
         }
-        Ok(Expr::Yield(Some(Box::new(self.star_expressions()?))))
+        let e = self.star_expressions()?;
+        Ok(self.node(start, ExprKind::Yield(Some(Box::new(e)))))
     }
 
     /// a, *b, c — a bare tuple allowed
     fn star_expressions(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let first = self.star_named()?;
         if self.at_op(",") {
             let mut items = vec![first];
@@ -1129,7 +1138,7 @@ impl Parser {
                 }
                 items.push(self.star_named()?);
             }
-            return Ok(Expr::Tuple(items));
+            return Ok(self.node(start, ExprKind::Tuple(items)));
         }
         Ok(first)
     }
@@ -1144,20 +1153,48 @@ impl Parser {
         self.star_expressions()
     }
 
+    /// an element of a display in brackets, where an `=` after it is taken
+    /// for a mistyped `==`
+    fn element(&mut self) -> PResult<Expr> {
+        let e = self.star_named()?;
+        if self.at_op("=") {
+            if let ExprKind::Name(_) = e.kind {
+                self.advance();
+                self.bitor()?;
+                return Err(self.err_at("invalid syntax. Maybe you meant '==' or ':=' instead of '='?", self.span(e.pos)));
+            }
+            if reads_as_comparison(&e) {
+                return Err(self.err_at(&format!("cannot assign to {} here. Maybe you meant '==' instead of '='?", e.describe()), e.pos));
+            }
+        }
+        Ok(e)
+    }
+
+    /// the element of a comprehension, which cannot be unpacked
+    fn comp_elt(&self, e: &Expr) -> PResult<()> {
+        match e.kind {
+            ExprKind::Starred(_) => Err(self.err_at("iterable unpacking cannot be used in comprehension", e.pos)),
+            _ => Ok(()),
+        }
+    }
+
     fn star_named(&mut self) -> PResult<Expr> {
+        let start = self.start();
         if self.eat_op("*") {
-            return Ok(Expr::Starred(Box::new(self.bitor()?)));
+            let e = self.bitor()?;
+            return Ok(self.node(start, ExprKind::Starred(Box::new(e))));
         }
         self.named_expr()
     }
 
     fn named_expr(&mut self) -> PResult<Expr> {
+        let start = self.start();
         if let Tok::Name(n) = self.peek().clone() {
             if is_op(self.peek_at(1), ":=") && !is_keyword(&n) {
                 self.advance();
                 self.advance();
                 let v = self.expression()?;
-                return Ok(Expr::NamedExpr(n, Box::new(v)));
+                return Ok(self.node(start, ExprKind::NamedExpr(n, Box::new(v))));
             }
         }
         self.expression()
@@ -1167,6 +1204,7 @@ impl Parser {
         if self.at_kw("lambda") {
             return self.lambda();
         }
+        let start = self.start();
         let e = self.disjunction()?;
         if self.at_kw("if") {
             // conditional expression (not a comprehension `if`)
@@ -1175,7 +1213,7 @@ impl Parser {
             let cond = self.disjunction()?;
             if self.eat_kw("else") {
                 let other = self.expression()?;
-                return Ok(Expr::IfExp(Box::new(cond), Box::new(e), Box::new(other)));
+                return Ok(self.node(start, ExprKind::IfExp(Box::new(cond), Box::new(e), Box::new(other))));
             }
             if !matches!(self.peek(), Tok::Error(_)) {
                 self.pos = save;
@@ -1193,7 +1231,7 @@ impl Parser {
     }
 
     fn lambda(&mut self) -> PResult<Expr> {
-        let line = self.line();
+        let start = self.start();
         self.expect_kw("lambda")?;
         // in a replacement field, the ':' starts the format spec
         let no_lambda = "f-string: lambda expressions are not allowed without parentheses";
@@ -1206,46 +1244,61 @@ impl Parser {
         }
         self.expect_op(":")?;
         let body = self.expression()?;
+        let ret = Stmt { pos: body.pos, kind: StmtKind::Return(Some(body)) };
         let f = FuncDef {
             name: Rc::from("<lambda>"),
             params,
-            body: vec![Stmt { line, kind: StmtKind::Return(Some(body)) }],
+            body: vec![ret],
             decorators: vec![],
             returns: None,
             is_lambda: true,
             is_async: false,
-            line,
+            line: start.line,
+            type_params: vec![],
         };
-        Ok(Expr::Lambda(Rc::new(f)))
+        Ok(self.node(start, ExprKind::Lambda(Rc::new(f))))
     }
 
     fn disjunction(&mut self) -> PResult<Expr> {
-        let mut e = self.conjunction()?;
-        while self.eat_kw("or") {
-            let r = self.conjunction()?;
-            e = Expr::BoolOr(Box::new(e), Box::new(r));
-        }
+        let start = self.start();
+        let e = self.conjunction()?;
+        let e = if self.at_kw("or") {
+            let mut values = vec![e];
+            while self.eat_kw("or") {
+                values.push(self.conjunction()?);
+            }
+            self.node(start, ExprKind::BoolOr(values))
+        } else {
+            e
+        };
+        self.last_disj = Some((start, self.pos));
         Ok(e)
     }
 
     fn conjunction(&mut self) -> PResult<Expr> {
-        let mut e = self.inversion()?;
-        while self.eat_kw("and") {
-            let r = self.inversion()?;
-            e = Expr::BoolAnd(Box::new(e), Box::new(r));
+        let start = self.start();
+        let e = self.inversion()?;
+        if !self.at_kw("and") {
+            return Ok(e);
         }
-        Ok(e)
+        let mut values = vec![e];
+        while self.eat_kw("and") {
+            values.push(self.inversion()?);
+        }
+        Ok(self.node(start, ExprKind::BoolAnd(values)))
     }
 
     fn inversion(&mut self) -> PResult<Expr> {
+        let start = self.start();
         if self.eat_kw("not") {
             let e = self.inversion()?;
-            return Ok(Expr::Unary(UnOp::Not, Box::new(e)));
+            return Ok(self.node(start, ExprKind::Unary(UnOp::Not, Box::new(e))));
         }
         self.comparison()
     }
 
     fn comparison(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let e = self.bitor()?;
         let mut ops = Vec::new();
         loop {
@@ -1277,84 +1330,56 @@ impl Parser {
         if ops.is_empty() {
             Ok(e)
         } else {
-            Ok(Expr::Compare(Box::new(e), ops))
+            Ok(self.node(start, ExprKind::Compare(Box::new(e), ops)))
         }
     }
 
-    fn bitor(&mut self) -> PResult<Expr> {
-        let mut e = self.bitxor()?;
-        while self.eat_op("|") {
-            let r = self.bitxor()?;
-            e = Expr::Bin(BinOp::BitOr, Box::new(e), Box::new(r));
+    /// a left-associative run of binary operators over `operand`
+    fn binary(&mut self, operand: fn(&mut Self) -> PResult<Expr>, op_of: fn(&Tok) -> Option<BinOp>) -> PResult<Expr> {
+        let start = self.start();
+        let mut e = operand(self)?;
+        while let Some(op) = op_of(self.peek()) {
+            self.advance();
+            let r = operand(self)?;
+            e = self.node(start, ExprKind::Bin(op, Box::new(e), Box::new(r)));
         }
         Ok(e)
+    }
+    fn bitor(&mut self) -> PResult<Expr> {
+        self.binary(Self::bitxor, |t| is_op(t, "|").then_some(BinOp::BitOr))
     }
     fn bitxor(&mut self) -> PResult<Expr> {
-        let mut e = self.bitand()?;
-        while self.eat_op("^") {
-            let r = self.bitand()?;
-            e = Expr::Bin(BinOp::BitXor, Box::new(e), Box::new(r));
-        }
-        Ok(e)
+        self.binary(Self::bitand, |t| is_op(t, "^").then_some(BinOp::BitXor))
     }
     fn bitand(&mut self) -> PResult<Expr> {
-        let mut e = self.shift()?;
-        while self.eat_op("&") {
-            let r = self.shift()?;
-            e = Expr::Bin(BinOp::BitAnd, Box::new(e), Box::new(r));
-        }
-        Ok(e)
+        self.binary(Self::shift, |t| is_op(t, "&").then_some(BinOp::BitAnd))
     }
     fn shift(&mut self) -> PResult<Expr> {
-        let mut e = self.sum_expr()?;
-        loop {
-            let op = if self.at_op("<<") {
-                BinOp::LShift
-            } else if self.at_op(">>") {
-                BinOp::RShift
-            } else {
-                break;
-            };
-            self.advance();
-            let r = self.sum_expr()?;
-            e = Expr::Bin(op, Box::new(e), Box::new(r));
-        }
-        Ok(e)
+        self.binary(Self::sum_expr, |t| match t {
+            Tok::Op("<<") => Some(BinOp::LShift),
+            Tok::Op(">>") => Some(BinOp::RShift),
+            _ => None,
+        })
     }
     fn sum_expr(&mut self) -> PResult<Expr> {
-        let mut e = self.term()?;
-        loop {
-            let op = if self.at_op("+") {
-                BinOp::Add
-            } else if self.at_op("-") {
-                BinOp::Sub
-            } else {
-                break;
-            };
-            self.advance();
-            let r = self.term()?;
-            e = Expr::Bin(op, Box::new(e), Box::new(r));
-        }
-        Ok(e)
+        self.binary(Self::term, |t| match t {
+            Tok::Op("+") => Some(BinOp::Add),
+            Tok::Op("-") => Some(BinOp::Sub),
+            _ => None,
+        })
     }
     fn term(&mut self) -> PResult<Expr> {
-        let mut e = self.factor()?;
-        loop {
-            let op = match self.peek() {
-                Tok::Op("*") => BinOp::Mul,
-                Tok::Op("/") => BinOp::Div,
-                Tok::Op("//") => BinOp::FloorDiv,
-                Tok::Op("%") => BinOp::Mod,
-                Tok::Op("@") => BinOp::MatMul,
-                _ => break,
-            };
-            self.advance();
-            let r = self.factor()?;
-            e = Expr::Bin(op, Box::new(e), Box::new(r));
-        }
-        Ok(e)
+        self.binary(Self::factor, |t| match t {
+            Tok::Op("*") => Some(BinOp::Mul),
+            Tok::Op("/") => Some(BinOp::Div),
+            Tok::Op("//") => Some(BinOp::FloorDiv),
+            Tok::Op("%") => Some(BinOp::Mod),
+            Tok::Op("@") => Some(BinOp::MatMul),
+            _ => None,
+        })
     }
     fn factor(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let op = match self.peek() {
             Tok::Op("-") => UnOp::Neg,
             Tok::Op("+") => UnOp::Pos,
@@ -1363,32 +1388,28 @@ impl Parser {
         };
         self.advance();
         let e = self.factor()?;
-        // fold negative numeric literals
-        if op == UnOp::Neg {
-            match &e {
-                Expr::Const(Const::Int(v)) if *v != i64::MIN => return Ok(Expr::Const(Const::Int(-v))),
-                Expr::Const(Const::Float(v)) => return Ok(Expr::Const(Const::Float(-v))),
-                _ => {}
-            }
-        }
-        Ok(Expr::Unary(op, Box::new(e)))
+        Ok(self.node(start, ExprKind::Unary(op, Box::new(e))))
     }
     fn power(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let e = self.await_primary()?;
         if self.eat_op("**") {
             let r = self.factor()?;
-            return Ok(Expr::Bin(BinOp::Pow, Box::new(e), Box::new(r)));
+            return Ok(self.node(start, ExprKind::Bin(BinOp::Pow, Box::new(e), Box::new(r))));
         }
         Ok(e)
     }
     fn await_primary(&mut self) -> PResult<Expr> {
+        let start = self.start();
         if self.eat_kw("await") {
-            return Ok(Expr::Await(Box::new(self.primary()?)));
+            let e = self.primary()?;
+            return Ok(self.node(start, ExprKind::Await(Box::new(e))));
         }
         self.primary()
     }
 
     fn primary(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let mut e = self.atom()?;
         loop {
             if self.eat_op(".") {
@@ -1396,15 +1417,17 @@ impl Parser {
                     Tok::Name(n) => n,
                     _ => return Err(self.err("invalid syntax")),
                 };
-                e = Expr::Attr(Box::new(e), n);
-            } else if self.eat_op("(") {
-                let args = self.call_args()?;
+                e = self.node(start, ExprKind::Attr(Box::new(e), n));
+            } else if self.at_op("(") {
+                let open = self.start();
+                self.advance();
+                let args = self.call_args(open)?;
                 self.expect_op(")")?;
-                e = Expr::Call { func: Box::new(e), args };
+                e = self.node(start, ExprKind::Call { func: Box::new(e), args });
             } else if self.eat_op("[") {
                 let idx = self.slices()?;
                 self.expect_op("]")?;
-                e = Expr::Subscript(Box::new(e), Box::new(idx));
+                e = self.node(start, ExprKind::Subscript(Box::new(e), Box::new(idx)));
             } else {
                 break;
             }
@@ -1413,6 +1436,7 @@ impl Parser {
     }
 
     fn slices(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let first = self.slice_item()?;
         if self.at_op(",") {
             let mut items = vec![first];
@@ -1422,12 +1446,13 @@ impl Parser {
                 }
                 items.push(self.slice_item()?);
             }
-            return Ok(Expr::Tuple(items));
+            return Ok(self.node(start, ExprKind::Tuple(items)));
         }
         Ok(first)
     }
 
     fn slice_item(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let lo = if self.at_op(":") { None } else { Some(Box::new(self.star_named()?)) };
         if !self.eat_op(":") {
             return Ok(*lo.unwrap());
@@ -1442,44 +1467,61 @@ impl Parser {
         } else {
             None
         };
-        Ok(Expr::Slice(lo, hi, step))
+        Ok(self.node(start, ExprKind::Slice(lo, hi, step)))
     }
 
-    fn call_args(&mut self) -> PResult<Vec<Arg>> {
+    /// the arguments of a call or class bases after the `(` at `open`
+    fn call_args(&mut self, open: Pos) -> PResult<Vec<Arg>> {
         let mut args = Vec::new();
         while !self.at_op(")") {
+            let start = self.start();
             if self.eat_op("**") {
-                args.push(Arg::StarStar(self.expression()?));
+                let e = self.expression()?;
+                args.push(Arg::StarStar(e, self.span(start)));
             } else if self.eat_op("*") {
-                if args.iter().any(|a| matches!(a, Arg::StarStar(_))) {
+                if args.iter().any(|a| matches!(a, Arg::StarStar(..))) {
                     return Err(self.err("iterable argument unpacking follows keyword argument unpacking"));
                 }
-                args.push(Arg::Star(self.expression()?));
+                let e = self.expression()?;
+                args.push(Arg::Star(self.node(start, ExprKind::Starred(Box::new(e)))));
             } else if matches!(self.peek(), Tok::Name(_)) && is_op(self.peek_at(1), "=") {
                 let n = self.name()?;
-                if args.iter().any(|a| matches!(a, Arg::Kw(k, _) if *k == n)) {
+                if args.iter().any(|a| matches!(a, Arg::Kw(k, ..) if *k == n)) {
                     return Err(self.err(&format!("keyword argument repeated: {}", n)));
                 }
                 self.advance();
-                args.push(Arg::Kw(n, self.expression()?));
+                let e = self.expression()?;
+                args.push(Arg::Kw(n, e, self.span(start)));
             } else {
-                if args.iter().any(|a| matches!(a, Arg::StarStar(_))) {
+                if args.iter().any(|a| matches!(a, Arg::StarStar(..))) {
                     return Err(self.err("positional argument follows keyword argument unpacking"));
                 }
                 if args.iter().any(|a| matches!(a, Arg::Kw(..))) {
                     return Err(self.err("positional argument follows keyword argument"));
                 }
                 let e = self.named_expr()?;
+                if self.at_op("=") {
+                    self.advance();
+                    return Err(self.err_at("expression cannot contain assignment, perhaps you meant \"==\"?", self.span(e.pos)));
+                }
                 if self.at_kw("for") || self.at_kw("async") {
                     let comps = self.comp_for()?;
                     if !args.is_empty() || self.at_op(",") {
+                        let bare = self.span(e.pos);
                         if self.at_op(",") && matches!(self.peek_at(1), Tok::Error(_)) {
                             // what follows the comma is a tokenizer error, seen first
                             self.advance();
+                            return Err(self.err(""));
                         }
-                        return Err(self.err("Generator expression must be parenthesized"));
+                        return Err(self.err_at("Generator expression must be parenthesized", bare));
                     }
-                    args.push(Arg::Pos(Expr::GenExp(Box::new(e), comps)));
+                    // the generator spans the call's parentheses
+                    let mut g = self.node(open, ExprKind::GenExp(Box::new(e), comps));
+                    if self.at_op(")") {
+                        let t = &self.toks[self.pos];
+                        (g.pos.end_line, g.pos.end_col) = (t.end_line, t.end_bcol);
+                    }
+                    args.push(Arg::Pos(g));
                 } else {
                     args.push(Arg::Pos(e));
                 }
@@ -1499,6 +1541,7 @@ impl Parser {
                 break;
             }
             let target = self.target_list()?;
+            self.check_store(&target, "assign to")?;
             self.expect_kw("in")?;
             let iter = self.disjunction()?;
             let mut ifs = Vec::new();
@@ -1512,60 +1555,46 @@ impl Parser {
     }
 
     fn atom(&mut self) -> PResult<Expr> {
-        let line = self.line();
+        let start = self.start();
         let t = self.peek().clone();
+        let leaf = |p: &mut Self, k: ExprKind| {
+            p.advance();
+            Ok(p.node(start, k))
+        };
         match t {
-            Tok::Name(n) => {
-                self.advance();
-                Ok(match &*n {
-                    "None" => Expr::Const(Const::None),
-                    "True" => Expr::Const(Const::True),
-                    "False" => Expr::Const(Const::False),
-                    _ => {
-                        if is_keyword(&n) && &*n != "match" && &*n != "case" && &*n != "type" && &*n != "_" {
-                            self.pos -= 1;
-                            return Err(self.err("invalid syntax"));
-                        }
-                        Expr::Name(n)
+            Tok::Name(n) => match &*n {
+                "None" => leaf(self, ExprKind::Const(Const::None)),
+                "True" => leaf(self, ExprKind::Const(Const::True)),
+                "False" => leaf(self, ExprKind::Const(Const::False)),
+                _ => {
+                    if is_keyword(&n) && &*n != "match" && &*n != "case" && &*n != "type" && &*n != "_" {
+                        return Err(self.err("invalid syntax"));
                     }
-                })
-            }
-            Tok::Int(v) => {
-                self.advance();
-                Ok(Expr::Const(Const::Int(v)))
-            }
-            Tok::BigInt(s) => {
-                self.advance();
-                Ok(Expr::Const(Const::BigInt(s)))
-            }
-            Tok::Float(v) => {
-                self.advance();
-                Ok(Expr::Const(Const::Float(v)))
-            }
-            Tok::Imag(v) => {
-                self.advance();
-                Ok(Expr::Const(Const::Imag(v)))
-            }
-            Tok::Str { .. } | Tok::FStart => self.strings(line),
-            Tok::Op("...") => {
-                self.advance();
-                Ok(Expr::Const(Const::Ellipsis))
-            }
+                    leaf(self, ExprKind::Name(n))
+                }
+            },
+            Tok::Int(v) => leaf(self, ExprKind::Const(Const::Int(v))),
+            Tok::BigInt(s) => leaf(self, ExprKind::Const(Const::BigInt(s))),
+            Tok::Float(v) => leaf(self, ExprKind::Const(Const::Float(v))),
+            Tok::Imag(v) => leaf(self, ExprKind::Const(Const::Imag(v))),
+            Tok::Str { .. } | Tok::FStart => self.strings(),
+            Tok::Op("...") => leaf(self, ExprKind::Const(Const::Ellipsis)),
             Tok::Op("(") => {
                 self.advance();
                 if self.eat_op(")") {
-                    return Ok(Expr::Tuple(vec![]));
+                    return Ok(self.node(start, ExprKind::Tuple(vec![])));
                 }
                 if self.at_kw("yield") {
                     let y = self.yield_expr()?;
                     self.expect_op(")")?;
                     return Ok(y);
                 }
-                let first = self.star_named()?;
+                let first = self.element()?;
                 if self.at_kw("for") || self.at_kw("async") {
+                    self.comp_elt(&first)?;
                     let comps = self.comp_for()?;
                     self.expect_op(")")?;
-                    return Ok(Expr::GenExp(Box::new(first), comps));
+                    return Ok(self.node(start, ExprKind::GenExp(Box::new(first), comps)));
                 }
                 if self.at_op(",") {
                     let mut items = vec![first];
@@ -1573,10 +1602,10 @@ impl Parser {
                         if self.at_op(")") {
                             break;
                         }
-                        items.push(self.star_named()?);
+                        items.push(self.element()?);
                     }
                     self.expect_op(")")?;
-                    return Ok(Expr::Tuple(items));
+                    return Ok(self.node(start, ExprKind::Tuple(items)));
                 }
                 self.expect_op(")")?;
                 Ok(first)
@@ -1584,62 +1613,68 @@ impl Parser {
             Tok::Op("[") => {
                 self.advance();
                 if self.eat_op("]") {
-                    return Ok(Expr::List(vec![]));
+                    return Ok(self.node(start, ExprKind::List(vec![])));
                 }
-                let first = self.star_named()?;
+                let first = self.element()?;
                 if self.at_kw("for") || self.at_kw("async") {
+                    self.comp_elt(&first)?;
                     let comps = self.comp_for()?;
                     self.expect_op("]")?;
-                    return Ok(Expr::ListComp(Box::new(first), comps));
+                    return Ok(self.node(start, ExprKind::ListComp(Box::new(first), comps)));
                 }
                 let mut items = vec![first];
                 while self.eat_op(",") {
                     if self.at_op("]") {
                         break;
                     }
-                    items.push(self.star_named()?);
+                    items.push(self.element()?);
                 }
                 self.expect_op("]")?;
-                Ok(Expr::List(items))
+                Ok(self.node(start, ExprKind::List(items)))
             }
             Tok::Op("{") => {
                 self.advance();
                 if self.eat_op("}") {
-                    return Ok(Expr::Dict(vec![]));
+                    return Ok(self.node(start, ExprKind::Dict(vec![])));
                 }
                 if self.eat_op("**") {
                     let v = self.bitor()?;
+                    if self.at_kw("for") || self.at_kw("async") {
+                        return Err(self.err_at("dict unpacking cannot be used in dict comprehension", self.span(start.to(self.start()))));
+                    }
                     let mut items = vec![(None, v)];
                     self.dict_rest(&mut items)?;
-                    return Ok(Expr::Dict(items));
+                    return Ok(self.node(start, ExprKind::Dict(items)));
                 }
-                let first = self.star_named()?;
+                let first = self.element()?;
                 if self.eat_op(":") {
                     let v = self.expression()?;
                     if self.at_kw("for") || self.at_kw("async") {
                         let comps = self.comp_for()?;
                         self.expect_op("}")?;
-                        return Ok(Expr::DictComp(Box::new(first), Box::new(v), comps));
+                        return Ok(self.node(start, ExprKind::DictComp(Box::new(first), Box::new(v), comps)));
                     }
                     let mut items = vec![(Some(first), v)];
                     self.dict_rest(&mut items)?;
-                    return Ok(Expr::Dict(items));
+                    return Ok(self.node(start, ExprKind::Dict(items)));
                 }
                 if self.at_kw("for") || self.at_kw("async") {
+                    self.comp_elt(&first)?;
                     let comps = self.comp_for()?;
                     self.expect_op("}")?;
-                    return Ok(Expr::SetComp(Box::new(first), comps));
+                    return Ok(self.node(start, ExprKind::SetComp(Box::new(first), comps)));
                 }
                 let mut items = vec![first];
                 while self.eat_op(",") {
                     if self.at_op("}") {
                         break;
                     }
-                    items.push(self.star_named()?);
+                    items.push(self.element()?);
                 }
                 self.expect_op("}")?;
-                Ok(Expr::Set(items))
+                Ok(self.node(start, ExprKind::Set(items)))
             }
+            Tok::Op("}") | Tok::Op(")") | Tok::Op("]") if self.closes_bracket() => Err(self.err("invalid syntax")),
             Tok::Op("}") | Tok::Op(")") | Tok::Op("]") => Err(self.err(&format!("unmatched '{}'", match t {
                 Tok::Op(o) => o,
                 _ => "",
@@ -1668,9 +1703,11 @@ impl Parser {
         self.expect_op("}")
     }
 
-    fn strings(&mut self, line: u32) -> PResult<Expr> {
+    /// adjacent string literals, joined; an f-string among them makes a JoinedStr
+    fn strings(&mut self) -> PResult<Expr> {
+        let start = self.start();
         let mut parts: Vec<Expr> = Vec::new();
-        let mut lit = String::new();
+        let mut lit = Lit::default();
         let mut any_f = false;
         let mut bytes = None;
         loop {
@@ -1680,37 +1717,38 @@ impl Parser {
                 _ => break,
             };
             if bytes.is_some_and(|pb| pb != b) {
-                return Err(SyntaxError { msg: "cannot mix bytes and nonbytes literals".into(), line, col: 0 });
+                return Err(self.err_at("cannot mix bytes and nonbytes literals", self.span(start)));
             }
             bytes = Some(b);
+            let at = self.start();
             if let Tok::Str { s, .. } = self.advance() {
-                lit.push_str(&s);
+                lit.push(&s, self.span(at));
             }
             if f {
                 any_f = true;
                 self.fstring(&mut parts, &mut lit)?;
             }
         }
+        let pos = self.span(start);
         if bytes == Some(true) {
-            let v: Vec<u8> = lit.chars().map(|c| c as u32 as u8).collect();
-            return Ok(Expr::Const(Const::Bytes(Rc::from(v))));
+            let v: Vec<u8> = lit.text.chars().map(|c| c as u32 as u8).collect();
+            return Ok(Expr::new(ExprKind::Const(Const::Bytes(Rc::from(v))), pos));
         }
         if !any_f {
-            return Ok(Expr::Const(Const::Str(Rc::from(lit.as_str()))));
+            return Ok(Expr::new(ExprKind::Const(Const::Str(Rc::from(lit.text.as_str()))), pos));
         }
-        if !lit.is_empty() {
-            parts.push(Expr::Const(Const::Str(Rc::from(lit.as_str()))));
-        }
-        Ok(Expr::JoinedStr(parts))
+        lit.flush(&mut parts);
+        Ok(Expr::new(ExprKind::JoinedStr(parts), pos))
     }
 
     /// the rest of an f-string after FStart: its text and replacement fields
-    fn fstring(&mut self, parts: &mut Vec<Expr>, lit: &mut String) -> PResult<()> {
+    fn fstring(&mut self, parts: &mut Vec<Expr>, lit: &mut Lit) -> PResult<()> {
         loop {
+            let at = self.start();
             match self.peek().clone() {
                 Tok::FMiddle(s) => {
                     self.advance();
-                    lit.push_str(&s);
+                    lit.push(&s, self.span(at));
                 }
                 Tok::FEnd => {
                     self.advance();
@@ -1718,12 +1756,9 @@ impl Parser {
                 }
                 Tok::Op("{") => {
                     self.advance();
-                    let (debug, field) = self.replacement_field()?;
-                    lit.push_str(&debug);
-                    if !lit.is_empty() {
-                        parts.push(Expr::Const(Const::Str(Rc::from(lit.as_str()))));
-                        lit.clear();
-                    }
+                    let (debug, field) = self.replacement_field(at)?;
+                    lit.push(&debug, debug_pos(&debug, &field));
+                    lit.flush(parts);
                     parts.push(field);
                 }
                 _ => return Err(self.err("invalid syntax")),
@@ -1731,9 +1766,9 @@ impl Parser {
         }
     }
 
-    /// `expr [=] [!conv] [:spec] }` after a field's `{`; the text a
-    /// self-documenting field shows, and the formatted value
-    fn replacement_field(&mut self) -> PResult<(String, Expr)> {
+    /// `expr [=] [!conv] [:spec] }` after a field's `{` at `open`; the text
+    /// a self-documenting field shows, and the formatted value
+    fn replacement_field(&mut self, open: Pos) -> PResult<(String, Expr)> {
         let before = match self.peek() {
             Tok::FDebug(_) => Some('='),
             Tok::Op("!") => Some('!'),
@@ -1753,7 +1788,7 @@ impl Parser {
             Err(e) if e.msg == "invalid syntax" && !matches!(self.peek(), Tok::Error(_)) => return Err(self.err(after_brace)),
             v => v?,
         };
-        if matches!(value, Expr::Starred(_)) {
+        if matches!(value.kind, ExprKind::Starred(_)) {
             return Err(self.err("can't use starred expression here"));
         }
         let mut debug = String::new();
@@ -1785,26 +1820,28 @@ impl Parser {
             }
         }
         let mut spec = None;
+        let spec_start = self.start();
         if self.eat_tok(&Tok::FSpec) {
             let mut sp = Vec::new();
             loop {
+                let at = self.start();
                 match self.peek().clone() {
                     Tok::FMiddle(s) => {
                         self.advance();
-                        sp.push(Expr::Const(Const::Str(Rc::from(s.as_str()))));
+                        sp.push(self.node(at, ExprKind::Const(Const::Str(Rc::from(s.as_str())))));
                     }
                     Tok::Op("{") => {
                         self.advance();
-                        let (d, f) = self.replacement_field()?;
+                        let (d, f) = self.replacement_field(at)?;
                         if !d.is_empty() {
-                            sp.push(Expr::Const(Const::Str(Rc::from(d.as_str()))));
+                            sp.push(Expr::new(ExprKind::Const(Const::Str(Rc::from(d.as_str()))), debug_pos(&d, &f)));
                         }
                         sp.push(f);
                     }
                     _ => break,
                 }
             }
-            spec = Some(Box::new(Expr::JoinedStr(sp)));
+            spec = Some(Box::new(self.node(spec_start, ExprKind::JoinedStr(sp))));
         }
         if !self.eat_op("}") {
             let msg = if spec.is_some() {
@@ -1814,31 +1851,87 @@ impl Parser {
             } else if !debug.is_empty() {
                 "f-string: expecting '!', or ':', or '}'"
             } else if self.starts_expr() {
-                "invalid syntax. Perhaps you forgot a comma?"
+                return Err(self.missing_comma());
             } else {
                 "f-string: expecting '=', or '!', or ':', or '}'"
             };
             return Err(self.err(msg));
         }
         let conv = if conv == '\0' && !debug.is_empty() && spec.is_none() { 'r' } else { conv };
-        Ok((debug, Expr::FormattedValue { value: Box::new(value), conv, spec }))
+        Ok((debug, self.node(open, ExprKind::FormattedValue { value: Box::new(value), conv, spec })))
     }
 }
 
-fn check_target(e: &Expr) -> Result<(), String> {
-    match e {
-        Expr::Name(_) | Expr::Attr(..) | Expr::Subscript(..) => Ok(()),
-        Expr::Tuple(items) | Expr::List(items) => {
-            for it in items {
-                check_target(it)?;
-            }
-            Ok(())
+/// the literal text of a JoinedStr being gathered, and its span
+#[derive(Default)]
+struct Lit {
+    text: String,
+    pos: Option<Pos>,
+}
+
+impl Lit {
+    fn push(&mut self, s: &str, pos: Pos) {
+        if s.is_empty() {
+            return;
         }
-        Expr::Starred(inner) => check_target(inner),
-        Expr::Call { .. } => Err("cannot assign to function call here. Maybe you meant '==' instead of '='?".into()),
-        Expr::Const(_) => Err("cannot assign to literal here. Maybe you meant '==' instead of '='?".into()),
-        _ => Err("cannot assign to expression here. Maybe you meant '==' instead of '='?".into()),
+        self.text.push_str(s);
+        self.pos = Some(self.pos.map_or(pos, |p| p.to(pos)));
     }
+
+    /// ends the text gathered so far as a Constant part
+    fn flush(&mut self, parts: &mut Vec<Expr>) {
+        if let Some(pos) = self.pos.take() {
+            parts.push(Expr::new(ExprKind::Const(Const::Str(Rc::from(std::mem::take(&mut self.text).as_str()))), pos));
+        }
+    }
+}
+
+/// the span of a self-documenting field's text: from its expression on
+fn debug_pos(text: &str, field: &Expr) -> Pos {
+    let start = match &field.kind {
+        ExprKind::FormattedValue { value, .. } => value.pos,
+        _ => field.pos,
+    };
+    let (end_line, end_col) = match text.rfind('\n') {
+        Some(i) => (start.line + text.matches('\n').count() as u32, (text.len() - i - 1) as u32),
+        None => (start.line, start.col + text.len() as u32),
+    };
+    Pos { end_line, end_col, ..start }
+}
+
+/// a compound statement's span: from `start` to the end of its last body
+fn block_end(start: Pos, body: &[Stmt], orelse: &[Stmt]) -> Pos {
+    match orelse.last().or(body.last()) {
+        Some(s) => start.to(s.pos),
+        None => start,
+    }
+}
+
+fn func_stmt(start: Pos, f: FuncDef) -> Stmt {
+    Stmt { pos: block_end(start, &f.body, &[]), kind: StmtKind::FuncDef(Rc::new(f)) }
+}
+
+fn class_stmt(start: Pos, c: ClassDef) -> Stmt {
+    Stmt { pos: block_end(start, &c.body, &[]), kind: StmtKind::ClassDef(Rc::new(c)) }
+}
+
+/// whether an expression is one CPython's grammar takes for the left of a
+/// mistyped `==`: a bitwise_or, but not a display or True/False/None
+fn reads_as_comparison(e: &Expr) -> bool {
+    !matches!(
+        e.kind,
+        ExprKind::Lambda(_)
+            | ExprKind::IfExp(..)
+            | ExprKind::BoolAnd(_)
+            | ExprKind::BoolOr(_)
+            | ExprKind::Unary(UnOp::Not, _)
+            | ExprKind::Compare(..)
+            | ExprKind::Tuple(_)
+            | ExprKind::List(_)
+            | ExprKind::GenExp(..)
+            | ExprKind::Starred(_)
+            | ExprKind::Const(Const::True | Const::False | Const::None)
+    )
 }
 
 pub fn is_keyword(s: &str) -> bool {
@@ -1848,60 +1941,4 @@ pub fn is_keyword(s: &str) -> bool {
             | "except" | "finally" | "for" | "from" | "global" | "if" | "import" | "in" | "is" | "lambda" | "nonlocal" | "not" | "or" | "pass"
             | "raise" | "return" | "try" | "while" | "with" | "yield"
     )
-}
-
-fn str_const(s: &str) -> Expr {
-    Expr::Const(Const::Str(Rc::from(s)))
-}
-
-fn call(func: Expr, args: Vec<Arg>) -> Expr {
-    Expr::Call { func: Box::new(func), args }
-}
-
-/// typing.NAME, through __import__ so no name is bound
-fn typing_attr(name: &str) -> Expr {
-    let m = call(Expr::Name(Rc::from("__import__")), vec![Arg::Pos(str_const("typing"))]);
-    Expr::Attr(Box::new(m), Rc::from(name))
-}
-
-/// the definition, then NAME.__type_params__ = (T, ...) and return NAME
-fn generic_body(name: &Name, tps: &[TypeParam], def: Stmt, line: u32) -> Vec<Stmt> {
-    let tuple = Expr::Tuple(tps.iter().map(|t| Expr::Name(t.name.clone())).collect());
-    vec![
-        def,
-        Stmt { line, kind: StmtKind::Assign(vec![Expr::Attr(Box::new(Expr::Name(name.clone())), Rc::from("__type_params__"))], tuple) },
-        Stmt { line, kind: StmtKind::Return(Some(Expr::Name(name.clone()))) },
-    ]
-}
-
-/// PEP 695: the type parameters become the parameters of a hidden function
-/// that is called with new TypeVars; its result, decorated, is bound to NAME
-fn generic_wrap(out: &mut Vec<Stmt>, name: &Name, tps: Vec<TypeParam>, body: Vec<Stmt>, decos: Vec<Expr>, line: u32) {
-    let wname: Name = Rc::from(format!("<generic parameters of {}>", name).as_str());
-    let mut params = Params::default();
-    let mut vars = vec![];
-    for t in tps {
-        params.args.push(Param { name: t.name.clone(), default: None, annotation: None });
-        let cls = match t.kind {
-            1 => "TypeVarTuple",
-            2 => "ParamSpec",
-            _ => "TypeVar",
-        };
-        let mut args = vec![Arg::Pos(str_const(&t.name)), Arg::Kw(Rc::from("infer_variance"), Expr::Const(Const::True))];
-        if let Some(b) = t.bound {
-            args.push(Arg::Kw(Rc::from("bound"), b));
-        }
-        if let Some(d) = t.default {
-            args.push(Arg::Kw(Rc::from("default"), d));
-        }
-        vars.push(Arg::Pos(call(typing_attr(cls), args)));
-    }
-    let wrapper = FuncDef { name: wname.clone(), params, body, decorators: vec![], returns: None, is_lambda: false, is_async: false, line };
-    out.push(Stmt { line, kind: StmtKind::FuncDef(Rc::new(wrapper)) });
-    let mut v = call(Expr::Name(wname.clone()), vars);
-    for d in decos.into_iter().rev() {
-        v = call(d, vec![Arg::Pos(v)]);
-    }
-    out.push(Stmt { line, kind: StmtKind::Assign(vec![Expr::Name(name.clone())], v) });
-    out.push(Stmt { line, kind: StmtKind::Del(vec![Expr::Name(wname)]) });
 }

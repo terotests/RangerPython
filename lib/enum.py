@@ -693,6 +693,9 @@ def pickle_by_global_name(self, proto):
 
 
 def _simple_enum(etype=Enum, *, boundary=None, use_args=None):
+    # the decorated class body, replayed as an enum of etype
     def convert(cls):
-        return cls
+        body = {k: v for k, v in cls.__dict__.items() if k not in ("__dict__", "__weakref__")}
+        kw = {} if boundary is None else {"boundary": boundary}
+        return type(etype)(cls.__name__, (etype,), body, **kw)
     return convert

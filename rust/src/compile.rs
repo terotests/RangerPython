@@ -11,6 +11,36 @@ use std::rc::Rc;
 pub struct CompileError {
     pub msg: String,
     pub line: u32,
+    /// the source of the error, when known
+    pub span: Option<Pos>,
+}
+
+impl CompileError {
+    pub fn new(msg: impl Into<String>, line: u32) -> CompileError {
+        CompileError { msg: msg.into(), line, span: None }
+    }
+
+    /// an error spanning a node
+    pub fn at(msg: impl Into<String>, pos: Pos) -> CompileError {
+        CompileError { msg: msg.into(), line: pos.line, span: Some(pos) }
+    }
+
+    /// as the parser's error, the byte columns of the span made character
+    /// columns of `src` when it is known
+    pub fn syntax_error(&self, src: Option<&str>) -> crate::parser::SyntaxError {
+        let mut e = crate::parser::SyntaxError::new(self.msg.clone(), self.line, 0);
+        if let Some(p) = self.span {
+            let col = |line: u32, b: u32| {
+                let text = src.and_then(|s| s.lines().nth((line as usize).wrapping_sub(1)));
+                match text.and_then(|t| t.get(..b as usize)) {
+                    Some(head) => head.chars().count() as u32 + 1,
+                    None => b + 1,
+                }
+            };
+            (e.col, e.end_line, e.end_col) = (col(p.line, p.col), p.end_line, col(p.end_line, p.end_col));
+        }
+        e
+    }
 }
 
 type CResult<T> = Result<T, CompileError>;
@@ -32,6 +62,8 @@ struct Scope {
     assigned: HashSet<Name>,
     globals: HashSet<Name>,
     nonlocals: HashSet<Name>,
+    /// where each global or nonlocal name was first declared so
+    directives: HashMap<Name, Pos>,
     used: HashSet<Name>,
     is_gen: bool,
     is_comp: bool,
@@ -55,6 +87,7 @@ impl Scope {
             assigned: HashSet::new(),
             globals: HashSet::new(),
             nonlocals: HashSet::new(),
+            directives: HashMap::new(),
             used: HashSet::new(),
             is_gen: false,
             is_comp: false,
@@ -93,8 +126,8 @@ struct Collector<'a> {
     cls: Vec<String>,
     /// compile()'s PyCF_ALLOW_TOP_LEVEL_AWAIT
     top_await: bool,
-    /// the line of the statement being visited, for errors
-    line: u32,
+    /// the span of the node being visited, for errors
+    pos: Pos,
 }
 
 impl<'a> Collector<'a> {
@@ -123,19 +156,19 @@ impl<'a> Collector<'a> {
     }
 
     fn target(&mut self, e: &Expr) -> CResult<()> {
-        match e {
-            Expr::Name(n) => {
+        match &e.kind {
+            ExprKind::Name(n) => {
                 let n = self.mg(n);
                 self.sc().assign(&n);
             }
-            Expr::Tuple(items) | Expr::List(items) => {
+            ExprKind::Tuple(items) | ExprKind::List(items) => {
                 for i in items {
                     self.target(i)?;
                 }
             }
-            Expr::Starred(inner) => self.target(inner)?,
-            Expr::Attr(obj, _) => self.expr(obj)?,
-            Expr::Subscript(obj, idx) => {
+            ExprKind::Starred(inner) => self.target(inner)?,
+            ExprKind::Attr(obj, _) => self.expr(obj)?,
+            ExprKind::Subscript(obj, idx) => {
                 self.expr(obj)?;
                 self.expr(idx)?;
             }
@@ -188,7 +221,7 @@ impl<'a> Collector<'a> {
     }
 
     fn stmt(&mut self, s: &Stmt) -> CResult<()> {
-        self.line = s.line;
+        self.pos = s.pos;
         match &s.kind {
             StmtKind::Expr(e) => self.expr(e)?,
             StmtKind::Assign(ts, v) => {
@@ -199,7 +232,7 @@ impl<'a> Collector<'a> {
             }
             StmtKind::AugAssign(t, _, v) => {
                 self.expr(v)?;
-                if let Expr::Name(n) = t {
+                if let ExprKind::Name(n) = &t.kind {
                     let n = n.clone();
                     self.sc().used.insert(n.clone());
                     self.sc().assign(&n);
@@ -208,12 +241,12 @@ impl<'a> Collector<'a> {
                 }
             }
             StmtKind::AnnAssign(t, ann, v, simple) => {
-                if let Expr::Name(n) = t {
+                if let ExprKind::Name(n) = &t.kind {
                     let n = self.mg(n);
                     let sc = self.sc();
                     let what = if sc.globals.contains(&n) { "global" } else if sc.nonlocals.contains(&n) { "nonlocal" } else { "" };
                     if !what.is_empty() {
-                        return Err(CompileError { msg: format!("annotated name '{}' can't be {}", n, what), line: s.line });
+                        return Err(CompileError::at(format!("annotated name '{}' can't be {}", n, what), s.pos));
                     }
                 }
                 if !self.st.future_annotations {
@@ -222,7 +255,7 @@ impl<'a> Collector<'a> {
                 if let Some(v) = v {
                     self.expr(v)?;
                     self.target(t)?;
-                } else if let Expr::Name(n) = t {
+                } else if let ExprKind::Name(n) = &t.kind {
                     // a bare annotation still makes the name local
                     if self.sc().kind == ScopeKind::Function && *simple {
                         let n = n.clone();
@@ -237,7 +270,7 @@ impl<'a> Collector<'a> {
                 self.stmts(a)?;
                 self.stmts(b)?;
             }
-            StmtKind::For(t, it, a, b) => {
+            StmtKind::For(t, it, a, b, _) => {
                 self.expr(it)?;
                 self.target(t)?;
                 self.stmts(a)?;
@@ -260,7 +293,7 @@ impl<'a> Collector<'a> {
                 }
                 for b in &c.bases {
                     match b {
-                        Arg::Pos(e) | Arg::Star(e) | Arg::Kw(_, e) | Arg::StarStar(e) => self.expr(e)?,
+                        Arg::Pos(e) | Arg::Star(e) | Arg::Kw(_, e, _) | Arg::StarStar(e, _) => self.expr(e)?,
                     }
                 }
                 let id = self.new_scope(ScopeKind::Class, Rc::as_ptr(c) as usize);
@@ -273,25 +306,40 @@ impl<'a> Collector<'a> {
                 let n = self.mg(&c.name);
                 self.sc().assign(&n);
             }
-            StmtKind::Global(ns) => {
+            StmtKind::Global(ns) | StmtKind::Nonlocal(ns) => {
+                let what = if matches!(s.kind, StmtKind::Global(_)) { "global" } else { "nonlocal" };
+                if what == "nonlocal" && self.sc().kind == ScopeKind::Module {
+                    return Err(CompileError::at("nonlocal declaration not allowed at module level", s.pos));
+                }
                 for n in ns {
                     let n = &self.mg(n);
-                    if self.sc().assigned.contains(n) || self.sc().used.contains(n) {
-                        return Err(CompileError { msg: format!("name '{}' is used prior to global declaration", n), line: s.line });
+                    let sc = self.sc();
+                    let prior = if sc.params.contains(n) {
+                        Some(format!("name '{}' is parameter and {}", n, what))
+                    } else if sc.used.contains(n) {
+                        Some(format!("name '{}' is used prior to {} declaration", n, what))
+                    } else if sc.assigned.contains(n) {
+                        Some(format!("name '{}' is assigned to before {} declaration", n, what))
+                    } else {
+                        None
+                    };
+                    if let Some(msg) = prior {
+                        return Err(CompileError::at(msg, s.pos));
                     }
-                    self.sc().globals.insert(n.clone());
+                    // both: an error where the first of them is
+                    let other = if what == "global" { &sc.nonlocals } else { &sc.globals };
+                    if other.contains(n) {
+                        return Err(CompileError::at(format!("name '{}' is nonlocal and global", n), sc.directives[n]));
+                    }
+                    sc.directives.entry(n.clone()).or_insert(s.pos);
+                    if what == "nonlocal" {
+                        sc.nonlocals.insert(n.clone());
+                        continue;
+                    }
+                    sc.globals.insert(n.clone());
                     // as in CPython, the module's own uses of the name
                     // become explicitly global too
                     self.st.scopes[0].globals.insert(n.clone());
-                }
-            }
-            StmtKind::Nonlocal(ns) => {
-                if self.sc().kind == ScopeKind::Module {
-                    return Err(CompileError { msg: "nonlocal declaration not allowed at module level".into(), line: s.line });
-                }
-                for n in ns {
-                    let n = self.mg(n);
-                    self.sc().nonlocals.insert(n);
                 }
             }
             StmtKind::Del(ts) => {
@@ -322,7 +370,7 @@ impl<'a> Collector<'a> {
                 self.stmts(orelse)?;
                 self.stmts(finally)?;
             }
-            StmtKind::With(items, body) => {
+            StmtKind::With(items, body, _) => {
                 for (e, t) in items {
                     self.expr(e)?;
                     if let Some(t) = t {
@@ -332,7 +380,7 @@ impl<'a> Collector<'a> {
                 self.stmts(body)?;
             }
             StmtKind::Import(names) => {
-                for (m, alias) in names {
+                for Alias { name: m, asname: alias, .. } in names {
                     let n: Name = match alias {
                         Some(a) => a.clone(),
                         None => Rc::from(m.split('.').next().unwrap()),
@@ -341,13 +389,13 @@ impl<'a> Collector<'a> {
                 }
             }
             StmtKind::ImportFrom { module, names, .. } => {
-                if &**module == "__future__" && names.iter().any(|(n, _)| &**n == "annotations") {
+                if &**module == "__future__" && names.iter().any(|a| &*a.name == "annotations") {
                     self.st.future_annotations = true;
                 }
-                for (n, alias) in names {
+                for Alias { name: n, asname: alias, pos } in names {
                     if &**n == "*" {
                         if self.sc().kind != ScopeKind::Module {
-                            return Err(CompileError { msg: "import * only allowed at module level".into(), line: s.line });
+                            return Err(CompileError::at("import * only allowed at module level", *pos));
                         }
                         continue;
                     }
@@ -361,6 +409,7 @@ impl<'a> Collector<'a> {
                     self.expr(b)?;
                 }
             }
+            StmtKind::TypeAlias(..) => unreachable!("lowered"),
             StmtKind::Match(subj, cases) => {
                 self.expr(subj)?;
                 for c in cases {
@@ -376,19 +425,19 @@ impl<'a> Collector<'a> {
     }
 
     fn pattern(&mut self, p: &Pattern) -> CResult<()> {
-        match p {
-            Pattern::Capture(Some(n)) | Pattern::Star(Some(n)) => {
+        match &p.kind {
+            PatternKind::Capture(Some(n)) | PatternKind::Star(Some(n)) => {
                 let n = n.clone();
                 self.sc().assign(&n);
             }
-            Pattern::Capture(None) | Pattern::Star(None) | Pattern::Singleton(_) => {}
-            Pattern::Value(e) => self.expr(e)?,
-            Pattern::Sequence(ps) | Pattern::Or(ps) => {
+            PatternKind::Capture(None) | PatternKind::Star(None) | PatternKind::Singleton(_) => {}
+            PatternKind::Value(e) => self.expr(e)?,
+            PatternKind::Sequence(ps) | PatternKind::Or(ps) => {
                 for q in ps {
                     self.pattern(q)?;
                 }
             }
-            Pattern::Mapping { keys, pats, rest } => {
+            PatternKind::Mapping { keys, pats, rest } => {
                 for k in keys {
                     self.expr(k)?;
                 }
@@ -400,7 +449,7 @@ impl<'a> Collector<'a> {
                     self.sc().assign(&r);
                 }
             }
-            Pattern::Class { cls, args, kw } => {
+            PatternKind::Class { cls, args, kw } => {
                 self.expr(cls)?;
                 for q in args {
                     self.pattern(q)?;
@@ -409,7 +458,7 @@ impl<'a> Collector<'a> {
                     self.pattern(q)?;
                 }
             }
-            Pattern::As(q, n) => {
+            PatternKind::As(q, n) => {
                 self.pattern(q)?;
                 let n = n.clone();
                 self.sc().assign(&n);
@@ -418,10 +467,10 @@ impl<'a> Collector<'a> {
         Ok(())
     }
 
-    fn comp(&mut self, node: usize, elts: &[&Expr], comps: &[Comp], genexp: bool) -> CResult<()> {
+    fn comp(&mut self, e: &Expr, elts: &[&Expr], comps: &[Comp], genexp: bool) -> CResult<()> {
         // the first iterable is evaluated in the enclosing scope
         self.expr(&comps[0].iter)?;
-        let id = self.new_scope(ScopeKind::Function, node);
+        let id = self.new_scope(ScopeKind::Function, key(e));
         let save = self.cur;
         self.cur = id;
         self.sc().is_comp = true;
@@ -429,6 +478,14 @@ impl<'a> Collector<'a> {
         for (i, c) in comps.iter().enumerate() {
             if i > 0 {
                 self.expr(&c.iter)?;
+            }
+            // a name an assignment expression in this comprehension bound
+            let mut names = vec![];
+            target_names(&c.target, &mut names);
+            let sc = &self.st.scopes[id];
+            if let Some(t) = names.into_iter().find(|t| matches!(&t.kind, ExprKind::Name(n) if sc.nonlocals.contains(n) || sc.globals.contains(n))) {
+                let ExprKind::Name(n) = &t.kind else { unreachable!() };
+                return Err(CompileError::at(format!("comprehension inner loop cannot rebind assignment expression target '{}'", n), t.pos));
             }
             self.target(&c.target)?;
             for f in &c.ifs {
@@ -447,7 +504,7 @@ impl<'a> Collector<'a> {
                 let outer = &self.st.scopes[save];
                 let ok = outer.is_async || outer.is_comp || (self.top_await && outer.kind == ScopeKind::Module);
                 if !ok {
-                    return Err(CompileError { msg: "asynchronous comprehension outside of an asynchronous function".into(), line: self.line });
+                    return Err(CompileError::at("asynchronous comprehension outside of an asynchronous function", e.pos));
                 }
                 self.st.scopes[save].coro = true;
             }
@@ -456,74 +513,80 @@ impl<'a> Collector<'a> {
     }
 
     fn expr(&mut self, e: &Expr) -> CResult<()> {
-        match e {
-            Expr::Name(n) => {
+        self.pos = e.pos;
+        match &e.kind {
+            ExprKind::Name(n) => {
                 let n = self.mg(n);
                 if &*n == "super" {
                     self.sc().used.insert(Rc::from("__class__"));
                 }
                 self.sc().used.insert(n);
             }
-            Expr::Const(_) => {}
-            Expr::JoinedStr(parts) => {
+            ExprKind::Const(_) => {}
+            ExprKind::JoinedStr(parts) => {
                 for p in parts {
                     self.expr(p)?;
                 }
             }
-            Expr::FormattedValue { value, spec, .. } => {
+            ExprKind::FormattedValue { value, spec, .. } => {
                 self.expr(value)?;
                 if let Some(s) = spec {
                     self.expr(s)?;
                 }
             }
-            Expr::Bin(_, a, b) | Expr::BoolAnd(a, b) | Expr::BoolOr(a, b) | Expr::Subscript(a, b) => {
+            ExprKind::BoolAnd(values) | ExprKind::BoolOr(values) => {
+                for v in values {
+                    self.expr(v)?;
+                }
+            }
+            ExprKind::Bin(_, a, b) | ExprKind::Subscript(a, b) => {
                 self.expr(a)?;
                 self.expr(b)?;
             }
-            Expr::Await(a) => {
+            ExprKind::Await(a) => {
                 let sc = &self.st.scopes[self.cur];
                 if !(self.top_await && sc.kind == ScopeKind::Module) {
                     if sc.kind != ScopeKind::Function {
-                        return Err(CompileError { msg: "'await' outside function".into(), line: self.line });
+                        return Err(CompileError::at("'await' outside function", self.pos));
                     }
                     if !sc.is_async && !sc.is_comp {
-                        return Err(CompileError { msg: "'await' outside async function".into(), line: self.line });
+                        return Err(CompileError::at("'await' outside async function", self.pos));
                     }
                 }
                 self.sc().coro = true;
                 self.expr(a)?;
             }
-            Expr::Unary(_, a) | Expr::Starred(a) | Expr::Attr(a, _) => self.expr(a)?,
-            Expr::Compare(a, rest) => {
+            ExprKind::Unary(_, a) | ExprKind::Starred(a) | ExprKind::Attr(a, _) => self.expr(a)?,
+            ExprKind::Compare(a, rest) => {
                 self.expr(a)?;
                 for (_, b) in rest {
                     self.expr(b)?;
                 }
             }
-            Expr::IfExp(c, a, b) => {
+            ExprKind::IfExp(c, a, b) => {
                 self.expr(c)?;
                 self.expr(a)?;
                 self.expr(b)?;
             }
-            Expr::Call { func, args } => {
+            ExprKind::Call { func, args } => {
                 self.expr(func)?;
                 for a in args {
                     match a {
-                        Arg::Pos(e) | Arg::Star(e) | Arg::Kw(_, e) | Arg::StarStar(e) => self.expr(e)?,
+                        Arg::Pos(e) | Arg::Star(e) | Arg::Kw(_, e, _) | Arg::StarStar(e, _) => self.expr(e)?,
                     }
                 }
             }
-            Expr::Slice(a, b, c) => {
+            ExprKind::Slice(a, b, c) => {
                 for x in [a, b, c].into_iter().flatten() {
                     self.expr(x)?;
                 }
             }
-            Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
+            ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
                 for i in items {
                     self.expr(i)?;
                 }
             }
-            Expr::Dict(items) => {
+            ExprKind::Dict(items) => {
                 for (k, v) in items {
                     if let Some(k) = k {
                         self.expr(k)?;
@@ -531,16 +594,19 @@ impl<'a> Collector<'a> {
                     self.expr(v)?;
                 }
             }
-            Expr::Lambda(f) => self.func(f)?,
-            Expr::ListComp(elt, comps) | Expr::SetComp(elt, comps) => self.comp(key(e), &[elt], comps, false)?,
-            Expr::GenExp(elt, comps) => {
-                self.comp(key(e), &[elt], comps, true)?;
+            ExprKind::Lambda(f) => self.func(f)?,
+            ExprKind::ListComp(elt, comps) | ExprKind::SetComp(elt, comps) => self.comp(e, &[elt], comps, false)?,
+            ExprKind::GenExp(elt, comps) => {
+                self.comp(e, &[elt], comps, true)?;
                 let id = self.st.by_node[&key(e)];
                 self.st.scopes[id].is_gen = true;
             }
-            Expr::DictComp(k, v, comps) => self.comp(key(e), &[k, v], comps, false)?,
-            Expr::NamedExpr(n, v) => {
+            ExprKind::DictComp(k, v, comps) => self.comp(e, &[k, v], comps, false)?,
+            ExprKind::NamedExpr(n, v) => {
                 self.expr(v)?;
+                if self.sc().is_comp && self.sc().assigned.contains(n) {
+                    return Err(CompileError::at(format!("assignment expression cannot rebind comprehension iteration variable '{}'", n), e.pos));
+                }
                 // in a comprehension the name binds in the enclosing function
                 let mut s = self.cur;
                 while self.st.scopes[s].is_comp {
@@ -560,13 +626,13 @@ impl<'a> Collector<'a> {
                 }
                 self.st.scopes[s].assign(n);
             }
-            Expr::Yield(v) => {
+            ExprKind::Yield(v) => {
                 self.sc().is_gen = true;
                 if let Some(v) = v {
                     self.expr(v)?;
                 }
             }
-            Expr::YieldFrom(v) => {
+            ExprKind::YieldFrom(v) => {
                 self.sc().is_gen = true;
                 self.expr(v)?;
             }
@@ -579,7 +645,7 @@ impl SymTable {
     fn build(body: &[Stmt], top_await: bool) -> CResult<SymTable> {
         let mut st = SymTable { scopes: vec![Scope::new(ScopeKind::Module, None)], by_node: HashMap::new(), future_annotations: false };
         {
-            let mut c = Collector { st: &mut st, cur: 0, cls: vec![], top_await, line: 1 };
+            let mut c = Collector { st: &mut st, cur: 0, cls: vec![], top_await, pos: Pos::default() };
             c.stmts(body)?;
         }
         st.resolve()?;
@@ -648,7 +714,7 @@ impl SymTable {
                 let is_nonlocal = s.nonlocals.contains(&n);
                 let found = self.resolve_free(i, &n);
                 if is_nonlocal && !found {
-                    return Err(CompileError { msg: format!("no binding for nonlocal '{}' found", n), line: 0 });
+                    return Err(CompileError::at(format!("no binding for nonlocal '{}' found", n), self.scopes[i].directives[&n]));
                 }
             }
         }
@@ -676,7 +742,7 @@ struct Unit<'a> {
     scope: usize,
     kind: ScopeKind,
     ops: Vec<Op>,
-    lines: Vec<u32>,
+    positions: Vec<Pos>,
     consts: Vec<Value>,
     str_consts: HashMap<String, u32>,
     names: Vec<Rc<PyStr>>,
@@ -687,7 +753,8 @@ struct Unit<'a> {
     freevars: Vec<Name>,
     cell_map: HashMap<Name, u32>,
     blocks: Vec<FBlock<'a>>,
-    line: u32,
+    /// the source span the instructions emitted now come from
+    pos: Pos,
     qualname: String,
     tmp: u32,
 }
@@ -696,24 +763,27 @@ pub struct Compiler<'a> {
     st: SymTable,
     units: Vec<Unit<'a>>,
     filename: Rc<str>,
+    /// compile()'s optimize: from 1 asserts go and __debug__ is false, at 2 docstrings go too
+    optimize: u8,
 }
 
-pub fn compile_module(body: &[Stmt], filename: &str) -> CResult<Rc<Code>> {
-    compile_module_flags(body, filename, false)
+pub fn compile_module(body: Vec<Stmt>, filename: &str) -> CResult<Rc<Code>> {
+    compile_module_opt(body, filename, 0, false)
 }
 
-/// compile_module with compile()'s PyCF_ALLOW_TOP_LEVEL_AWAIT: a module that
-/// awaits becomes a coroutine
-pub fn compile_module_flags(body: &[Stmt], filename: &str, top_await: bool) -> CResult<Rc<Code>> {
+pub fn compile_module_opt(mut body: Vec<Stmt>, filename: &str, optimize: u8, top_await: bool) -> CResult<Rc<Code>> {
+    check_future(&body)?;
+    crate::lower::lower(&mut body, top_await)?;
+    let body = &body[..];
     let st = SymTable::build(body, top_await)?;
-    let mut c = Compiler { st, units: vec![], filename: Rc::from(filename) };
+    let mut c = Compiler { st, units: vec![], filename: Rc::from(filename), optimize };
     c.push_unit(0, "<module>".into());
     let has_ann = has_annotations(body);
     if has_ann {
         c.emit(Op::SetupAnnotations);
     }
     // a docstring
-    if let Some(Stmt { kind: StmtKind::Expr(Expr::Const(Const::Str(d))), .. }) = body.first() {
+    if let (Some(Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Const(Const::Str(d)), .. }), .. }), true) = (body.first(), optimize < 2) {
         let k = c.const_str(d);
         c.emit(Op::LoadConst(k));
         let n = c.name_idx(&Rc::from("__doc__"));
@@ -727,13 +797,60 @@ pub fn compile_module_flags(body: &[Stmt], filename: &str, top_await: bool) -> C
     Ok(Rc::new(code))
 }
 
+/// the names an assignment target binds
+fn target_names<'e>(t: &'e Expr, out: &mut Vec<&'e Expr>) {
+    match &t.kind {
+        ExprKind::Name(_) => out.push(t),
+        ExprKind::Tuple(items) | ExprKind::List(items) => items.iter().for_each(|i| target_names(i, out)),
+        ExprKind::Starred(inner) => target_names(inner, out),
+        _ => {}
+    }
+}
+
+/// `from __future__` imports: features that exist, before anything but the docstring
+fn check_future(body: &[Stmt]) -> CResult<()> {
+    const FEATURES: [&str; 10] = [
+        "nested_scopes",
+        "generators",
+        "division",
+        "absolute_import",
+        "with_statement",
+        "print_function",
+        "unicode_literals",
+        "barry_as_FLUFL",
+        "generator_stop",
+        "annotations",
+    ];
+    let mut done = false;
+    for (i, s) in body.iter().enumerate() {
+        match &s.kind {
+            StmtKind::ImportFrom { module, names, level: 0 } if &**module == "__future__" => {
+                if done {
+                    return Err(CompileError::at("from __future__ imports must occur at the beginning of the file", s.pos));
+                }
+                for a in names {
+                    if &*a.name == "braces" {
+                        return Err(CompileError::at("not a chance", s.pos));
+                    }
+                    if !FEATURES.contains(&&*a.name) {
+                        return Err(CompileError::at(format!("future feature {} is not defined", a.name), s.pos));
+                    }
+                }
+            }
+            StmtKind::Expr(Expr { kind: ExprKind::Const(Const::Str(_)), .. }) if i == 0 => {}
+            _ => done = true,
+        }
+    }
+    Ok(())
+}
+
 /// whether a module or class body has annotations to store, which
 /// compound statements may hold
 fn has_annotations(body: &[Stmt]) -> bool {
     body.iter().any(|s| match &s.kind {
         StmtKind::AnnAssign(..) => true,
-        StmtKind::If(_, a, b) | StmtKind::While(_, a, b) | StmtKind::For(_, _, a, b) => has_annotations(a) || has_annotations(b),
-        StmtKind::With(_, a) => has_annotations(a),
+        StmtKind::If(_, a, b) | StmtKind::While(_, a, b) | StmtKind::For(_, _, a, b, _) => has_annotations(a) || has_annotations(b),
+        StmtKind::With(_, a, _) => has_annotations(a),
         StmtKind::Try { body, handlers, orelse, finally, .. } => {
             has_annotations(body) || handlers.iter().any(|h| has_annotations(&h.body)) || has_annotations(orelse) || has_annotations(finally)
         }
@@ -744,13 +861,14 @@ fn has_annotations(body: &[Stmt]) -> bool {
 
 /// compiles an expression for eval()
 pub fn compile_eval(e: &Expr, filename: &str) -> CResult<Rc<Code>> {
-    compile_eval_flags(e, filename, false)
+    compile_eval_opt(e, filename, 0, false)
 }
 
-pub fn compile_eval_flags(e: &Expr, filename: &str, top_await: bool) -> CResult<Rc<Code>> {
-    let body = vec![Stmt { line: 1, kind: StmtKind::Return(Some(e.clone())) }];
+/// compile_eval with compile()'s optimize and PyCF_ALLOW_TOP_LEVEL_AWAIT
+pub fn compile_eval_opt(e: &Expr, filename: &str, optimize: u8, top_await: bool) -> CResult<Rc<Code>> {
+    let body = vec![Stmt { pos: e.pos, kind: StmtKind::Return(Some(e.clone())) }];
     let st = SymTable::build(&body, top_await)?;
-    let mut c = Compiler { st, units: vec![], filename: Rc::from(filename) };
+    let mut c = Compiler { st, units: vec![], filename: Rc::from(filename), optimize };
     c.push_unit(0, "<module>".into());
     // the symbol table is keyed by node address: compile the copy it saw
     let e = match &body[0].kind {
@@ -797,7 +915,7 @@ impl<'a> Compiler<'a> {
             scope,
             kind,
             ops: vec![],
-            lines: vec![],
+            positions: vec![],
             consts: vec![],
             str_consts: HashMap::new(),
             names: vec![],
@@ -808,7 +926,7 @@ impl<'a> Compiler<'a> {
             freevars,
             cell_map,
             blocks: vec![],
-            line: 1,
+            pos: Pos { line: 1, col: 0, end_line: 1, end_col: 0 },
             qualname,
             tmp: 0,
         });
@@ -838,7 +956,7 @@ impl<'a> Compiler<'a> {
             cellvars: u.cellvars,
             freevars: u.freevars,
             ops: u.ops,
-            lines: u.lines,
+            positions: u.positions,
             consts: u.consts,
             names: u.names,
             doc,
@@ -859,11 +977,20 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit(&mut self, op: Op) -> usize {
-        let line = self.u().line;
         let u = self.u();
         u.ops.push(op);
-        u.lines.push(line);
+        u.positions.push(u.pos);
         u.ops.len() - 1
+    }
+
+    /// the line instructions come from now
+    fn line(&self) -> u32 {
+        self.units.last().map_or(0, |u| u.pos.line)
+    }
+
+    /// moves the current position to `pos`, returning the one it replaces
+    fn set_pos(&mut self, pos: Pos) -> Pos {
+        std::mem::replace(&mut self.u().pos, pos)
     }
 
     fn here(&mut self) -> usize {
@@ -914,13 +1041,19 @@ impl<'a> Compiler<'a> {
         i
     }
 
+    /// an error at the node being compiled
     fn err(&self, msg: &str) -> CompileError {
-        CompileError { msg: msg.into(), line: self.units.last().map(|u| u.line).unwrap_or(0) }
+        CompileError::at(msg, self.units.last().map_or(Pos::default(), |u| u.pos))
     }
 
     // ------------------------------------------------------------- names
 
     fn load_name(&mut self, n: &Name) {
+        if &**n == "__debug__" {
+            let k = self.const_val(Value::Bool(self.optimize == 0));
+            self.emit(Op::LoadConst(k));
+            return;
+        }
         let n = &mangle_attr(&self.class_name(), n);
         let scope = self.u().scope;
         let s = &self.st.scopes[scope];
@@ -1040,7 +1173,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn stmt(&mut self, s: &'a Stmt) -> CResult<()> {
-        self.u().line = s.line;
+        self.u().pos = s.pos;
         match &s.kind {
             StmtKind::Expr(e) => {
                 self.expr(e)?;
@@ -1055,14 +1188,14 @@ impl<'a> Compiler<'a> {
                     self.store(t)?;
                 }
             }
-            StmtKind::AugAssign(t, op, v) => match t {
-                Expr::Name(n) => {
+            StmtKind::AugAssign(t, op, v) => match &t.kind {
+                ExprKind::Name(n) => {
                     self.load_name(n);
                     self.expr(v)?;
                     self.emit(Op::Inplace(*op));
                     self.store_name(n);
                 }
-                Expr::Attr(obj, attr) => {
+                ExprKind::Attr(obj, attr) => {
                     self.expr(obj)?;
                     self.emit(Op::Dup);
                     let i = self.name_idx(attr);
@@ -1072,7 +1205,7 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::Rot2);
                     self.emit(Op::StoreAttr(i));
                 }
-                Expr::Subscript(obj, idx) => {
+                ExprKind::Subscript(obj, idx) => {
                     self.expr(obj)?;
                     self.expr(idx)?;
                     self.emit(Op::Dup2);
@@ -1090,12 +1223,12 @@ impl<'a> Compiler<'a> {
                     self.store(t)?;
                 } else {
                     // a bare annotation still evaluates the target's object and index
-                    match t {
-                        Expr::Attr(obj, _) => {
+                    match &t.kind {
+                        ExprKind::Attr(obj, _) => {
                             self.expr(obj)?;
                             self.emit(Op::Pop);
                         }
-                        Expr::Subscript(obj, idx) => {
+                        ExprKind::Subscript(obj, idx) => {
                             self.expr(obj)?;
                             self.emit(Op::Pop);
                             self.expr(idx)?;
@@ -1111,7 +1244,7 @@ impl<'a> Compiler<'a> {
                     self.expr(ann)?;
                     self.emit(Op::Pop);
                 }
-                if let (Expr::Name(n), true, true) = (t, outer, *simple) {
+                if let (ExprKind::Name(n), true, true) = (&t.kind, outer, *simple) {
                     if self.st.future_annotations {
                         let k = self.const_str(&unparse(ann));
                         self.emit(Op::LoadConst(k));
@@ -1159,11 +1292,14 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
-            StmtKind::For(target, iter, body, orelse) => {
+            StmtKind::For(target, iter, body, orelse, _) => {
                 self.expr(iter)?;
+                // getting the iterator and each item are where the iterable is
+                let saved = self.set_pos(iter.pos);
                 self.emit(Op::GetIter);
                 let start = self.here();
                 let fi = self.emit(Op::ForIter(0));
+                self.u().pos = saved;
                 self.store(target)?;
                 self.u().blocks.push(FBlock::Loop { start, breaks: vec![], is_for: true });
                 self.stmts(body)?;
@@ -1230,6 +1366,9 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Raise(n));
             }
             StmtKind::Try { body, handlers, orelse, finally, star } => {
+                if let Some(h) = handlers.iter().rev().skip(1).find(|h| h.typ.is_none()) {
+                    return Err(CompileError::at("default 'except:' must be last", h.pos));
+                }
                 if finally.is_empty() {
                     self.try_except(body, handlers, orelse, *star)?;
                 } else {
@@ -1254,9 +1393,9 @@ impl<'a> Compiler<'a> {
                     self.patch(end, h);
                 }
             }
-            StmtKind::With(items, body) => self.with(items, 0, body)?,
+            StmtKind::With(items, body, _) => self.with(items, 0, body)?,
             StmtKind::Import(names) => {
-                for (m, alias) in names {
+                for Alias { name: m, asname: alias, .. } in names {
                     let z = self.const_val(Value::Int(0));
                     self.emit(Op::LoadConst(z));
                     let fl = if alias.is_some() && m.contains('.') { self.const_val(Value::tuple(vec![])) } else { self.const_val(Value::None) };
@@ -1275,15 +1414,15 @@ impl<'a> Compiler<'a> {
             StmtKind::ImportFrom { module, names, level } => {
                 let lv = self.const_val(Value::Int(*level as i64));
                 self.emit(Op::LoadConst(lv));
-                let fl: Vec<Value> = names.iter().map(|(n, _)| Value::str(n)).collect();
+                let fl: Vec<Value> = names.iter().map(|a| Value::str(&a.name)).collect();
                 let k = self.const_val(Value::tuple(fl));
                 self.emit(Op::LoadConst(k));
                 let i = self.name_idx(module);
                 self.emit(Op::ImportName(i));
-                if names.len() == 1 && &*names[0].0 == "*" {
+                if names.len() == 1 && &*names[0].name == "*" {
                     self.emit(Op::ImportStar);
                 } else {
-                    for (n, alias) in names {
+                    for Alias { name: n, asname: alias, .. } in names {
                         let i = self.name_idx(n);
                         self.emit(Op::ImportFrom(i));
                         self.store_name(alias.as_ref().unwrap_or(n));
@@ -1291,22 +1430,27 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::Pop);
                 }
             }
+            StmtKind::Assert(..) if self.optimize > 0 => {}
             StmtKind::Assert(cond, msg) => {
-                if matches!(cond, Expr::Tuple(items) if !items.is_empty()) {
-                    crate::lexer::push_warning("assertion is always true, perhaps remove parentheses?".into(), self.u().line, 0);
+                if matches!(&cond.kind, ExprKind::Tuple(items) if !items.is_empty()) {
+                    crate::lexer::push_warning("assertion is always true, perhaps remove parentheses?".into(), self.line(), 0);
                 }
                 self.jump_if(cond, true)?;
                 let j = self.emit(Op::PopJumpIfTrue(0));
+                // the error is raised where the condition is
+                let saved = self.set_pos(cond.pos);
                 self.emit(Op::LoadAssertionError);
                 if let Some(m) = msg {
                     self.expr(m)?;
                     self.emit(Op::Call(1));
                 }
                 self.emit(Op::Raise(1));
+                self.u().pos = saved;
                 let h = self.here();
                 self.patch(j, h);
             }
             StmtKind::Match(subject, cases) => self.match_stmt(subject, cases)?,
+            StmtKind::TypeAlias(..) => unreachable!("lowered"),
         }
         Ok(())
     }
@@ -1425,7 +1569,7 @@ impl<'a> Compiler<'a> {
             return self.except_star(handlers, ends);
         }
         for hd in handlers {
-            self.u().line = hd.line;
+            self.u().pos = hd.pos;
             let mut next = None;
             if let Some(t) = &hd.typ {
                 self.emit(Op::Dup);
@@ -1459,12 +1603,12 @@ impl<'a> Compiler<'a> {
             }
         }
         if handlers.last().map(|h| h.typ.is_some()).unwrap_or(true) {
-            let saved = self.u().line;
+            let saved = self.u().pos;
             if let Some(hd) = handlers.last() {
-                self.u().line = hd.line;
+                self.u().pos = hd.pos;
             }
             self.emit(Op::Reraise);
-            self.u().line = saved;
+            self.u().pos = saved;
         }
         let end = self.here();
         for e in ends {
@@ -1480,7 +1624,7 @@ impl<'a> Compiler<'a> {
         self.emit(Op::Dup);
         self.emit(Op::BuildList(0));
         for hd in handlers {
-            self.u().line = hd.line;
+            self.u().pos = hd.pos;
             // [orig, rest, raised] -> [orig, raised, rest]
             self.emit(Op::Rot2);
             match &hd.typ {
@@ -1532,9 +1676,11 @@ impl<'a> Compiler<'a> {
             return self.stmts(body);
         }
         let (e, t) = &items[i];
-        let wline = self.u().line;
         self.expr(e)?;
+        // entering and exiting are where the manager's expression is
+        let saved = self.set_pos(e.pos);
         let setup = self.emit(Op::SetupWith(0));
+        self.u().pos = saved;
         match t {
             Some(t) => self.store(t)?,
             None => {
@@ -1544,15 +1690,14 @@ impl<'a> Compiler<'a> {
         self.u().blocks.push(FBlock::With);
         self.with(items, i + 1, body)?;
         self.u().blocks.pop();
-        let saved = self.u().line;
-        self.u().line = wline;
+        let saved = self.set_pos(e.pos);
         self.emit(Op::PopBlock);
         self.emit(Op::WithExit(0));
         let end = self.emit(Op::Jump(0));
         let h = self.here();
         self.patch(setup, h);
         self.emit(Op::WithExcept);
-        self.u().line = saved;
+        self.u().pos = saved;
         let h = self.here();
         self.patch(end, h);
         Ok(())
@@ -1619,7 +1764,7 @@ impl<'a> Compiler<'a> {
         let scope = self.st.by_node[&(Rc::as_ptr(c) as usize)];
         let qual = self.child_qualname(&c.name);
         self.push_unit(scope, qual.clone());
-        self.u().line = c.line;
+        self.u().pos = line_pos(c.line);
         let mn = self.name_idx(&Rc::from("__name__"));
         self.emit(Op::LoadGlobal(mn));
         let mm = self.name_idx(&Rc::from("__module__"));
@@ -1629,7 +1774,7 @@ impl<'a> Compiler<'a> {
         let qn = self.name_idx(&Rc::from("__qualname__"));
         self.emit(Op::StoreName(qn));
         let mut doc = Value::None;
-        if let Some(Stmt { kind: StmtKind::Expr(Expr::Const(Const::Str(d))), .. }) = c.body.first() {
+        if let (Some(Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Const(Const::Str(d)), .. }), .. }), true) = (c.body.first(), self.optimize < 2) {
             doc = Value::str(d);
             let k = self.const_str(d);
             self.emit(Op::LoadConst(k));
@@ -1761,12 +1906,14 @@ impl<'a> Compiler<'a> {
         let scope = self.st.by_node[&(Rc::as_ptr(f) as usize)];
         let qual = self.child_qualname(&f.name);
         self.push_unit(scope, qual);
-        self.u().line = f.line;
+        self.u().pos = line_pos(f.line);
         let mut doc = Value::None;
         let mut body: &'a [Stmt] = &f.body;
         if !f.is_lambda {
-            if let Some(Stmt { kind: StmtKind::Expr(Expr::Const(Const::Str(d))), .. }) = f.body.first() {
-                doc = Value::str(d);
+            if let Some(Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Const(Const::Str(d)), .. }), .. }) = f.body.first() {
+                if self.optimize < 2 {
+                    doc = Value::str(d);
+                }
                 body = &f.body[1..];
             }
         }
@@ -1795,15 +1942,18 @@ impl<'a> Compiler<'a> {
             _ => "<genexpr>",
         };
         let qual = self.child_qualname(name);
-        self.expr(&comps[0].iter)?;
+        let iter = &comps[0].iter;
+        self.expr(iter)?;
+        // the first iterator is got, and the loop runs, where the iterable is
+        let pos = self.set_pos(iter.pos);
         if comps[0].is_async {
             self.call_dunder("__aiter__");
         } else {
             self.emit(Op::GetIter);
         }
-        let line = self.u().line;
+        let line = pos.line;
         self.push_unit(scope, qual);
-        self.u().line = line;
+        self.u().pos = pos;
         match kind {
             0 => {
                 self.emit(Op::BuildList(0));
@@ -1833,6 +1983,7 @@ impl<'a> Compiler<'a> {
             self.emit(Op::LoadConst(k));
             self.emit(Op::YieldFrom);
         }
+        self.u().pos = pos;
         Ok(())
     }
 
@@ -1855,6 +2006,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::GetIter);
             }
         }
+        let saved = self.set_pos(c.iter.pos);
         let start = self.here();
         // `async for`: await __anext__() until StopAsyncIteration; the
         // handler leaves [iterator, exception] on the stack
@@ -1871,6 +2023,7 @@ impl<'a> Compiler<'a> {
         } else {
             (Some(self.emit(Op::ForIter(0))), None)
         };
+        self.u().pos = saved;
         self.store(&c.target)?;
         let mut skips = vec![];
         for f in &c.ifs {
@@ -1934,23 +2087,23 @@ impl<'a> Compiler<'a> {
     // ------------------------------------------------------------- targets
 
     fn store(&mut self, t: &'a Expr) -> CResult<()> {
-        match t {
-            Expr::Name(n) => self.store_name(n),
-            Expr::Attr(obj, attr) => {
+        match &t.kind {
+            ExprKind::Name(n) => self.store_name(n),
+            ExprKind::Attr(obj, attr) => {
                 self.expr(obj)?;
                 let i = self.name_idx(&mangle_attr(&self.class_name(), attr));
                 self.emit(Op::StoreAttr(i));
             }
-            Expr::Subscript(obj, idx) => {
+            ExprKind::Subscript(obj, idx) => {
                 self.expr(obj)?;
                 self.expr(idx)?;
                 self.emit(Op::StoreSubscr);
             }
-            Expr::Tuple(items) | Expr::List(items) => {
-                let star = items.iter().position(|e| matches!(e, Expr::Starred(_)));
+            ExprKind::Tuple(items) | ExprKind::List(items) => {
+                let star = items.iter().position(|e| matches!(e.kind, ExprKind::Starred(_)));
                 match star {
                     Some(si) => {
-                        if items.iter().filter(|e| matches!(e, Expr::Starred(_))).count() > 1 {
+                        if items.iter().filter(|e| matches!(e.kind, ExprKind::Starred(_))).count() > 1 {
                             return Err(self.err("multiple starred expressions in assignment"));
                         }
                         self.emit(Op::UnpackEx(si as u16, (items.len() - si - 1) as u16));
@@ -1960,37 +2113,37 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 for it in items {
-                    match it {
-                        Expr::Starred(inner) => self.store(inner)?,
+                    match &it.kind {
+                        ExprKind::Starred(inner) => self.store(inner)?,
                         _ => self.store(it)?,
                     }
                 }
             }
-            Expr::Starred(_) => return Err(self.err("starred assignment target must be in a list or tuple")),
-            _ => return Err(self.err("cannot assign to expression")),
+            ExprKind::Starred(_) => return Err(self.err("starred assignment target must be in a list or tuple")),
+            _ => return Err(CompileError::at(format!("cannot assign to {}", t.describe()), t.pos)),
         }
         Ok(())
     }
 
     fn del(&mut self, t: &'a Expr) -> CResult<()> {
-        match t {
-            Expr::Name(n) => self.del_name(n),
-            Expr::Attr(obj, attr) => {
+        match &t.kind {
+            ExprKind::Name(n) => self.del_name(n),
+            ExprKind::Attr(obj, attr) => {
                 self.expr(obj)?;
                 let i = self.name_idx(attr);
                 self.emit(Op::DelAttr(i));
             }
-            Expr::Subscript(obj, idx) => {
+            ExprKind::Subscript(obj, idx) => {
                 self.expr(obj)?;
                 self.expr(idx)?;
                 self.emit(Op::DelSubscr);
             }
-            Expr::Tuple(items) | Expr::List(items) => {
+            ExprKind::Tuple(items) | ExprKind::List(items) => {
                 for i in items {
                     self.del(i)?;
                 }
             }
-            _ => return Err(self.err("cannot delete expression")),
+            _ => return Err(CompileError::at(format!("cannot delete {}", t.describe()), t.pos)),
         }
         Ok(())
     }
@@ -2018,22 +2171,44 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// a constant, or a negated number, as a constant index
+    fn literal(&mut self, e: &Expr) -> Option<u32> {
+        match &e.kind {
+            ExprKind::Const(c) => Some(self.constant(c)),
+            ExprKind::Unary(UnOp::Neg, a) => match &a.kind {
+                ExprKind::Const(Const::Int(i)) => Some(self.const_val(Value::Int(-i))),
+                ExprKind::Const(Const::Float(f)) => Some(self.const_val(Value::Float(-f))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// compiles `e`, its instructions placed at its span
     fn expr(&mut self, e: &'a Expr) -> CResult<()> {
-        match e {
-            Expr::Name(n) => self.load_name(n),
-            Expr::Const(c) => {
-                let k = self.constant(c);
-                self.emit(Op::LoadConst(k));
-            }
-            Expr::JoinedStr(parts) => {
+        let saved = self.set_pos(e.pos);
+        let r = self.expr_here(e);
+        self.u().pos = saved;
+        r
+    }
+
+    fn expr_here(&mut self, e: &'a Expr) -> CResult<()> {
+        if let Some(k) = self.literal(e) {
+            self.emit(Op::LoadConst(k));
+            return Ok(());
+        }
+        match &e.kind {
+            ExprKind::Name(n) => self.load_name(n),
+            ExprKind::Const(_) => unreachable!("a literal"),
+            ExprKind::JoinedStr(parts) => {
                 for p in parts {
                     self.expr(p)?;
                 }
-                if parts.len() != 1 || !matches!(parts[0], Expr::Const(_)) {
+                if parts.len() != 1 || !matches!(parts[0].kind, ExprKind::Const(_)) {
                     self.emit(Op::BuildString(parts.len() as u32));
                 }
             }
-            Expr::FormattedValue { value, conv, spec } => {
+            ExprKind::FormattedValue { value, conv, spec } => {
                 self.expr(value)?;
                 if let Some(s) = spec {
                     self.expr(s)?;
@@ -2046,30 +2221,31 @@ impl<'a> Compiler<'a> {
                 };
                 self.emit(Op::FormatValue(c, spec.is_some()));
             }
-            Expr::Bin(op, a, b) => {
+            ExprKind::Bin(op, a, b) => {
                 self.expr(a)?;
                 self.expr(b)?;
                 self.emit(Op::Binary(*op));
             }
-            Expr::Unary(op, a) => {
+            ExprKind::Unary(op, a) => {
                 self.expr(a)?;
                 self.emit(Op::Unary(*op));
             }
-            Expr::BoolAnd(a, b) => {
-                self.expr(a)?;
-                let j = self.emit(Op::JumpIfFalseOrPop(0));
-                self.expr(b)?;
+            ExprKind::BoolAnd(values) | ExprKind::BoolOr(values) => {
+                // each operand but the last decides or is dropped
+                let and = matches!(e.kind, ExprKind::BoolAnd(_));
+                let mut jumps = vec![];
+                for (i, v) in values.iter().enumerate() {
+                    self.expr(v)?;
+                    if i + 1 < values.len() {
+                        jumps.push(self.emit(if and { Op::JumpIfFalseOrPop(0) } else { Op::JumpIfTrueOrPop(0) }));
+                    }
+                }
                 let h = self.here();
-                self.patch(j, h);
+                for j in jumps {
+                    self.patch(j, h);
+                }
             }
-            Expr::BoolOr(a, b) => {
-                self.expr(a)?;
-                let j = self.emit(Op::JumpIfTrueOrPop(0));
-                self.expr(b)?;
-                let h = self.here();
-                self.patch(j, h);
-            }
-            Expr::Compare(first, rest) => {
+            ExprKind::Compare(first, rest) => {
                 self.expr(first)?;
                 if rest.len() == 1 {
                     self.expr(&rest[0].1)?;
@@ -2098,7 +2274,7 @@ impl<'a> Compiler<'a> {
                     self.patch(end, h);
                 }
             }
-            Expr::IfExp(c, a, b) => {
+            ExprKind::IfExp(c, a, b) => {
                 self.expr(c)?;
                 let j = self.emit(Op::PopJumpIfFalse(0));
                 self.expr(a)?;
@@ -2109,9 +2285,9 @@ impl<'a> Compiler<'a> {
                 let h = self.here();
                 self.patch(end, h);
             }
-            Expr::Call { func, args } => {
+            ExprKind::Call { func, args } => {
                 let simple = args.iter().all(|a| matches!(a, Arg::Pos(_)));
-                if let (Expr::Attr(obj, attr), true) = (&**func, simple) {
+                if let (ExprKind::Attr(obj, attr), true) = (&func.kind, simple) {
                     self.expr(obj)?;
                     let i = self.name_idx(&mangle_attr(&self.class_name(), attr));
                     self.emit(Op::LoadMethod(i));
@@ -2126,17 +2302,17 @@ impl<'a> Compiler<'a> {
                     self.call_args(args, 0)?;
                 }
             }
-            Expr::Attr(obj, attr) => {
+            ExprKind::Attr(obj, attr) => {
                 self.expr(obj)?;
                 let i = self.name_idx(&mangle_attr(&self.class_name(), attr));
                 self.emit(Op::LoadAttr(i));
             }
-            Expr::Subscript(obj, idx) => {
+            ExprKind::Subscript(obj, idx) => {
                 self.expr(obj)?;
                 self.expr(idx)?;
                 self.emit(Op::Subscr);
             }
-            Expr::Slice(a, b, c) => {
+            ExprKind::Slice(a, b, c) => {
                 let mut n = 2;
                 for x in [a, b] {
                     match x {
@@ -2153,8 +2329,8 @@ impl<'a> Compiler<'a> {
                 }
                 self.emit(Op::BuildSlice(n));
             }
-            Expr::List(items) => {
-                if items.iter().any(|e| matches!(e, Expr::Starred(_))) {
+            ExprKind::List(items) => {
+                if items.iter().any(|e| matches!(e.kind, ExprKind::Starred(_))) {
                     self.starred_list(items)?;
                 } else {
                     for i in items {
@@ -2163,21 +2339,11 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::BuildList(items.len() as u32));
                 }
             }
-            Expr::Tuple(items) => {
-                if items.iter().any(|e| matches!(e, Expr::Starred(_))) {
+            ExprKind::Tuple(items) => {
+                if items.iter().any(|e| matches!(e.kind, ExprKind::Starred(_))) {
                     self.starred_list(items)?;
                     self.emit(Op::ListToTuple);
-                } else if !items.is_empty() && items.iter().all(|e| matches!(e, Expr::Const(_))) {
-                    let vals: Vec<Value> = items
-                        .iter()
-                        .map(|e| match e {
-                            Expr::Const(c) => {
-                                let k = self.constant(c);
-                                self.u().consts[k as usize].clone()
-                            }
-                            _ => unreachable!(),
-                        })
-                        .collect();
+                } else if let Some(vals) = self.literals(items) {
                     let k = self.const_val(Value::tuple(vals));
                     self.emit(Op::LoadConst(k));
                 } else {
@@ -2187,12 +2353,12 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::BuildTuple(items.len() as u32));
                 }
             }
-            Expr::Set(items) => {
-                if items.iter().any(|e| matches!(e, Expr::Starred(_))) {
+            ExprKind::Set(items) => {
+                if items.iter().any(|e| matches!(e.kind, ExprKind::Starred(_))) {
                     self.emit(Op::BuildSet(0));
                     for i in items {
-                        match i {
-                            Expr::Starred(inner) => {
+                        match &i.kind {
+                            ExprKind::Starred(inner) => {
                                 self.expr(inner)?;
                                 self.emit(Op::SetUpdate(1));
                             }
@@ -2209,7 +2375,7 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::BuildSet(items.len() as u32));
                 }
             }
-            Expr::Dict(items) => {
+            ExprKind::Dict(items) => {
                 if items.iter().any(|(k, _)| k.is_none()) {
                     self.emit(Op::BuildMap(0));
                     for (k, v) in items {
@@ -2233,18 +2399,18 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::BuildMap(items.len() as u32));
                 }
             }
-            Expr::Starred(_) => return Err(self.err("can't use starred expression here")),
-            Expr::Lambda(f) => self.make_function(f)?,
-            Expr::ListComp(elt, comps) => self.comprehension(e, comps, 0, elt, None)?,
-            Expr::SetComp(elt, comps) => self.comprehension(e, comps, 1, elt, None)?,
-            Expr::DictComp(k, v, comps) => self.comprehension(e, comps, 2, k, Some(v))?,
-            Expr::GenExp(elt, comps) => self.comprehension(e, comps, 3, elt, None)?,
-            Expr::NamedExpr(n, v) => {
+            ExprKind::Starred(_) => return Err(self.err("can't use starred expression here")),
+            ExprKind::Lambda(f) => self.make_function(f)?,
+            ExprKind::ListComp(elt, comps) => self.comprehension(e, comps, 0, elt, None)?,
+            ExprKind::SetComp(elt, comps) => self.comprehension(e, comps, 1, elt, None)?,
+            ExprKind::DictComp(k, v, comps) => self.comprehension(e, comps, 2, k, Some(v))?,
+            ExprKind::GenExp(elt, comps) => self.comprehension(e, comps, 3, elt, None)?,
+            ExprKind::NamedExpr(n, v) => {
                 self.expr(v)?;
                 self.emit(Op::Dup);
                 self.store_name(n);
             }
-            Expr::Yield(v) => {
+            ExprKind::Yield(v) => {
                 self.check_yield()?;
                 match v {
                     Some(v) => self.expr(v)?,
@@ -2255,7 +2421,7 @@ impl<'a> Compiler<'a> {
                 }
                 self.emit(Op::Yield);
             }
-            Expr::YieldFrom(v) => {
+            ExprKind::YieldFrom(v) => {
                 self.check_yield()?;
                 self.expr(v)?;
                 self.emit(Op::GetIter);
@@ -2263,7 +2429,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::LoadConst(k));
                 self.emit(Op::YieldFrom);
             }
-            Expr::Await(v) => {
+            ExprKind::Await(v) => {
                 self.expr(v)?;
                 self.emit(Op::GetAwaitable);
                 let k = self.const_val(Value::None);
@@ -2272,6 +2438,17 @@ impl<'a> Compiler<'a> {
             }
         }
         Ok(())
+    }
+
+    /// the values of a tuple display made only of literals
+    fn literals(&mut self, items: &[Expr]) -> Option<Vec<Value>> {
+        if items.is_empty() || !items.iter().all(|e| matches!(&e.kind, ExprKind::Const(_)) || matches!(&e.kind, ExprKind::Unary(UnOp::Neg, a) if matches!(a.kind, ExprKind::Const(Const::Int(_) | Const::Float(_))))) {
+            return None;
+        }
+        Some(items.iter().map(|e| {
+            let k = self.literal(e).unwrap();
+            self.u().consts[k as usize].clone()
+        }).collect())
     }
 
     /// where a yield may not be
@@ -2291,8 +2468,8 @@ impl<'a> Compiler<'a> {
     fn starred_list(&mut self, items: &'a [Expr]) -> CResult<()> {
         self.emit(Op::BuildList(0));
         for i in items {
-            match i {
-                Expr::Starred(inner) => {
+            match &i.kind {
+                ExprKind::Starred(inner) => {
                     self.expr(inner)?;
                     self.emit(Op::ListExtend(1));
                 }
@@ -2308,7 +2485,7 @@ impl<'a> Compiler<'a> {
     /// the arguments of a call whose callable (and `extra` leading positional
     /// arguments) are already pushed
     fn call_args(&mut self, args: &'a [Arg], extra: u32) -> CResult<()> {
-        let has_star = args.iter().any(|a| matches!(a, Arg::Star(_) | Arg::StarStar(_)));
+        let has_star = args.iter().any(|a| matches!(a, Arg::Star(_) | Arg::StarStar(..)));
         if !has_star {
             let mut npos = extra;
             let mut kwnames = vec![];
@@ -2321,7 +2498,7 @@ impl<'a> Compiler<'a> {
                         self.expr(e)?;
                         npos += 1;
                     }
-                    Arg::Kw(n, e) => {
+                    Arg::Kw(n, e, _) => {
                         if kwnames.iter().any(|k: &Value| k.as_str() == Some(n)) {
                             return Err(self.err(&format!("keyword argument repeated: {}", n)));
                         }
@@ -2354,7 +2531,7 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::ListAppend(1));
                 }
                 Arg::Star(e) => {
-                    self.expr(e)?;
+                    self.expr(unstarred(e))?;
                     self.emit(Op::ListExtend(1));
                 }
                 _ => {}
@@ -2363,7 +2540,7 @@ impl<'a> Compiler<'a> {
         self.emit(Op::ListToTuple);
         for a in args {
             match a {
-                Arg::Kw(n, e) => {
+                Arg::Kw(n, e, _) => {
                     if !have_kw {
                         self.emit(Op::BuildMap(0));
                         have_kw = true;
@@ -2373,7 +2550,7 @@ impl<'a> Compiler<'a> {
                     self.expr(e)?;
                     self.emit(Op::MapAdd(1));
                 }
-                Arg::StarStar(e) => {
+                Arg::StarStar(e, _) => {
                     if !have_kw {
                         self.emit(Op::BuildMap(0));
                         have_kw = true;
@@ -2393,17 +2570,30 @@ impl<'a> Compiler<'a> {
     }
 }
 
+/// the value of `*value`, which is a Starred node
+fn unstarred(e: &Expr) -> &Expr {
+    match &e.kind {
+        ExprKind::Starred(inner) => inner,
+        _ => e,
+    }
+}
+
+/// the position of a whole line, for code that starts there
+fn line_pos(line: u32) -> Pos {
+    Pos { line, col: 0, end_line: line, end_col: 0 }
+}
+
 fn collect_pattern<'a>(p: &'a Pattern, caps: &mut Vec<Name>, vals: &mut Vec<&'a Expr>) {
-    match p {
-        Pattern::Capture(Some(n)) | Pattern::Star(Some(n)) => caps.push(n.clone()),
-        Pattern::Capture(None) | Pattern::Star(None) | Pattern::Singleton(_) => {}
-        Pattern::Value(e) => vals.push(e),
-        Pattern::Sequence(ps) => {
+    match &p.kind {
+        PatternKind::Capture(Some(n)) | PatternKind::Star(Some(n)) => caps.push(n.clone()),
+        PatternKind::Capture(None) | PatternKind::Star(None) | PatternKind::Singleton(_) => {}
+        PatternKind::Value(e) => vals.push(e),
+        PatternKind::Sequence(ps) => {
             for q in ps {
                 collect_pattern(q, caps, vals);
             }
         }
-        Pattern::Or(ps) => {
+        PatternKind::Or(ps) => {
             // every alternative binds the same names; the first one decides order
             let mut first_caps = vec![];
             for (i, q) in ps.iter().enumerate() {
@@ -2415,7 +2605,7 @@ fn collect_pattern<'a>(p: &'a Pattern, caps: &mut Vec<Name>, vals: &mut Vec<&'a 
             }
             caps.extend(first_caps);
         }
-        Pattern::Mapping { keys, pats, rest } => {
+        PatternKind::Mapping { keys, pats, rest } => {
             for k in keys {
                 vals.push(k);
             }
@@ -2426,7 +2616,7 @@ fn collect_pattern<'a>(p: &'a Pattern, caps: &mut Vec<Name>, vals: &mut Vec<&'a 
                 caps.push(r.clone());
             }
         }
-        Pattern::Class { cls, args, kw } => {
+        PatternKind::Class { cls, args, kw } => {
             vals.push(cls);
             for q in args {
                 collect_pattern(q, caps, vals);
@@ -2435,7 +2625,7 @@ fn collect_pattern<'a>(p: &'a Pattern, caps: &mut Vec<Name>, vals: &mut Vec<&'a 
                 collect_pattern(q, caps, vals);
             }
         }
-        Pattern::As(q, n) => {
+        PatternKind::As(q, n) => {
             collect_pattern(q, caps, vals);
             caps.push(n.clone());
         }
@@ -2465,18 +2655,18 @@ fn mangle_attr(class: &str, n: &Name) -> Name {
 
 /// source text for an annotation under `from __future__ import annotations`
 pub fn unparse(e: &Expr) -> String {
-    match e {
-        Expr::Name(n) => n.to_string(),
-        Expr::Attr(o, a) => format!("{}.{}", unparse(o), a),
-        Expr::Const(Const::Str(s)) => format!("'{}'", s),
-        Expr::Const(Const::None) => "None".into(),
-        Expr::Const(Const::Int(i)) => i.to_string(),
-        Expr::Const(Const::Ellipsis) => "...".into(),
-        Expr::Subscript(o, i) => format!("{}[{}]", unparse(o), unparse(i)),
-        Expr::Tuple(items) => items.iter().map(unparse).collect::<Vec<_>>().join(", "),
-        Expr::List(items) => format!("[{}]", items.iter().map(unparse).collect::<Vec<_>>().join(", ")),
-        Expr::Bin(BinOp::BitOr, a, b) => format!("{} | {}", unparse(a), unparse(b)),
-        Expr::Call { func, .. } => format!("{}(...)", unparse(func)),
+    match &e.kind {
+        ExprKind::Name(n) => n.to_string(),
+        ExprKind::Attr(o, a) => format!("{}.{}", unparse(o), a),
+        ExprKind::Const(Const::Str(s)) => format!("'{}'", s),
+        ExprKind::Const(Const::None) => "None".into(),
+        ExprKind::Const(Const::Int(i)) => i.to_string(),
+        ExprKind::Const(Const::Ellipsis) => "...".into(),
+        ExprKind::Subscript(o, i) => format!("{}[{}]", unparse(o), unparse(i)),
+        ExprKind::Tuple(items) => items.iter().map(unparse).collect::<Vec<_>>().join(", "),
+        ExprKind::List(items) => format!("[{}]", items.iter().map(unparse).collect::<Vec<_>>().join(", ")),
+        ExprKind::Bin(BinOp::BitOr, a, b) => format!("{} | {}", unparse(a), unparse(b)),
+        ExprKind::Call { func, .. } => format!("{}(...)", unparse(func)),
         _ => "...".into(),
     }
 }

@@ -281,7 +281,7 @@ fn check_encoding_errors(vm: &mut Vm, enc: &str, errors: &str) -> PyResult<()> {
     Ok(())
 }
 
-fn decode_bytes(vm: &mut Vm, b: &[u8], enc: &str, errors: &str) -> PyResult<String> {
+pub fn decode_bytes(vm: &mut Vm, b: &[u8], enc: &str, errors: &str) -> PyResult<String> {
     check_encoding_errors(vm, enc, errors)?;
     let enc = enc.to_ascii_lowercase().replace('_', "-");
     match enc.as_str() {

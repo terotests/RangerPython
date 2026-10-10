@@ -878,7 +878,7 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
             let g = &mut *g;
             match &g.frame {
                 Some(f) => {
-                    let line = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(f.code.firstline);
+                    let line = f.code.line_at(f.ip.saturating_sub(1)).unwrap_or(f.code.firstline);
                     // one frame object per generator, its line kept current
                     if let Some(Value::Obj(o)) = &g.frame_obj {
                         if let ObjKind::Frame { line: l, .. } = &mut *o.kind.borrow_mut() {
@@ -3264,13 +3264,7 @@ fn eval_scopes(vm: &mut Vm, a: &[Value], k: Kw, what: &str) -> PyResult<Scopes> 
 fn source_of(vm: &mut Vm, v: &Value, what: &str) -> PyResult<Option<String>> {
     match v {
         Value::Str(s) => Ok(Some(s.s.clone())),
-        Value::Bytes(b) => {
-            let b: &[u8] = b.strip_prefix(b"\xef\xbb\xbf".as_slice()).unwrap_or(b);
-            match std::str::from_utf8(b) {
-                Ok(s) => Ok(Some(s.to_string())),
-                Err(_) => Err(vm.err("SyntaxError", "source code cannot be decoded as UTF-8")),
-            }
-        }
+        Value::Bytes(b) => decode_source(vm, b).map(Some),
         Value::Code(_) => Ok(None),
         Value::ByteArray(_) | Value::Obj(_) | Value::Instance(_) => match bytes_of(vm, v) {
             Ok(b) => source_of(vm, &Value::Bytes(Rc::new(b)), what),
@@ -3278,6 +3272,92 @@ fn source_of(vm: &mut Vm, v: &Value, what: &str) -> PyResult<Option<String>> {
         },
         _ => Err(vm.type_error(format!("{}() arg 1 must be a string, bytes or code object", what))),
     }
+}
+
+/// source code from bytes as PEP 263 reads it: UTF-8, or the encoding a
+/// coding comment on one of the first two lines names
+fn decode_source(vm: &mut Vm, b: &[u8]) -> PyResult<String> {
+    let (bom, b) = match b.strip_prefix(b"\xef\xbb\xbf".as_slice()) {
+        Some(rest) => (true, rest),
+        None => (false, b),
+    };
+    if let Some(enc) = coding_cookie(b) {
+        // CPython's get_normal_name
+        let low = enc.to_ascii_lowercase().replace('_', "-");
+        let utf8 = low == "utf-8" || low.starts_with("utf-8-");
+        if bom && !utf8 {
+            let e = vm.err("SyntaxError", format!("encoding problem: {} with BOM", enc));
+            exc_set_field(&e.value, "lineno", Value::Int(0));
+            exc_set_field(&e.value, "offset", Value::Int(-1));
+            return Err(e);
+        }
+        if !utf8 {
+            return crate::strmethods::decode_bytes(vm, b, &enc, "strict");
+        }
+    }
+    match std::str::from_utf8(b) {
+        Ok(s) => Ok(s.to_string()),
+        Err(e) => Err(undecodable_source(vm, b, e.valid_up_to())),
+    }
+}
+
+/// the encoding a `# coding: name` comment names on the first line, or on the
+/// second after a comment or blank first line
+fn coding_cookie(b: &[u8]) -> Option<String> {
+    let mut lines = b.split(|c| *c == b'\n');
+    let cookie = |line: &[u8]| -> Option<String> {
+        let line = std::str::from_utf8(line).ok()?.trim_start_matches([' ', '\t', '\x0c']);
+        let comment = line.strip_prefix('#')?;
+        let at = comment.find("coding")?;
+        let rest = comment[at + 6..].strip_prefix([':', '='])?.trim_start_matches([' ', '\t']);
+        let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.')).collect();
+        (!name.is_empty()).then_some(name)
+    };
+    let first = lines.next()?;
+    if let Some(c) = cookie(first) {
+        return Some(c);
+    }
+    let blank_or_comment = |l: &[u8]| {
+        let t = String::from_utf8_lossy(l);
+        let t = t.trim_start_matches([' ', '\t', '\x0c', '\r']);
+        t.is_empty() || t.starts_with('#')
+    };
+    if blank_or_comment(first) {
+        return lines.next().and_then(cookie);
+    }
+    None
+}
+
+/// source that is not UTF-8 from byte `bad` on: when that is inside a string
+/// literal, the error CPython gives decoding the literal, there
+fn undecodable_source(vm: &mut Vm, b: &[u8], bad: usize) -> Exc {
+    let prefix = std::str::from_utf8(&b[..bad]).unwrap_or_default();
+    let toks = crate::lexer::tokenize(prefix);
+    let open = toks.iter().rev().find_map(|t| match &t.tok {
+        crate::lexer::Tok::Error(m) if m.starts_with("unterminated") => Some((t.line, t.col)),
+        _ => None,
+    });
+    let Some((line, col)) = open else {
+        return vm.err("SyntaxError", "source code cannot be decoded as UTF-8");
+    };
+    // the literal's body: after its prefix letters and quotes, up to its closing quote
+    let line_start: usize = prefix.split_inclusive('\n').take(line as usize - 1).map(str::len).sum();
+    let start = line_start + prefix[line_start..].chars().take(col as usize - 1).map(char::len_utf8).sum::<usize>();
+    let mut i = start;
+    while i < b.len() && b[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    let quote = b.get(i).copied().unwrap_or(b'"');
+    let n = if b[i..].starts_with(&[quote; 3]) { 3 } else { 1 };
+    let body = i + n;
+    let end = b[body..].windows(n).position(|w| w.iter().all(|c| *c == quote)).map_or(b.len(), |k| body + k);
+    let msg = match crate::strmethods::decode_bytes(vm, &b[body..end], "utf-8", "strict") {
+        Err(e) => crate::builtins::exc_str(vm, &e.value).unwrap_or_default(),
+        Ok(_) => return vm.err("SyntaxError", "source code cannot be decoded as UTF-8"),
+    };
+    let e = vm.syntax_error(&format!("(unicode error) {}", msg), line, "<string>");
+    exc_set_field(&e.value, "offset", Value::Int(col as i64));
+    e
 }
 
 fn bi_eval(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
@@ -3359,6 +3439,7 @@ fn exec_closure(vm: &mut Vm, code: &crate::code::Code, closure: Option<Value>) -
 }
 
 fn bi_compile(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    use crate::pyast::{PYCF_ALLOW_TOP_LEVEL_AWAIT, PYCF_COMPILE_MASK, PYCF_ONLY_AST};
     const PARAMS: [&str; 7] = ["source", "filename", "mode", "flags", "dont_inherit", "optimize", "_feature_version"];
     check_nargs(vm, "compile", a, 0, 6)?;
     for (n, _) in k {
@@ -3379,28 +3460,43 @@ fn bi_compile(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let file = arg_or_kw(a, 1, k, "filename").map(|v| v.as_str().unwrap_or("<string>").to_string()).unwrap_or("<string>".into());
     let mode = arg_or_kw(a, 2, k, "mode").map(|v| v.as_str().unwrap_or("exec").to_string()).unwrap_or("exec".into());
     let flags = match arg_or_kw(a, 3, k, "flags") {
-        Some(v) => vm.to_index(&v)?,
+        Some(f) => vm.to_index(&f)?,
         None => 0,
     };
-    // PyCF_MASK (the __future__ flags) and the PyCF_* compile() accepts
-    const ALLOWED: i64 = 0x1fe0000 | 0x100 | 0x200 | 0x400 | 0x1000 | 0x2000 | 0x4000 | 0x8000;
-    if flags & !ALLOWED != 0 {
+    let optimize = match arg_or_kw(a, 5, k, "optimize") {
+        Some(o) => vm.to_index(&o)?,
+        None => -1,
+    };
+    if flags & !PYCF_COMPILE_MASK != 0 {
         return Err(vm.value_error("compile(): unrecognised flags"));
     }
-    if let Some(o) = arg_or_kw(a, 5, k, "optimize") {
-        if !(-1..=2).contains(&vm.to_index(&o)?) {
-            return Err(vm.value_error("compile(): invalid optimize value"));
-        }
+    if !(-1..=2).contains(&optimize) {
+        return Err(vm.value_error("compile(): invalid optimize value"));
     }
-    if !matches!(mode.as_str(), "exec" | "eval" | "single" | "func_type") {
+    if !matches!(&*mode, "exec" | "eval" | "single" | "func_type") {
         return Err(vm.value_error("compile() mode must be 'exec', 'eval' or 'single'"));
     }
-    let top_await = flags & 0x2000 != 0;
+    // -1 is the interpreter's own level, which is 0
+    let optimize = optimize.max(0) as u8;
+    let top_await = flags & PYCF_ALLOW_TOP_LEVEL_AWAIT != 0;
+    if crate::pyast::is_ast(vm, &src)? {
+        return crate::pyast::compile(vm, &src, &file, &mode, flags, optimize);
+    }
     let s = match source_of(vm, &src, "compile")? {
         Some(s) => s,
         None => return Ok(src),
     };
-    let code = if mode == "eval" { vm.compile_source_flags(s.trim(), &file, true, top_await)? } else { vm.compile_source_flags(&s, &file, false, top_await)? };
+    let s = if mode == "eval" { s.trim() } else { &s };
+    if flags & PYCF_ONLY_AST != 0 {
+        return crate::pyast::parse(vm, s, &file, &mode, flags);
+    }
+    let code = vm.from_source(s, &file, || {
+        if mode == "eval" {
+            crate::parser::parse_expression(s).map(|e| crate::compile::compile_eval_opt(&e, &file, optimize, top_await))
+        } else {
+            crate::parser::parse_module(s).map(|b| crate::compile::compile_module_opt(b, &file, optimize, top_await))
+        }
+    })?;
     Ok(Value::Code(code))
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Structural pattern matching (`match` statements).
 
-use crate::ast::{Const, Pattern};
+use crate::ast::{Const, Pattern, PatternKind};
 use crate::value::*;
 use crate::vm::Vm;
 use std::rc::Rc;
@@ -15,36 +15,36 @@ struct M<'a> {
 }
 
 fn count_vals(p: &Pattern) -> usize {
-    match p {
-        Pattern::Value(_) => 1,
-        Pattern::Sequence(ps) | Pattern::Or(ps) => ps.iter().map(count_vals).sum(),
-        Pattern::Mapping { keys, pats, .. } => keys.len() + pats.iter().map(count_vals).sum::<usize>(),
-        Pattern::Class { args, kw, .. } => 1 + args.iter().map(count_vals).sum::<usize>() + kw.iter().map(|(_, q)| count_vals(q)).sum::<usize>(),
-        Pattern::As(q, _) => count_vals(q),
+    match &p.kind {
+        PatternKind::Value(_) => 1,
+        PatternKind::Sequence(ps) | PatternKind::Or(ps) => ps.iter().map(count_vals).sum(),
+        PatternKind::Mapping { keys, pats, .. } => keys.len() + pats.iter().map(count_vals).sum::<usize>(),
+        PatternKind::Class { args, kw, .. } => 1 + args.iter().map(count_vals).sum::<usize>() + kw.iter().map(|(_, q)| count_vals(q)).sum::<usize>(),
+        PatternKind::As(q, _) => count_vals(q),
         _ => 0,
     }
 }
 
 fn cap_names(p: &Pattern, out: &mut Vec<Name>) {
-    match p {
-        Pattern::Capture(Some(n)) | Pattern::Star(Some(n)) => out.push(n.clone()),
-        Pattern::Sequence(ps) => ps.iter().for_each(|q| cap_names(q, out)),
-        Pattern::Or(ps) => {
+    match &p.kind {
+        PatternKind::Capture(Some(n)) | PatternKind::Star(Some(n)) => out.push(n.clone()),
+        PatternKind::Sequence(ps) => ps.iter().for_each(|q| cap_names(q, out)),
+        PatternKind::Or(ps) => {
             if let Some(q) = ps.first() {
                 cap_names(q, out)
             }
         }
-        Pattern::Mapping { pats, rest, .. } => {
+        PatternKind::Mapping { pats, rest, .. } => {
             pats.iter().for_each(|q| cap_names(q, out));
             if let Some(r) = rest {
                 out.push(r.clone());
             }
         }
-        Pattern::Class { args, kw, .. } => {
+        PatternKind::Class { args, kw, .. } => {
             args.iter().for_each(|q| cap_names(q, out));
             kw.iter().for_each(|(_, q)| cap_names(q, out));
         }
-        Pattern::As(q, n) => {
+        PatternKind::As(q, n) => {
             cap_names(q, out);
             out.push(n.clone());
         }
@@ -90,25 +90,25 @@ fn seq_items(vm: &Vm, v: &Value) -> Option<Vec<Value>> {
 }
 
 fn do_match(vm: &mut Vm, m: &mut M, p: &Pattern, s: &Value) -> PyResult<bool> {
-    match p {
-        Pattern::Capture(None) => Ok(true),
-        Pattern::Capture(Some(n)) => {
+    match &p.kind {
+        PatternKind::Capture(None) => Ok(true),
+        PatternKind::Capture(Some(n)) => {
             m.binds.push((n.clone(), s.clone()));
             Ok(true)
         }
-        Pattern::Star(_) => Ok(true),
-        Pattern::Value(_) => {
+        PatternKind::Star(_) => Ok(true),
+        PatternKind::Value(_) => {
             let v = m.vals[m.pos].clone();
             m.pos += 1;
             vm.eq(s, &v)
         }
-        Pattern::Singleton(c) => Ok(match c {
+        PatternKind::Singleton(c) => Ok(match c {
             Const::None => s.is_none(),
             Const::True => matches!(s, Value::Bool(true)),
             Const::False => matches!(s, Value::Bool(false)),
             _ => false,
         }),
-        Pattern::As(q, n) => {
+        PatternKind::As(q, n) => {
             if do_match(vm, m, q, s)? {
                 m.binds.push((n.clone(), s.clone()));
                 Ok(true)
@@ -116,7 +116,7 @@ fn do_match(vm: &mut Vm, m: &mut M, p: &Pattern, s: &Value) -> PyResult<bool> {
                 Ok(false)
             }
         }
-        Pattern::Or(ps) => {
+        PatternKind::Or(ps) => {
             let start = m.pos;
             let mut offset = start;
             let mut found = false;
@@ -136,7 +136,7 @@ fn do_match(vm: &mut Vm, m: &mut M, p: &Pattern, s: &Value) -> PyResult<bool> {
             m.pos = offset;
             Ok(found)
         }
-        Pattern::Sequence(ps) => {
+        PatternKind::Sequence(ps) => {
             let skip = count_vals(p);
             let end = m.pos + skip;
             let items = match seq_items(vm, s) {
@@ -146,7 +146,7 @@ fn do_match(vm: &mut Vm, m: &mut M, p: &Pattern, s: &Value) -> PyResult<bool> {
                     return Ok(false);
                 }
             };
-            let star = ps.iter().position(|q| matches!(q, Pattern::Star(_)));
+            let star = ps.iter().position(|q| matches!(q.kind, PatternKind::Star(_)));
             let ok = match star {
                 None => {
                     if items.len() != ps.len() {
@@ -175,7 +175,7 @@ fn do_match(vm: &mut Vm, m: &mut M, p: &Pattern, s: &Value) -> PyResult<bool> {
                             }
                         }
                         if ok {
-                            if let Pattern::Star(Some(n)) = &ps[si] {
+                            if let PatternKind::Star(Some(n)) = &ps[si].kind {
                                 let mid = items[si..items.len() - after].to_vec();
                                 m.binds.push((n.clone(), Value::list(mid)));
                             }
@@ -194,7 +194,7 @@ fn do_match(vm: &mut Vm, m: &mut M, p: &Pattern, s: &Value) -> PyResult<bool> {
             m.pos = end;
             Ok(ok)
         }
-        Pattern::Mapping { keys, pats, rest } => {
+        PatternKind::Mapping { keys, pats, rest } => {
             let end = m.pos + count_vals(p);
             let is_map = match s {
                 Value::Dict(_) => true,
@@ -251,7 +251,7 @@ fn do_match(vm: &mut Vm, m: &mut M, p: &Pattern, s: &Value) -> PyResult<bool> {
             m.pos = end;
             Ok(ok)
         }
-        Pattern::Class { args, kw, .. } => {
+        PatternKind::Class { args, kw, .. } => {
             let end = m.pos + count_vals(p);
             let cls = m.vals[m.pos].clone();
             m.pos += 1;
