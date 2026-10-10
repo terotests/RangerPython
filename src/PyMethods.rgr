@@ -27,8 +27,8 @@ class PyMethods {
         this.addNames("set" "__init__ add remove discard pop clear copy update union intersection difference symmetric_difference issubset issuperset isdisjoint intersection_update difference_update symmetric_difference_update __len__ __contains__ __iter__")
         this.addNames("frozenset" "copy union intersection difference symmetric_difference issubset issuperset isdisjoint __len__ __contains__ __iter__ __hash__")
         this.addNames("file" "write writelines read readline readlines close flush seek tell __enter__ __exit__ __iter__ __next__ readable writable")
-        this.addNames("int" "bit_length bit_count as_integer_ratio conjugate is_integer __index__ __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ to_bytes")
-        this.addNames("float" "is_integer conjugate hex __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ as_integer_ratio")
+        this.addNames("int" "bit_length bit_count as_integer_ratio conjugate is_integer __index__ __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ to_bytes __repr__ __str__ __format__ __bool__ __neg__")
+        this.addNames("float" "is_integer conjugate hex __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ as_integer_ratio __repr__ __str__ __format__")
         this.addNames("iter" "__next__ __iter__")
         this.addNames("complex" "conjugate __abs__ __add__ __sub__ __mul__ __truediv__ __pow__ __eq__ __hash__ __neg__ __pos__ __bool__ __complex__ __radd__ __rsub__ __rmul__ __rtruediv__ __rpow__ __repr__ __str__ __getnewargs__ __format__")
         this.addNames("generator" "__next__ __iter__ send throw close")
@@ -236,6 +236,14 @@ class PyMethods {
             def optrtn@(optional):PyVal (ip.mkBuiltinMethod(tv "metatype.__new__"))
             return optrtn
         }
+        if ((kind == "type") && ((name == "__setattr__") || (name == "__delattr__") || (name == "__getattribute__"))) {
+            def optrts@(optional):PyVal (ip.mkBuiltinMethod((unwrap (get ip.builtins "object")) ("object." + name)))
+            return optrts
+        }
+        if ((kind == "object") && ((name == "__setattr__") || (name == "__delattr__") || (name == "__getattribute__") || (name == "__repr__") || (name == "__str__") || (name == "__eq__") || (name == "__ne__") || (name == "__hash__") || (name == "__format__") || (name == "__dir__") || (name == "__reduce_ex__") || (name == "__reduce__") || (name == "__sizeof__") || (name == "__lt__") || (name == "__le__") || (name == "__gt__") || (name == "__ge__") || (name == "__getstate__"))) {
+            def optrob@(optional):PyVal (ip.mkBuiltinMethod(tv ("object." + name)))
+            return optrob
+        }
         if ((name == "__new__") && (kind == "object")) {
             def optron@(optional):PyVal (ip.mkBuiltinMethod(tv "object.__new__"))
             return optron
@@ -315,6 +323,85 @@ class PyMethods {
                 ip.raise("TypeError" ("object.__init_subclass__() takes no keyword arguments"))
             }
             return ip.NONE
+        }
+        if ((startsWith name "object.__") && (name != "object.__new__")) {
+            ; object's own methods, as object.f(self, …) or super().f(…)
+            def target:PyVal self
+            def rest:[PyVal] args
+            if ((self.t == PyT.Builtin) && (self.s == "object")) {
+                if ((array_length args) == 0) {
+                    ip.raise("TypeError" ("descriptor '" + (substring name 7 (strlen name)) + "' of 'object' object needs an argument"))
+                }
+                target = (itemAt args 0)
+                def r2:[PyVal]
+                def ri:int 1
+                while (ri < (array_length args)) {
+                    push r2 (itemAt args ri)
+                    ri = ri + 1
+                }
+                rest = r2
+            }
+            def on:string (substring name 7 (strlen name))
+            if (on == "__setattr__") {
+                ip.objectSetAttr(target (ip.toStr((this.arg(rest 0)))) (this.arg(rest 1)))
+                return ip.NONE
+            }
+            if (on == "__delattr__") {
+                ip.objectDelAttr(target (ip.toStr((this.arg(rest 0)))))
+                return ip.NONE
+            }
+            if (on == "__getattribute__") {
+                def gn:string (ip.toStr((this.arg(rest 0))))
+                def gv@(optional):PyVal (ip.getAttrNoHook(target gn))
+                if (null? gv) {
+                    ip.raise("AttributeError" ("'" + (ip.typeName(target)) + "' object has no attribute '" + gn + "'"))
+                }
+                return (unwrap gv)
+            }
+            if ((on == "__repr__") || (on == "__str__")) {
+                if ((on == "__str__") && (target.t == PyT.Inst)) {
+                    return (ip.mkStr((ip.toRepr(target))))
+                }
+                return (ip.mkStr((ip.defaultRepr(target))))
+            }
+            if (on == "__eq__") {
+                if (ip.same(target (this.arg(rest 0)))) {
+                    return ip.TRUE
+                }
+                return ip.NOTIMPL
+            }
+            if (on == "__ne__") {
+                def eqr:PyVal (ip.binop("==" target (this.arg(rest 0))))
+                return (ip.mkBool(((ip.truthy(eqr)) == false)))
+            }
+            if (on == "__hash__") {
+                return (ip.mkInt((PyFormat.floorDivInt((ip.idOf(target)) 16))))
+            }
+            if (on == "__format__") {
+                def fs:string (ip.toStr((this.arg(rest 0))))
+                if ((strlen fs) > 0) {
+                    ip.raise("TypeError" ("unsupported format string passed to " + (ip.typeName(target)) + ".__format__"))
+                }
+                return (ip.mkStr((ip.toStr(target))))
+            }
+            if (on == "__dir__") {
+                def dkn:[string]
+                def dkv:[PyVal]
+                return (ip.bi.call("dir" ([] _:PyVal (target)) dkn dkv))
+            }
+            if (on == "__sizeof__") {
+                return (ip.mkInt(16))
+            }
+            if (on == "__getstate__") {
+                if ((target.t == PyT.Inst) && ((array_length (target.attrKeys())) > 0)) {
+                    return (ip.getAttr(target "__dict__"))
+                }
+                return ip.NONE
+            }
+            if ((on == "__lt__") || (on == "__le__") || (on == "__gt__") || (on == "__ge__")) {
+                return ip.NOTIMPL
+            }
+            ip.raise("TypeError" ("cannot pickle '" + (ip.typeName(target)) + "' object"))
         }
         if (name == "metatype.__new__") {
             ; type.__new__(meta, name, bases, ns, **kw)
@@ -404,7 +491,16 @@ class PyMethods {
                 push rest (itemAt args i)
                 i = i + 1
             }
-            return (this.callMethod((itemAt args 0) m rest kn kv))
+            def ut:PyVal (itemAt args 0)
+            if ((startsWith m "__") && (ip.isDataSub(ut))) {
+                ; int.__repr__(member) and the like: the built-in type's own method
+                def saved@(optional):PyVal ip.rawSelf
+                ip.rawSelf = ut
+                def ur:PyVal (this.callMethod(ut m rest kn kv))
+                ip.rawSelf = saved
+                return ur
+            }
+            return (this.callMethod(ut m rest kn kv))
         }
         if (name == "dict.fromkeys") {
             def d:PyVal (ip.mkDict())
@@ -417,6 +513,35 @@ class PyMethods {
         }
         if (name == "str.maketrans") {
             return (this.makeTrans(args))
+        }
+        if (name == "prop.__get__") {
+            def nk:[string]
+            def nv:[PyVal]
+            def pin:PyVal (this.arg(args 0))
+            if ((pin.t == PyT.None) || (null? self.wrapped)) {
+                if (pin.t == PyT.None) {
+                    return self
+                }
+                ip.raise("AttributeError" "property has no getter")
+            }
+            return (ip.callValue((unwrap self.wrapped) ([] _:PyVal (pin)) nk nv))
+        }
+        if (name == "prop.__set__") {
+            def nk:[string]
+            def nv:[PyVal]
+            if (null? self.setter) {
+                ip.raise("AttributeError" "property has no setter")
+            }
+            return (ip.callValue((unwrap self.setter) ([] _:PyVal ((this.arg(args 0)) (this.arg(args 1)))) nk nv))
+        }
+        if (name == "prop.__delete__") {
+            def nk:[string]
+            def nv:[PyVal]
+            def pdel@(optional):PyVal (get self.attrs "__deleter__")
+            if (null? pdel) {
+                ip.raise("AttributeError" "property has no deleter")
+            }
+            return (ip.callValue((unwrap pdel) ([] _:PyVal ((this.arg(args 0)))) nk nv))
         }
         if (startsWith name "property.") {
             def p (new PyVal(PyT.Prop))
@@ -665,8 +790,11 @@ class PyMethods {
             return ip.NONE
         }
         if (self.t == PyT.Dict) {
-            self.items = none
-            self.vals = none
+            ; separate lists: items and vals must not share one array
+            def noK:[PyVal]
+            def noV:[PyVal]
+            self.items = noK
+            self.vals = noV
             def ni:[string:int]
             self.index = ni
             return (this.dictMethod(self "update" args kn kv))

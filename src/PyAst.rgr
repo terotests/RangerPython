@@ -99,6 +99,13 @@ Enum PyK:int (
     With        ; kids WithItem, body
     WithItem    ; k1 context, k2 target (or none)
     Module      ; body
+    Match       ; k1 subject, kids Case
+    Case        ; k1 pattern (Pat), k2 guard (or none), body
+    Pat         ; s kind: "value" k1 (i 1: compare with is), "capture" strs[0],
+                ; "wild", "seq" kids, "star" strs[0] ("" for *_), "map" kids keys
+                ; with orelse value patterns and strs[0] the **rest name, "class"
+                ; k1 class, kids positional, names/orelse keyword patterns, "or"
+                ; kids, "as" k1 and strs[0]
 )
 
 class PyNode {

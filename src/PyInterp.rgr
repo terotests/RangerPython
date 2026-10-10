@@ -78,6 +78,8 @@ class PyInterp {
     def sysModules:PyVal (new PyVal(PyT.Dict))
     ; the scope of the call being made to a builtin (eval, exec, locals)
     def callScope:PyScope (new PyScope)
+    ; object.__getattribute__: no __getattr__ fallback
+    def noAttrHook:boolean false
 
     Constructor (filesystem:PyFileSystem) {
         fs = filesystem
@@ -696,6 +698,33 @@ class PyInterp {
         return (join parts ", ")
     }
 
+    ; <module.Class object at 0x…>
+    fn defaultRepr:string (v:PyVal) {
+        if ((v.t == PyT.Inst) && (!null? v.cls)) {
+            def c:PyVal (unwrap v.cls)
+            def mod:string "__main__"
+            def mv:PyVal (this.orNone((get c.attrs "__module__")))
+            if (mv.t == PyT.Str) {
+                mod = mv.s
+            }
+            def qn:string c.s
+            def qv:PyVal (this.orNone((get c.attrs "__qualname__")))
+            if (qv.t == PyT.Str) {
+                qn = qv.s
+            }
+            return ("<" + mod + "." + qn + " object at " + (this.hexId(v)) + ">")
+        }
+        return (this.toRepr(v))
+    }
+
+    fn getAttrNoHook@(optional):PyVal (obj:PyVal name:string) {
+        def saved:boolean noAttrHook
+        noAttrHook = true
+        def r@(optional):PyVal (this.getAttrOpt(obj name))
+        noAttrHook = saved
+        return r
+    }
+
     fn toRepr:string (v:PyVal) {
         if (!null? v.cls) {
             def sr@(optional):PyVal (this.subDunder(v "__repr__" ([] _:PyVal ())))
@@ -820,7 +849,7 @@ class PyInterp {
                     }
                     return (c.s + (this.toRepr(args)))
                 }
-                return ("<__main__." + (this.typeName(v)) + " object at " + (this.hexId(v)) + ">")
+                return (this.defaultRepr(v))
             }
             case PyT.Module {
                 return ("<module '" + v.s + "'>")
@@ -1736,6 +1765,12 @@ class PyInterp {
             if (obj.t == PyT.Module) {
                 this.raise("AttributeError" ("module '" + obj.s + "' has no attribute '" + name + "'"))
             }
+            if ((obj.t == PyT.Class) && (!null? obj.cls)) {
+                def mga@(optional):PyVal (this.classLookup((unwrap obj.cls) "__getattr__"))
+                if ((!null? mga) && ((this.orNone(mga)).t == PyT.Func)) {
+                    return (this.callMethodVal((unwrap mga) obj ([] _:PyVal ((this.mkStr(name))))))
+                }
+            }
             if (obj.t == PyT.Class) {
                 this.raise("AttributeError" ("type object '" + obj.s + "' has no attribute '" + name + "'"))
             }
@@ -1825,7 +1860,7 @@ class PyInterp {
                     return none
                 }
                 def ga@(optional):PyVal (this.classLookup(c "__getattr__"))
-                if (!null? ga) {
+                if ((!null? ga) && (noAttrHook == false)) {
                     def optr1541@(optional):PyVal (this.callMethodVal((unwrap ga) obj ([] _:PyVal ((this.mkStr(name))))))
                     return optr1541
                 }
@@ -1852,7 +1887,7 @@ class PyInterp {
                     if (((strlen obj.bt) > 0) && (obj.bt != "native")) {
                         push m (unwrap (get builtins obj.bt))
                     }
-                    push m (this.bi.objectClass())
+                    push m (unwrap (get builtins "object"))
                     def optr1558@(optional):PyVal (this.mkTuple(m))
                     return optr1558
                 }
@@ -2006,6 +2041,10 @@ class PyInterp {
                     def optris@(optional):PyVal (this.mkBuiltinMethod(self "__noop__"))
                     return optris
                 }
+                if ((name == "__setattr__") || (name == "__delattr__") || (name == "__getattribute__") || (name == "__repr__") || (name == "__str__") || (name == "__eq__") || (name == "__ne__") || (name == "__hash__") || (name == "__format__") || (name == "__dir__") || (name == "__reduce_ex__") || (name == "__reduce__") || (name == "__sizeof__") || (name == "__lt__") || (name == "__le__") || (name == "__gt__") || (name == "__ge__") || (name == "__getstate__")) {
+                    def optrod@(optional):PyVal (this.mkBuiltinMethod(self ("object." + name)))
+                    return optrod
+                }
                 if ((name == "__call__") && (self.t == PyT.Class)) {
                     def optrtc@(optional):PyVal (this.mkBuiltinMethod(self "type.__call__"))
                     return optrtc
@@ -2067,6 +2106,31 @@ class PyInterp {
                     def optrbm2@(optional):PyVal (this.mkStr("builtins"))
                     return optrbm2
                 }
+                if ((name == "__dict__") && (this.isBuiltinTypeName(obj.s))) {
+                    def bdd:PyVal (this.mkDict())
+                    for (this.builtinTypeNames(obj)) bdn:string bdi {
+                        def bdv@(optional):PyVal (this.meth.typeAttr(obj bdn))
+                        if (!null? bdv) {
+                            this.dictSet(bdd (this.mkStr(bdn)) (unwrap bdv))
+                        }
+                    }
+                    def optrbdd@(optional):PyVal bdd
+                    return optrbdd
+                }
+                if (((name == "__mro__") || (name == "__bases__")) && (this.isBuiltinTypeName(obj.s))) {
+                    def bm:[PyVal]
+                    if (name == "__mro__") {
+                        push bm obj
+                    }
+                    if (obj.s == "bool") {
+                        push bm (unwrap (get builtins "int"))
+                    }
+                    if ((obj.s != "object") && ((name == "__mro__") || (obj.s != "bool"))) {
+                        push bm (unwrap (get builtins "object"))
+                    }
+                    def optrbmr@(optional):PyVal (this.mkTuple(bm))
+                    return optrbmr
+                }
                 if ((obj.s == "itertools.chain") && (name == "from_iterable")) {
                     def cf (new PyVal(PyT.Builtin))
                     cf.s = "itertools.chain_from_iterable"
@@ -2086,6 +2150,10 @@ class PyInterp {
                 if ((name == "setter") || (name == "getter") || (name == "deleter")) {
                     def optr1671@(optional):PyVal (this.mkBuiltinMethod(obj ("property." + name)))
                     return optr1671
+                }
+                if ((name == "__get__") || (name == "__set__") || (name == "__delete__")) {
+                    def optrpg@(optional):PyVal (this.mkBuiltinMethod(obj ("prop." + name)))
+                    return optrpg
                 }
                 if (name == "fget") {
                     def optr1674@(optional):PyVal (this.orNone(obj.wrapped))
@@ -2124,7 +2192,92 @@ class PyInterp {
         return (this.meth.attrOf(obj name))
     }
 
+    ; the method names a built-in type's __dict__ and dir() list
+    fn builtinTypeNames:[string] (t:PyVal) {
+        def cands:[string] ([] _:string ("__new__" "__init__" "__repr__" "__str__" "__hash__" "__eq__" "__ne__" "__lt__" "__le__" "__gt__" "__ge__" "__getattribute__" "__setattr__" "__delattr__" "__format__" "__reduce__" "__reduce_ex__" "__sizeof__" "__dir__" "__init_subclass__" "__subclasshook__" "__add__" "__sub__" "__mul__" "__truediv__" "__floordiv__" "__mod__" "__pow__" "__neg__" "__pos__" "__abs__" "__bool__" "__int__" "__float__" "__index__" "__len__" "__getitem__" "__setitem__" "__delitem__" "__contains__" "__iter__" "__reversed__" "__or__" "__and__" "__xor__" "__lshift__" "__rshift__" "__invert__" "__round__" "__trunc__" "__floor__" "__ceil__" "__getnewargs__" "append" "extend" "insert" "remove" "pop" "clear" "index" "count" "sort" "reverse" "copy" "keys" "values" "items" "get" "setdefault" "update" "popitem" "fromkeys" "add" "discard" "union" "intersection" "difference" "symmetric_difference" "issubset" "issuperset" "isdisjoint" "join" "split" "rsplit" "strip" "lstrip" "rstrip" "replace" "find" "rfind" "rindex" "startswith" "endswith" "upper" "lower" "title" "capitalize" "casefold" "swapcase" "center" "ljust" "rjust" "zfill" "format" "format_map" "partition" "rpartition" "splitlines" "expandtabs" "encode" "isdigit" "isalpha" "isalnum" "isspace" "isupper" "islower" "istitle" "isidentifier" "isprintable" "isdecimal" "isnumeric" "isascii" "maketrans" "translate" "removeprefix" "removesuffix" "bit_length" "bit_count" "to_bytes" "from_bytes" "as_integer_ratio" "conjugate" "is_integer" "hex" "fromhex" "real" "imag" "numerator" "denominator" "mro"))
+        def out:[string]
+        def owned:[string:boolean]
+        if (t.s != "object") {
+            def o@(optional):PyVal (get builtins "object")
+            for cands c0:string i0 {
+                if ((!null? o) && (!null? (this.meth.typeAttr((unwrap o) c0)))) {
+                    set owned c0 true
+                }
+            }
+        }
+        for cands c:string i {
+            if ((has owned c) && (c != "__new__") && (c != "__init__") && (c != "__repr__") && (c != "__hash__") && (c != "__eq__") && (c != "__str__")) {
+                continue
+            }
+            push out c
+        }
+        return out
+    }
+
+    fn isBuiltinTypeName:boolean (n:string) {
+        return ((n == "int") || (n == "str") || (n == "float") || (n == "bool") || (n == "list") || (n == "dict") || (n == "set") || (n == "frozenset") || (n == "tuple") || (n == "complex") || (n == "object") || (n == "type") || (n == "bytes") || (n == "bytearray"))
+    }
+
     fn setAttr:void (obj:PyVal name:string val:PyVal) {
+        if (obj.t == PyT.Inst) {
+            def c0:PyVal (unwrap obj.cls)
+            def sa@(optional):PyVal (this.classLookup(c0 "__setattr__"))
+            if ((!null? sa) && ((this.orNone(sa)).t == PyT.Func)) {
+                this.callMethodVal((unwrap sa) obj ([] _:PyVal ((this.mkStr(name)) val)))
+                return
+            }
+        }
+        this.objectSetAttr(obj name val)
+    }
+
+    ; the names a class's instances may set, when its classes all use __slots__
+    fn slotsOf:PyVal (c:PyVal) {
+        if (c.slotsKnown == 0) {
+            def limited:boolean true
+            def names:[string:boolean]
+            def chain:[PyVal]
+            push chain c
+            for c.vals mc:PyVal mci {
+                push chain mc
+            }
+            for chain k:PyVal ki {
+                if ((k.mode == "builtin") || (k.mode == "native")) {
+                    continue
+                }
+                def sl@(optional):PyVal (get k.attrs "__slots__")
+                if (null? sl) {
+                    limited = false
+                } {
+                    def slv:PyVal (unwrap sl)
+                    def sitems:[PyVal]
+                    if (slv.t == PyT.Str) {
+                        push sitems slv
+                    } {
+                        sitems = (this.iterValues(slv))
+                    }
+                    for sitems si:PyVal sii {
+                        def sn:string (this.toStr(si))
+                        if (sn == "__dict__") {
+                            limited = false
+                        }
+                        set names sn true
+                    }
+                }
+            }
+            if ((strlen c.bt) > 0) {
+                limited = false
+            }
+            c.slotNames = names
+            c.slotsKnown = 1
+            if limited {
+                c.slotsKnown = 2
+            }
+        }
+        return c
+    }
+
+    ; object.__setattr__: descriptors, then the instance's own attributes
+    fn objectSetAttr:void (obj:PyVal name:string val:PyVal) {
         if (obj.t == PyT.Inst) {
             def c:PyVal (unwrap obj.cls)
             def cv@(optional):PyVal (this.classLookup(c name))
@@ -2143,10 +2296,12 @@ class PyInterp {
                     return
                 }
             }
-            def sa@(optional):PyVal (this.classLookup(c "__setattr__"))
-            if ((!null? sa) && ((this.orNone(sa)).t == PyT.Func)) {
-                this.callMethodVal((unwrap sa) obj ([] _:PyVal ((this.mkStr(name)) val)))
-                return
+            def sc:PyVal (this.slotsOf(c))
+            if ((sc.slotsKnown == 2) && ((has sc.slotNames name) == false) && (c.isExc == false)) {
+                if (!null? cv) {
+                    this.raise("AttributeError" ("'" + c.s + "' object attribute '" + name + "' is read-only"))
+                }
+                this.raise("AttributeError" ("'" + c.s + "' object has no attribute '" + name + "' and no __dict__ for setting new attributes"))
             }
             obj.putAttr(name val)
             return
@@ -2178,6 +2333,17 @@ class PyInterp {
 
     fn delAttr:void (obj:PyVal name:string) {
         if (obj.t == PyT.Inst) {
+            def da0@(optional):PyVal (this.classLookup((unwrap obj.cls) "__delattr__"))
+            if ((!null? da0) && ((this.orNone(da0)).t == PyT.Func)) {
+                this.callMethodVal((unwrap da0) obj ([] _:PyVal ((this.mkStr(name)))))
+                return
+            }
+        }
+        this.objectDelAttr(obj name)
+    }
+
+    fn objectDelAttr:void (obj:PyVal name:string) {
+        if (obj.t == PyT.Inst) {
             def dc:PyVal (unwrap obj.cls)
             def dcv@(optional):PyVal (this.classLookup(dc name))
             if (!null? dcv) {
@@ -2195,11 +2361,6 @@ class PyInterp {
                     this.callValue((unwrap ddel) ([] _:PyVal (dcvv obj)) ([] _:string ()) ([] _:PyVal ()))
                     return
                 }
-            }
-            def da@(optional):PyVal (this.classLookup(dc "__delattr__"))
-            if ((!null? da) && ((this.orNone(da)).t == PyT.Func)) {
-                this.callMethodVal((unwrap da) obj ([] _:PyVal ((this.mkStr(name)))))
-                return
             }
             if (has obj.attrs name) {
                 obj.delAttrKey(name)
@@ -2856,6 +3017,26 @@ class PyInterp {
     }
 
     fn binop:PyVal (op:string a:PyVal b:PyVal) {
+        if ((a.t == PyT.Float) && (b.t == PyT.Float) && (null? a.cls) && (null? b.cls)) {
+            ; the common float cases, before the general dispatch below
+            if (op == "*") {
+                return (this.mkFloat((a.d * b.d)))
+            }
+            if (op == "+") {
+                return (this.mkFloat((a.d + b.d)))
+            }
+            if (op == "-") {
+                return (this.mkFloat((a.d - b.d)))
+            }
+        }
+        if ((a.t == PyT.Int) && (b.t == PyT.Int) && (null? a.cls) && (null? b.cls)) {
+            if (op == "+") {
+                return (this.mkInt((a.i + b.i)))
+            }
+            if (op == "-") {
+                return (this.mkInt((a.i - b.i)))
+            }
+        }
         if ((!null? a.cls) || (!null? b.cls)) {
             if ((this.isDataSub(a)) || (this.isDataSub(b))) {
                 def bnm:string (this.dunderName(op))
@@ -3029,6 +3210,12 @@ class PyInterp {
             if (!null? r2) {
                 return (unwrap r2)
             }
+        }
+        if ((op == "+") && (a.t == PyT.Str)) {
+            this.raise("TypeError" ("can only concatenate str (not \"" + (this.typeName(b)) + "\") to str"))
+        }
+        if ((op == "+") && (a.t == PyT.List) && ((this.typeName(a)) == "list")) {
+            this.raise("TypeError" ("can only concatenate list (not \"" + (this.typeName(b)) + "\") to list"))
         }
         this.raise("TypeError" ("unsupported operand type(s) for " + op + ": '" + (this.typeName(a)) + "' and '" + (this.typeName(b)) + "'"))
         return NONE
@@ -3217,9 +3404,34 @@ class PyInterp {
                     return v
                 }
             }
+            if (name == "__class__") {
+                ; the implicit cell of a function defined in a class body
+                def fi:int ((array_length frames) - 1)
+                while (fi >= 0) {
+                    def cfr:PyFrame (itemAt frames fi)
+                    if (!null? cfr.func) {
+                        def cf:PyVal (unwrap cfr.func)
+                        if (!null? cf.cls) {
+                            return (unwrap cf.cls)
+                        }
+                    }
+                    fi = fi - 1
+                }
+            }
+            if ((name == "ExceptionGroup") || (name == "BaseExceptionGroup")) {
+                ; written in Python (lib/_exceptiongroup.py), loaded on first use
+                return (this.lazyBuiltin(name))
+            }
             this.raise("NameError" ("name '" + name + "' is not defined"))
         }
         return (unwrap r)
+    }
+
+    fn lazyBuiltin:PyVal (name:string) {
+        def m:PyVal (this.importModule("_exceptiongroup"))
+        def v:PyVal (this.getAttr(m name))
+        set builtins name v
+        return v
     }
 
     fn lookupOpt@(optional):PyVal (name:string sc:PyScope) {
@@ -3268,6 +3480,10 @@ class PyInterp {
                 s = cur.parent
             }
             this.raise("SyntaxError" ("no binding for nonlocal '" + name + "' found"))
+        }
+        if sc.isClass {
+            sc.put(name val)
+            return
         }
         set sc.vars name val
     }
@@ -3890,7 +4106,7 @@ class PyInterp {
         if (ns.t != PyT.Dict) {
             return
         }
-        def ks:[string] (keys sc.vars)
+        def ks:[string] (sc.orderedKeys())
         for ks k:string i {
             this.dictSet(ns (this.mkStr(k)) (unwrap (get sc.vars k)))
         }
@@ -4065,7 +4281,8 @@ class PyInterp {
         if (name == "__globals__") {
             def gs:PyScope (this.moduleScope((unwrap f.scope)))
             def gd:PyVal (this.mkDict())
-            for (keys gs.vars) gk:string gi {
+            def gsk:[string] (keys gs.vars)
+            for gsk gk:string gi {
                 this.dictSet(gd (this.mkStr(gk)) (unwrap (get gs.vars gk)))
             }
             r = gd
@@ -4427,11 +4644,20 @@ class PyInterp {
         if (ai < nargs) {
             this.raise("TypeError" (f.s + "() takes " + (to_string positional) + " positional argument" + (this.plural(positional)) + " but " + (to_string nargs) + " " + (this.wasWere(nargs)) + " given"))
         }
-        def kwDict:PyVal (this.mkDict())
+        def kwDict:PyVal NONE
+        if ((strlen kwParam) > 0) {
+            kwDict = (this.mkDict())
+        }
+        def slashAt:int -1
+        for params p4:PyNode j4 {
+            if (p4.i == 4) {
+                slashAt = j4
+            }
+        }
         for kn name:string k {
             def found:boolean false
             for params p2:PyNode j {
-                if ((p2.i == 0) && (p2.s == name)) {
+                if ((p2.i == 0) && (p2.s == name) && (j > slashAt)) {
                     found = true
                 }
             }
@@ -4579,7 +4805,8 @@ class PyInterp {
         for v.vals vv:PyVal j {
             push c.vals vv
         }
-        for (keys v.index) k:string ki {
+        def vik:[string] (keys v.index)
+        for vik k:string ki {
             set c.index k (unwrap (get v.index k))
         }
         for (v.attrKeys()) ak:string ai {
@@ -4898,6 +5125,17 @@ class PyInterp {
                     return (this.execWithGen(n 0 sc))
                 }
                 return (this.execWith(n 0 sc))
+            }
+            case PyK.Match {
+                if (!null? curGen) {
+                    return (this.execMatchGen(n sc))
+                }
+                def mc:int (this.matchCase(n sc))
+                if (mc < 0) {
+                    return 0
+                }
+                def mcs:PyNode (itemAt n.kids mc)
+                return (this.execBlock(mcs.body sc))
             }
         }
         this.raise("SyntaxError" "unsupported statement")
@@ -5551,6 +5789,248 @@ class PyInterp {
         return 0
     }
 
+    ; ---- match statements
+
+    ; the case that matches (its captures bound), or -1
+    fn matchCase:int (n:PyNode sc:PyScope) {
+        def subj:PyVal (this.eval((unwrap n.k1) sc))
+        for n.kids cs:PyNode i {
+            if (this.matchPat((unwrap cs.k1) subj sc)) {
+                if (!null? cs.k2) {
+                    if ((this.truthy((this.eval((unwrap cs.k2) sc)))) == false) {
+                        continue
+                    }
+                }
+                return i
+            }
+        }
+        return -1
+    }
+
+    fn execMatchGen:int (n:PyNode sc:PyScope) {
+        def g:PyGen (unwrap curGen)
+        def ci:int -1
+        if (this.genResuming(g)) {
+            def rs:PyGenSlot (this.genEnter(g))
+            rs.resumed = false
+            ci = rs.i
+        } {
+            ci = (this.matchCase(n sc))
+            def ns:PyGenSlot (this.genEnter(g))
+            ns.i = ci
+        }
+        def sig:int 0
+        if (ci >= 0) {
+            def cs:PyNode (itemAt n.kids ci)
+            sig = (this.execBlock(cs.body sc))
+        }
+        this.genLeave(g)
+        return sig
+    }
+
+    fn isSeqSubject:boolean (v:PyVal) {
+        if ((v.t == PyT.List) || (v.t == PyT.Tuple) || (v.t == PyT.Range)) {
+            return true
+        }
+        if ((v.t == PyT.Inst) && (!null? v.cls)) {
+            def c:PyVal (unwrap v.cls)
+            return ((!null? (this.classLookup(c "__getitem__"))) && (!null? (this.classLookup(c "__len__"))) && (null? (this.classLookup(c "keys"))))
+        }
+        return false
+    }
+
+    fn matchPat:boolean (p:PyNode v:PyVal sc:PyScope) {
+        def k:string p.s
+        if (k == "wild") {
+            return true
+        }
+        if (k == "capture") {
+            this.store((itemAt p.strs 0) v sc)
+            return true
+        }
+        if (k == "value") {
+            def x:PyVal (this.eval((unwrap p.k1) sc))
+            if (p.i == 1) {
+                return (this.same(v x))
+            }
+            return (this.eq(v x))
+        }
+        if (k == "or") {
+            for p.kids alt:PyNode ai {
+                if (this.matchPat(alt v sc)) {
+                    return true
+                }
+            }
+            return false
+        }
+        if (k == "as") {
+            if (this.matchPat((unwrap p.k1) v sc)) {
+                this.store((itemAt p.strs 0) v sc)
+                return true
+            }
+            return false
+        }
+        if (k == "seq") {
+            if ((this.isSeqSubject(v)) == false) {
+                return false
+            }
+            def items:[PyVal] (this.iterValues(v))
+            def n:int (array_length items)
+            def np:int (array_length p.kids)
+            def star:int -1
+            for p.kids sp:PyNode si {
+                if (sp.s == "star") {
+                    star = si
+                }
+            }
+            if (star < 0) {
+                if (n != np) {
+                    return false
+                }
+                for p.kids sp2:PyNode si2 {
+                    if ((this.matchPat(sp2 (itemAt items si2) sc)) == false) {
+                        return false
+                    }
+                }
+                return true
+            }
+            if (n < (np - 1)) {
+                return false
+            }
+            def after:int (np - star - 1)
+            def j:int 0
+            while (j < star) {
+                if ((this.matchPat((itemAt p.kids j) (itemAt items j) sc)) == false) {
+                    return false
+                }
+                j = j + 1
+            }
+            def j2:int 0
+            while (j2 < after) {
+                if ((this.matchPat((itemAt p.kids (star + 1 + j2)) (itemAt items (n - after + j2)) sc)) == false) {
+                    return false
+                }
+                j2 = j2 + 1
+            }
+            def stp:PyNode (itemAt p.kids star)
+            def sname:string (itemAt stp.strs 0)
+            if ((strlen sname) > 0) {
+                def mid:[PyVal]
+                def m:int star
+                while (m < (n - after)) {
+                    push mid (itemAt items m)
+                    m = m + 1
+                }
+                this.store(sname (this.mkList(mid)) sc)
+            }
+            return true
+        }
+        if (k == "map") {
+            def isMap:boolean (v.t == PyT.Dict)
+            if ((v.t == PyT.Inst) && (!null? v.cls)) {
+                isMap = ((!null? (this.classLookup((unwrap v.cls) "keys"))) && (!null? (this.classLookup((unwrap v.cls) "__getitem__"))))
+            }
+            if (isMap == false) {
+                return false
+            }
+            def used:[PyVal]
+            for p.kids kn:PyNode ki {
+                def key:PyVal (this.eval(kn sc))
+                def got@(optional):PyVal
+                if (v.t == PyT.Dict) {
+                    got = (this.dictGet(v key))
+                } {
+                    if (this.contains(v key)) {
+                        got = (this.getItem(v key))
+                    }
+                }
+                if (null? got) {
+                    return false
+                }
+                if ((this.matchPat((itemAt p.orelse ki) (unwrap got) sc)) == false) {
+                    return false
+                }
+                push used key
+            }
+            if ((array_length p.strs) > 0) {
+                def rest:PyVal (this.mkDict())
+                for (this.iterValues(v)) rk:PyVal rki {
+                    def taken:boolean false
+                    for used uk:PyVal uki {
+                        if (this.eq(uk rk)) {
+                            taken = true
+                        }
+                    }
+                    if (taken == false) {
+                        this.dictSet(rest rk (this.getItem(v rk)))
+                    }
+                }
+                this.store((itemAt p.strs 0) rest sc)
+            }
+            return true
+        }
+        if (k == "class") {
+            def cls:PyVal (this.eval((unwrap p.k1) sc))
+            if ((cls.t != PyT.Class) && (cls.t != PyT.Builtin)) {
+                this.raise("TypeError" "called match pattern must be a class")
+            }
+            if ((this.bi.isInstance(v cls)) == false) {
+                return false
+            }
+            def npos:int (array_length p.kids)
+            if (npos > 0) {
+                def self1:boolean false
+                if (cls.t == PyT.Builtin) {
+                    self1 = true
+                }
+                if ((cls.t == PyT.Class) && ((strlen cls.bt) > 0) && (null? (this.classLookup(cls "__match_args__")))) {
+                    self1 = true
+                }
+                if self1 {
+                    if (npos > 1) {
+                        this.raise("TypeError" (cls.s + "() accepts 1 positional sub-pattern (" + (to_string npos) + " given)"))
+                    }
+                    if ((this.matchPat((itemAt p.kids 0) v sc)) == false) {
+                        return false
+                    }
+                } {
+                    def ma@(optional):PyVal (this.getAttrOpt(cls "__match_args__"))
+                    if (null? ma) {
+                        ma = (this.getAttrOpt(cls "_fields"))
+                    }
+                    def margs:[PyVal]
+                    if (!null? ma) {
+                        margs = (this.iterValues((unwrap ma)))
+                    }
+                    if (npos > (array_length margs)) {
+                        this.raise("TypeError" (cls.s + "() accepts " + (to_string (array_length margs)) + " positional sub-pattern" + (this.plural((array_length margs))) + " (" + (to_string npos) + " given)"))
+                    }
+                    for p.kids pp:PyNode pi {
+                        def an:string (this.toStr((itemAt margs pi)))
+                        def av@(optional):PyVal (this.getAttrOpt(v an))
+                        if (null? av) {
+                            return false
+                        }
+                        if ((this.matchPat(pp (unwrap av) sc)) == false) {
+                            return false
+                        }
+                    }
+                }
+            }
+            for p.names kw:string kwi {
+                def kv@(optional):PyVal (this.getAttrOpt(v kw))
+                if (null? kv) {
+                    return false
+                }
+                if ((this.matchPat((itemAt p.orelse kwi) (unwrap kv) sc)) == false) {
+                    return false
+                }
+            }
+            return true
+        }
+        return false
+    }
+
     fn execIfGen:int (n:PyNode sc:PyScope) {
         def g:PyGen (unwrap curGen)
         def br:int 0
@@ -6045,6 +6525,31 @@ class PyInterp {
             }
             push bvals (this.eval(b sc))
         }
+        def needEntries:boolean false
+        for bvals eb:PyVal ebi {
+            if ((eb.t != PyT.Class) && (eb.t != PyT.Builtin)) {
+                needEntries = true
+            }
+        }
+        if needEntries {
+            ; PEP 560: a base that is not a class names the classes it stands for
+            def orig:PyVal (this.mkTuple(bvals))
+            def resolved:[PyVal]
+            for bvals eb2:PyVal ebi2 {
+                if ((eb2.t != PyT.Class) && (eb2.t != PyT.Builtin)) {
+                    def me@(optional):PyVal (this.getAttrOpt(eb2 "__mro_entries__"))
+                    if (!null? me) {
+                        def ents:PyVal (this.callValue((unwrap me) ([] _:PyVal (orig)) ([] _:string ()) ([] _:PyVal ())))
+                        for (this.iterValues(ents)) ev:PyVal evi {
+                            push resolved ev
+                        }
+                        continue
+                    }
+                }
+                push resolved eb2
+            }
+            bvals = resolved
+        }
         if (null? meta) {
             ; the most derived metaclass of the bases
             for bvals mb0:PyVal mbi0 {
@@ -6086,8 +6591,8 @@ class PyInterp {
         cls.putAttr("__module__" (this.moduleName(sc)))
         cls.putAttr("__qualname__" (this.mkStr(qn)))
         cls.putAttr("__doc__" (this.docOf(n.body)))
-        set body.vars "__qualname__" (this.mkStr(qn))
-        set body.vars "__module__" (this.moduleName(sc))
+        body.put("__qualname__" (this.mkStr(qn)))
+        body.put("__module__" (this.moduleName(sc)))
         if ((array_length n.tparams) > 0) {
             cls.putAttr("__type_params__" (this.bindTypeParams(n.tparams body)))
         }
@@ -6096,7 +6601,7 @@ class PyInterp {
         for n.tparams tp:string ti {
             py_map_del body.vars tp
         }
-        def ks:[string] (keys body.vars)
+        def ks:[string] (body.orderedKeys())
         for ks k:string j {
             def v:PyVal (unwrap (get body.vars k))
             cls.putAttr(k v)
@@ -6117,14 +6622,14 @@ class PyInterp {
         if ((strlen qn) == 0) {
             qn = n.s
         }
-        set body.vars "__module__" (this.moduleName(sc))
-        set body.vars "__qualname__" (this.mkStr(qn))
+        body.put("__module__" (this.moduleName(sc)))
+        body.put("__qualname__" (this.mkStr(qn)))
         def doc:PyVal (this.docOf(n.body))
         if (doc.t != PyT.None) {
-            set body.vars "__doc__" doc
+            body.put("__doc__" doc)
         }
         if ((array_length n.tparams) > 0) {
-            set body.vars "__type_params__" (this.bindTypeParams(n.tparams body))
+            body.put("__type_params__" (this.bindTypeParams(n.tparams body)))
         }
         this.setupAnn(n.body body)
         this.execBlock(n.body body)
@@ -6132,7 +6637,7 @@ class PyInterp {
             py_map_del body.vars tp
         }
         def d:PyVal (this.mkDict())
-        for (keys body.vars) k:string j {
+        for (body.orderedKeys()) k:string j {
             this.dictSet(d (this.mkStr(k)) (unwrap (get body.vars k)))
         }
         return d
@@ -6330,6 +6835,54 @@ class PyInterp {
         }
     }
 
+    ; except*: each handler takes the part of the group it matches; what no
+    ; handler took, and what the handlers raised, propagates as a group
+    ; (None when all of it was handled)
+    fn execExceptStar:PyVal (n:PyNode sc:PyScope caught:PyVal) {
+        def m:PyVal (this.importModule("_exceptiongroup"))
+        def nk:[string]
+        def nv:[PyVal]
+        def rest:PyVal (this.callValue((this.getAttr(m "_as_group")) ([] _:PyVal (caught)) nk nv))
+        def raised:[PyVal]
+        for n.handlers h:PyNode i {
+            if (rest.t == PyT.None) {
+                break
+            }
+            def hv:PyVal (this.eval((unwrap h.k1) sc))
+            def pair:PyVal (this.callValue((this.getAttr(rest "split")) ([] _:PyVal (hv)) nk nv))
+            def match:PyVal (itemAt pair.items 0)
+            rest = (itemAt pair.items 1)
+            if (match.t == PyT.None) {
+                continue
+            }
+            if ((strlen h.s) > 0) {
+                this.store(h.s match sc)
+            }
+            push handling match
+            def bfail:boolean false
+            def berr:PyVal NONE
+            try {
+                this.execBlock(h.body sc)
+            } {
+                bfail = true
+                berr = (this.takeException((error_msg)))
+            }
+            removeLast handling
+            if ((strlen h.s) > 0) {
+                py_map_del sc.vars h.s
+            }
+            if bfail {
+                if ((this.same(berr match)) == false) {
+                    push raised berr
+                }
+                if (this.same(berr match)) {
+                    push raised match
+                }
+            }
+        }
+        return (this.callValue((this.getAttr(m "_finish")) ([] _:PyVal (caught rest (this.mkList(raised)))) nk nv))
+    }
+
     fn execTry:int (n:PyNode sc:PyScope) {
         def sig:int 0
         def pending@(optional):PyVal
@@ -6341,7 +6894,13 @@ class PyInterp {
             failed = true
             caught = (this.takeException((error_msg)))
         }
-        if failed {
+        if (failed && (n.i == 1)) {
+            def fin:PyVal (this.execExceptStar(n sc caught))
+            if (fin.t != PyT.None) {
+                pending = fin
+            }
+        }
+        if (failed && (n.i != 1)) {
             pending = caught
             def handled:boolean false
             for n.handlers h:PyNode i {

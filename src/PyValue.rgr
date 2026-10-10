@@ -99,6 +99,10 @@ class PyVal {
     def bt:string ""
     ; Inst: its __dict__ once asked for, kept in step with attrs; the dict
     ; knows its owner
+    ; Class: whether instances are limited to __slots__ (0 not worked out
+    ; yet, 1 free, 2 limited to slotNames)
+    def slotsKnown:int 0
+    def slotNames:[string:boolean]
     def dictv@(optional):PyVal
     def owner@(optional):PyVal
 
@@ -233,6 +237,37 @@ class PyScope {
     ; names declared global (1) or nonlocal (2) in this scope
     def decl:[string:int]
     def isClass:boolean false
+    ; a class body's names in the order they were first set (the vars map
+    ; has no order on every target)
+    def order:[string]
+
+    fn put:void (name:string v:PyVal) {
+        if (isClass && ((has vars name) == false)) {
+            push order name
+        }
+        set vars name v
+    }
+
+    fn orderedKeys:[string] () {
+        if (isClass == false) {
+            return (keys vars)
+        }
+        def out:[string]
+        def seen:[string:boolean]
+        for order k:string i {
+            if ((has vars k) && ((has seen k) == false)) {
+                set seen k true
+                push out k
+            }
+        }
+        def vk:[string] (keys vars)
+        for vk k2:string j {
+            if ((has seen k2) == false) {
+                push out k2
+            }
+        }
+        return out
+    }
 }
 
 ; ----------------------------------------------------------------------------

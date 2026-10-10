@@ -1529,7 +1529,12 @@ class PyBuiltins {
         }
         if (name == "id") {
             this.need("id" args 1 1)
-            return (ip.mkInt((ip.idOf((itemAt args 0)))))
+            def iv0:PyVal (itemAt args 0)
+            if ((iv0.t == PyT.Int) && (iv0.i >= -5) && (iv0.i <= 256) && ((array_length (keys iv0.attrs)) == 0)) {
+                ; small ints are shared objects in CPython
+                return (ip.mkInt((140000000000 + (iv0.i * 32))))
+            }
+            return (ip.mkInt((ip.idOf(iv0))))
         }
         if (name == "iter") {
             this.need("iter" args 1 1)

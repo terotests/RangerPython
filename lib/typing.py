@@ -272,11 +272,36 @@ def NewType(name, tp):
     return new_type
 
 
+_NT_SKIP = ("__module__", "__qualname__", "__annotations__", "__doc__", "__orig_bases__", "__classcell__")
+
+
 def NamedTuple(typename, fields=None, **kwargs):
     import collections
     if fields is None:
         fields = list(kwargs.items())
     return collections.namedtuple(typename, [f[0] for f in fields])
+
+
+class _NamedTupleMeta(type):
+    def __new__(mcls, typename, bases, ns):
+        import collections
+        if ns.get("_root"):
+            return super().__new__(mcls, typename, bases, ns)
+        ann = ns.get("__annotations__", {})
+        names = list(ann)
+        defaults = [ns[n] for n in names if n in ns]
+        nt = collections.namedtuple(typename, names, defaults=defaults)
+        for k, v in ns.items():
+            if k not in names and k not in _NT_SKIP:
+                setattr(nt, k, v)
+        return nt
+
+
+NamedTuple.__mro_entries__ = lambda bases: (_NTBase,)
+
+
+class _NTBase(metaclass=_NamedTupleMeta):
+    _root = True
 
 
 class TypedDict(dict):

@@ -8,7 +8,7 @@ score is out of the tests CPython (Python 3.13.16) passes with the same
 driver. Tests that need CPython internals (reference counts, object sizes,
 subprocesses) are skipped by the test.support stand-in and are not counted.
 
-**1002 of 3582 tests pass: 28.0 %**
+**1149 of 3582 tests pass: 32.1 %**
 
 | file | pass | of | score | note |
 |---|---:|---:|---:|---|
@@ -17,8 +17,8 @@ subprocesses) are skipped by the test.support stand-in and are not counted.
 | test_binop | 9 | 12 | 75.0 % |  |
 | test_bool | 23 | 31 | 74.2 % |  |
 | test_builtin | 0 | 115 | 0.0 % | does not import: ModuleNotFoundError: No module named 'asyncio' |
-| test_class | 7 | 33 | 21.2 % |  |
-| test_collections | 40 | 99 | 40.4 % |  |
+| test_class | 8 | 33 | 24.2 % |  |
+| test_collections | 39 | 99 | 39.4 % |  |
 | test_compare | 9 | 16 | 56.3 % |  |
 | test_contains | 2 | 4 | 50.0 % |  |
 | test_copy | 34 | 81 | 42.0 % |  |
@@ -26,18 +26,18 @@ subprocesses) are skipped by the test.support stand-in and are not counted.
 | test_dict | 53 | 111 | 47.7 % |  |
 | test_dictviews | 5 | 16 | 31.3 % |  |
 | test_enumerate | 0 | 92 | 0.0 % | does not import: TypeError: type 'enumerate' is not an acceptable base type |
-| test_exceptions | 14 | 95 | 14.7 % |  |
+| test_exceptions | 21 | 95 | 22.1 % |  |
 | test_float | 0 | 47 | 0.0 % | does not import: ModuleNotFoundError: No module named 'struct' |
-| test_format | 3 | 18 | 16.7 % | run stopped: killed after 82 s |
+| test_format | 3 | 18 | 16.7 % | run stopped: killed after 90 s |
 | test_fstring | 0 | 84 | 0.0 % | does not import: SyntaxError: unexpected character after line continuation character (test.test_fstring.py, line 868) |
-| test_functools | 0 | 273 | 0.0 % | does not import: TypeError: type 'functools.partial' is not an acceptable base type |
-| test_generators | 14 | 40 | 35.0 % |  |
+| test_functools | 131 | 273 | 48.0 % |  |
+| test_generators | 17 | 40 | 42.5 % |  |
 | test_genexps | 0 | 0 | 0.0 % |  |
 | test_grammar | 48 | 78 | 61.5 % |  |
 | test_index | 0 | 55 | 0.0 % | does not import: NameError: name 'bytearray' is not defined |
 | test_int | 7 | 46 | 15.2 % |  |
 | test_isinstance | 2 | 23 | 8.7 % |  |
-| test_iter | 8 | 57 | 14.0 % | run stopped: TimeoutError: the script ran more than 4003598 steps |
+| test_iter | 8 | 57 | 14.0 % | run stopped: TimeoutError: the script ran more than 4003651 steps |
 | test_itertools | 0 | 137 | 0.0 % | does not import: ModuleNotFoundError: No module named 'struct' |
 | test_keywordonlyarg | 7 | 11 | 63.6 % |  |
 | test_list | 39 | 63 | 61.9 % |  |
@@ -49,7 +49,7 @@ subprocesses) are skipped by the test.support stand-in and are not counted.
 | test_property | 0 | 29 | 0.0 % | does not import: TypeError: type 'property' is not an acceptable base type |
 | test_raise | 20 | 37 | 54.1 % |  |
 | test_random | 0 | 101 | 0.0 % | does not import: AttributeError: module 'random' has no attribute 'SystemRandom' |
-| test_range | 3 | 28 | 10.7 % | run stopped: killed after 98 s |
+| test_range | 3 | 28 | 10.7 % | run stopped: killed after 109 s |
 | test_scope | 27 | 41 | 65.9 % |  |
 | test_set | 227 | 623 | 36.4 % | run stopped: killed after 180 s |
 | test_setcomps | 0 | 1 | 0.0 % |  |
@@ -57,14 +57,14 @@ subprocesses) are skipped by the test.support stand-in and are not counted.
 | test_sort | 16 | 21 | 76.2 % |  |
 | test_statistics | 160 | 370 | 43.2 % |  |
 | test_str | 0 | 128 | 0.0 % | does not import: ModuleNotFoundError: No module named 'struct' |
-| test_string | 33 | 38 | 86.8 % |  |
+| test_string | 36 | 38 | 94.7 % |  |
 | test_string_literals | 6 | 15 | 40.0 % |  |
 | test_super | 0 | 36 | 0.0 % |  |
 | test_tuple | 22 | 36 | 61.1 % |  |
-| test_types | 28 | 118 | 23.7 % | run stopped: killed after 147 s |
+| test_types | 28 | 118 | 23.7 % | run stopped: killed after 150 s |
 | test_unary | 5 | 6 | 83.3 % |  |
 | test_unpack | 1 | 1 | 100.0 % |  |
-| test_userdict | 16 | 25 | 64.0 % |  |
+| test_userdict | 19 | 25 | 76.0 % |  |
 | test_with | 38 | 51 | 74.5 % |  |
 
 ## Why tests fail
@@ -74,45 +74,45 @@ The most common reasons, by the error a failing test ends with:
 | tests | reason |
 |---:|---|
 | 509 | not run: ModuleNotFoundError: No module named '…' |
-| 394 | not run: TypeError: type '…' is not an acceptable base type |
 | 359 | not run: killed after 180 s |
-| 298 | wrong result (AssertionError) |
-| 239 | AttributeError: module '…' has no attribute '…' |
-| 102 | AttributeError: '…' object has no attribute '…' |
+| 342 | wrong result (AssertionError) |
+| 236 | AttributeError: module '…' has no attribute '…' |
+| 141 | AttributeError: '…' object has no attribute '…' |
+| 121 | not run: TypeError: type '…' is not an acceptable base type |
 | 101 | not run: AttributeError: module '…' has no attribute '…' |
 | 84 | not run: SyntaxError: unexpected character after line continuation character (test.test_fstring.py, line 868) |
-| 68 | NameError: name '…' is not defined |
+| 69 | NameError: name '…' is not defined |
 | 55 | not run: NameError: name '…' is not defined |
-| 49 | not run: TimeoutError: the script ran more than 4003598 steps |
+| 49 | not run: TimeoutError: the script ran more than 4003651 steps |
 | 42 | not run: TypeError: unsupported operand type(s) for <<: '…' and '…' |
-| 41 | not run: killed after 147 s |
-| 38 | skipped here: CPython implementation detail |
-| 18 | not run: killed after 98 s |
-| 11 | AttributeError: type object '…' has no attribute '…' |
-| 11 | RuntimeError: internal error: TypeError: Cannot read properties of undefined (reading '…') |
-| 10 | SyntaxError: no binding for nonlocal '…' found |
-| 9 | not run: killed after 82 s |
-| 8 | ModuleNotFoundError: No module named '…' |
-| 8 | KeyError: '…' |
-| 7 | RecursionError: maximum recursion depth exceeded |
-| 6 | TypeError: bases must be types |
+| 41 | not run: killed after 150 s |
+| 40 | skipped here: CPython implementation detail |
+| 18 | not run: killed after 109 s |
+| 16 | SyntaxError: no binding for nonlocal '…' found |
+| 12 | AttributeError: type object '…' has no attribute '…' |
+| 12 | RuntimeError: internal error: TypeError: Cannot read properties of undefined (reading '…') |
+| 11 | RecursionError: maximum recursion depth exceeded |
+| 10 | KeyError: '…' |
+| 9 | TypeError: '…' not supported between instances of '…' and '…' |
+| 9 | not run: killed after 90 s |
+| 7 | ModuleNotFoundError: No module named '…' |
+| 7 | TypeError: '…' object is not callable |
+| 7 | skipped here: no threads |
+| 6 | StopIteration: |
 | 6 | TypeError: isinstance() arg N must be a type, a tuple of types, or a union |
-| 5 | TypeError: '…' not supported between instances of '…' and '…' |
-| 5 | StopIteration: |
+| 5 | ValueError: not enough values to unpack (expected N, got N) |
 | 5 | TypeError: '…' object cannot be interpreted as an integer |
 | 5 | skipped here: resource not enabled |
+| 5 | TypeError: bases must be types |
 | 4 | skipped here: object finalization is the host's |
 | 4 | KeyError: None |
 | 3 | TypeError: unsupported operand type(s) for \|: '…' and '…' |
 | 3 | TypeError: unsupported operand type(s) for &: '…' and '…' |
+| 3 | skipped here: Signature information for builtins requires docstrings |
 | 3 | TypeError: '…' object is not iterable |
 | 3 | TypeError: slice indices must be integers or None or have an __index__ method |
 | 3 | TypeError: both arguments should be Rational instances |
 | 3 | StatisticsError: no median for empty data |
-| 2 | TypeError: '…' object is not callable |
-| 2 | TypeError: unsupported operand type(s) for +: '…' and '…' |
-| 2 | TypeError: bad operand type for unary +: '…' |
-| 2 | SyntaxError: '…' outside function |
 
 Run `node tests/conformance/run.mjs` for the full list in
 tests/conformance/results.json.

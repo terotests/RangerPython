@@ -134,7 +134,7 @@ class PyModules {
         }
         if (name == "sys") {
             def m6:PyVal (this.newModule("sys"))
-            this.fns(m6 "exit setrecursionlimit getrecursionlimit getsizeof intern _ranger_step_budget")
+            this.fns(m6 "exit setrecursionlimit getrecursionlimit getsizeof intern _ranger_step_budget exc_info exception")
             def args:[PyVal]
             for ip.argv a:string i {
                 push args (ip.mkStr(a))
@@ -225,7 +225,7 @@ class PyModules {
             def optr173@(optional):PyVal m10
             return optr173
         }
-        if (name == "functools") {
+        if (name == "_functools") {
             def m11:PyVal (this.newModule("functools"))
             this.fns(m11 "reduce partial lru_cache cache wraps total_ordering cmp_to_key")
             def optr178@(optional):PyVal m11
@@ -349,6 +349,19 @@ class PyModules {
                 }
                 ip.maxDepth = lim
                 return ip.NONE
+            }
+            if ((f == "exc_info") || (f == "exception")) {
+                if ((array_length ip.handling) == 0) {
+                    if (f == "exception") {
+                        return ip.NONE
+                    }
+                    return (ip.mkTuple(([] _:PyVal (ip.NONE ip.NONE ip.NONE))))
+                }
+                def ex:PyVal (last ip.handling)
+                if (f == "exception") {
+                    return ex
+                }
+                return (ip.mkTuple(([] _:PyVal ((ip.bi.typeOf(ex)) ex ip.NONE))))
             }
             if (f == "getrecursionlimit") {
                 return (ip.mkInt(1000))

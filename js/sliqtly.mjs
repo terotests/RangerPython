@@ -19,8 +19,9 @@
 //
 // The Python runtime is synchronous; `run` lets a host run it elsewhere
 // (a Worker, see js/worker.mjs) and takes { code, files, options } and
-// gives runPython's result.
-import { runPython } from "./index.mjs";
+// gives runPython's result. deckHost is the adapter to js/host.mjs, whose
+// three-function host interface any other store can implement.
+import { runOnHost } from "./host.mjs";
 
 const DECK_FOLDERS = ["media/", "data/", "charts/", "apps/"];
 
@@ -44,37 +45,49 @@ function textOf(rec) {
   return null;
 }
 
-export async function runInDeck(vfs, docId, code, { place = placeFor, run, save = true, ...options } = {}) {
-  const files = {};
-  for (const rec of await vfs.listFiles(docId)) {
-    let text = textOf(rec);
-    if (text === null && rec.data && typeof rec.data.text === "function" && /\.(svg|xml|csv|tsv|json|txt|md|css)$/i.test(rec.path)) {
-      text = await rec.data.text();
-    }
-    if (text !== null) files["/" + rec.path] = text;
-  }
-  const result = run ? await run({ code, files, options }) : runPython(code, { ...options, files });
+// Sliqtly's vfs (listFiles, putFile, deleteFile) as a runOnHost host
+export function deckHost(vfs, docId, { place = placeFor, save = true } = {}) {
   const saved = [];
-  for (const [from, text] of Object.entries(result.files)) {
-    const path = deckPathFor(from, place);
-    if (save) {
-      await vfs.putFile({
-        doc: docId,
-        path,
-        type: /\.svg$/i.test(path) ? "image/svg+xml" : "",
-        size: new TextEncoder().encode(text).length,
-        data: text,
-        updated: Date.now(),
-      });
-    }
-    saved.push({ from, path });
-  }
-  // a deck file the script deleted (os.remove) leaves the deck too
   const removed = [];
-  for (const from of result.removed || []) {
-    const path = from.replace(/^\/+/, "");
-    if (save) await vfs.deleteFile(docId, path);
-    removed.push(path);
-  }
-  return { ...result, saved, removed };
+  return {
+    saved,
+    removed,
+    async list() {
+      const files = [];
+      for (const rec of await vfs.listFiles(docId)) {
+        let text = textOf(rec);
+        if (text === null && rec.data && typeof rec.data.text === "function" && /\.(svg|xml|csv|tsv|json|txt|md|css)$/i.test(rec.path)) {
+          text = await rec.data.text();
+        }
+        if (text !== null) files.push(["/" + rec.path, text]);
+      }
+      return files;
+    },
+    async write(from, text) {
+      const path = deckPathFor(from, place);
+      if (save) {
+        await vfs.putFile({
+          doc: docId,
+          path,
+          type: /\.svg$/i.test(path) ? "image/svg+xml" : "",
+          size: new TextEncoder().encode(text).length,
+          data: text,
+          updated: Date.now(),
+        });
+      }
+      saved.push({ from, path });
+    },
+    // a deck file the script deleted (os.remove) leaves the deck too
+    async remove(from) {
+      const path = from.replace(/^\/+/, "");
+      if (save) await vfs.deleteFile(docId, path);
+      removed.push(path);
+    },
+  };
+}
+
+export async function runInDeck(vfs, docId, code, { place = placeFor, save = true, ...options } = {}) {
+  const host = deckHost(vfs, docId, { place, save });
+  const result = await runOnHost(code, host, options);
+  return { ...result, saved: host.saved, removed: host.removed };
 }

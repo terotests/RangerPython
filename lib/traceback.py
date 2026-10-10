@@ -13,7 +13,10 @@ def format_exception(exc, value=None, tb=None, limit=None, chain=True):
     return ["Traceback (most recent call last):\n"] + format_exception_only(exc, value)
 
 def format_exc(limit=None, chain=True):
-    return "NoneType: None\n"
+    e = sys.exception()
+    if e is None:
+        return "NoneType: None\n"
+    return "".join(format_exception(type(e), e))
 
 def print_exc(limit=None, file=None, chain=True):
     print(format_exc(), end="", file=file)
