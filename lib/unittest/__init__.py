@@ -113,17 +113,51 @@ class _AssertRaisesContext:
 
 
 class _AssertWarnsContext:
-    def __init__(self, expected, test_case):
+    def __init__(self, expected, test_case, expected_regex=None):
         self.expected = expected
         self.test_case = test_case
+        self.expected_regex = expected_regex
         self.warning = None
         self.warnings = []
+        self.filename = None
+        self.lineno = None
 
     def __enter__(self):
+        if self.expected is None:
+            return self
+        import warnings
+        self._cm = warnings.catch_warnings(record=True)
+        self._log = self._cm.__enter__()
+        warnings.simplefilter("always")
         return self
 
     def __exit__(self, exc_type, exc_value, tb):
-        return False
+        if self.expected is None:
+            return False
+        self._cm.__exit__(exc_type, exc_value, tb)
+        if exc_type is not None:
+            return False
+        try:
+            name = self.expected.__name__
+        except AttributeError:
+            name = str(self.expected)
+        first_matching = None
+        for m in self._log:
+            w = m.message
+            if not isinstance(w, self.expected):
+                continue
+            if first_matching is None:
+                first_matching = w
+            if self.expected_regex is not None and not _matches(self.expected_regex, str(w)):
+                continue
+            self.warning = w
+            self.filename = m.filename
+            self.lineno = m.lineno
+            self.warnings = self._log
+            return False
+        if first_matching is not None:
+            raise self.test_case.failureException('"%s" does not match "%s"' % (getattr(self.expected_regex, "pattern", self.expected_regex), str(first_matching)))
+        raise self.test_case.failureException("%s not triggered" % name)
 
 
 class _SubTest:
@@ -451,7 +485,12 @@ class TestCase:
         return ctx
 
     def assertWarnsRegex(self, expected_warning, expected_regex, *args, **kwargs):
-        return self.assertWarns(expected_warning, *args, **kwargs)
+        ctx = _AssertWarnsContext(expected_warning, self, expected_regex)
+        if not args:
+            return ctx
+        with ctx:
+            args[0](*args[1:], **kwargs)
+        return ctx
 
     def assertNoLogs(self, logger=None, level=None):
         return _AssertWarnsContext(None, self)

@@ -2591,6 +2591,7 @@ impl Vm {
                         _ => return Err(self.type_error("bases must be types")),
                     }
                 }
+                crate::methods::check_bases(self, &bases)?;
                 let c = self.type_new(mc, &name, bases, &ns)?;
                 Value::Class(c)
             }

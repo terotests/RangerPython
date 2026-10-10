@@ -1066,7 +1066,7 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
         },
         Value::StaticMethod(f) | Value::ClassMethod(f) => match name {
             "__func__" | "__wrapped__" => Some((**f).clone()),
-            "__isabstractmethod__" | "__name__" | "__qualname__" | "__doc__" => {
+            "__isabstractmethod__" | "__name__" | "__qualname__" | "__doc__" | "__module__" | "__annotations__" => {
                 let f = (**f).clone();
                 vm.getattr_opt(&f, &ps(name))?
             }

@@ -1549,7 +1549,10 @@ impl Vm {
             (UnOp::Pos, Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Complex(_)) => a.clone(),
             (UnOp::Pos, Value::Bool(b)) => Value::Int(*b as i64),
             (UnOp::Invert, Value::Int(i)) => Value::Int(!i),
-            (UnOp::Invert, Value::Bool(b)) => Value::Int(!(*b as i64)),
+            (UnOp::Invert, Value::Bool(b)) => {
+                crate::tb::warn(self, "DeprecationWarning", "Bitwise inversion '~' on bool is deprecated. This returns the bitwise inversion of the underlying int object and is usually not what you expect from negating a bool. Use the 'not' operator for boolean negation or ~int(x) if you really want the bitwise inversion of the underlying int.")?;
+                Value::Int(!(*b as i64))
+            }
             (UnOp::Invert, Value::Big(b)) => Value::from_big(b.neg().sub(&BigInt::from_i64(1))),
             (_, Value::Instance(_)) => {
                 let name = match op {
@@ -2047,7 +2050,11 @@ impl Vm {
                 }
                 if let Some(f) = self.lookup_special(v, &self.n.len.clone()) {
                     let r = self.call_vec(&f, vec![], &[])?;
-                    return Ok(self.to_index(&r)? != 0);
+                    let n = self.to_index(&r)?;
+                    if n < 0 {
+                        return Err(self.value_error("__len__() should return >= 0"));
+                    }
+                    return Ok(n != 0);
                 }
                 let b = self.base_of(v);
                 if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {

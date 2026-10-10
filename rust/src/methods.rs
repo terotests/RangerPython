@@ -980,6 +980,30 @@ fn getnewargs(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 // -------------------------------------------------------------------------
 // type
 
+/// bases a class statement or type() may not derive from, and layout conflicts
+pub(crate) fn check_bases(vm: &mut Vm, bases: &[Rc<crate::value::Class>]) -> PyResult<()> {
+    // the built-in layout each base carries; two unrelated ones conflict
+    let mut solid: Option<Rc<crate::value::Class>> = None;
+    for b in bases {
+        if matches!(&*b.name(), "bool" | "NoneType" | "NotImplementedType" | "ellipsis" | "slice" | "range" | "function" | "builtin_function_or_method" | "method" | "generator" | "coroutine" | "code" | "frame" | "traceback" | "memoryview" | "mappingproxy")
+            && b.builtin.get() != Builtin::User
+        {
+            return Err(vm.type_error(format!("type '{}' is not an acceptable base type", b.name())));
+        }
+        let s = b.mro.borrow().iter().find(|m| !matches!(m.builtin.get(), Builtin::User | Builtin::Object)).cloned();
+        if let Some(s) = s {
+            match &solid {
+                None => solid = Some(s),
+                Some(cur) if cur.is_subclass(&s) => {}
+                Some(cur) if s.is_subclass(cur) => solid = Some(s),
+                Some(cur) if cur.is_subclass(&vm.t.base_exception) && s.is_subclass(&vm.t.base_exception) => {}
+                Some(_) => return Err(vm.type_error("multiple bases have instance lay-out conflict")),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let exact = matches!(a.first(), Some(Value::Class(c)) if Rc::ptr_eq(c, &vm.t.type_));
     if a.len() == 2 && exact && k.is_empty() {
@@ -1008,24 +1032,7 @@ fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             _ => return Err(vm.type_error("bases must be types")),
         }
     }
-    // the built-in layout each base carries; two unrelated ones conflict
-    let mut solid: Option<Rc<crate::value::Class>> = None;
-    for b in &bases {
-        if matches!(&*b.name(), "bool" | "NoneType" | "NotImplementedType" | "ellipsis" | "slice" | "range" | "function" | "builtin_function_or_method" | "method" | "generator" | "coroutine" | "code" | "frame" | "traceback" | "memoryview" | "mappingproxy")
-            && b.builtin.get() != Builtin::User
-        {
-            return Err(vm.type_error(format!("type '{}' is not an acceptable base type", b.name())));
-        }
-        let s = b.mro.borrow().iter().find(|m| !matches!(m.builtin.get(), Builtin::User | Builtin::Object)).cloned();
-        if let Some(s) = s {
-            match &solid {
-                None => solid = Some(s),
-                Some(cur) if cur.is_subclass(&s) => {}
-                Some(cur) if s.is_subclass(cur) => solid = Some(s),
-                Some(_) => return Err(vm.type_error("multiple bases have instance lay-out conflict")),
-            }
-        }
-    }
+    check_bases(vm, &bases)?;
     // the most derived metaclass; one with its own __new__ makes the class
     let mut winner = meta.clone();
     for b in &bases {
@@ -1275,7 +1282,10 @@ pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
 fn exact_int(vm: &mut Vm, r: Value, n: &str) -> PyResult<Value> {
     match r {
         Value::Int(_) | Value::Big(_) => Ok(r),
-        Value::Bool(b) => Ok(Value::Int(b as i64)),
+        Value::Bool(b) => {
+            crate::tb::warn(vm, "DeprecationWarning", &format!("{} returned non-int (type bool).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.", n))?;
+            Ok(Value::Int(b as i64))
+        }
         _ => {
             let b = vm.base_of(&r);
             if matches!(r, Value::Instance(_)) && matches!(b, Value::Int(_) | Value::Big(_) | Value::Bool(_)) {
@@ -1290,6 +1300,11 @@ fn exact_int(vm: &mut Vm, r: Value, n: &str) -> PyResult<Value> {
 }
 
 fn int_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if let Some(Value::Class(c)) = a.first() {
+        if c.builtin.get() == Builtin::Bool {
+            return Err(vm.type_error("int.__new__(bool) is not safe, use bool.__new__()"));
+        }
+    }
     if a.len() > 3 {
         return Err(vm.type_error(format!("int() takes at most 2 arguments ({} given)", a.len() - 1)));
     }
@@ -1449,6 +1464,12 @@ fn int_from_bytes(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         v = v.sub(&BigInt::from_i64(1).shl(bs.len() * 8));
     }
     let r = Value::from_big(v);
+    if let Value::Class(c) = &a[0] {
+        if c.builtin.get() == Builtin::Bool {
+            let b = vm.truthy(&r)?;
+            return Ok(Value::Bool(b));
+        }
+    }
     let t = vm.t.int.clone();
     Ok(wrap_new(vm, &a[0], &t, r))
 }
@@ -1459,7 +1480,10 @@ fn int_ratio(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::tuple(vec![x, Value::Int(1)]))
 }
 
-fn bool_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn bool_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if !k.is_empty() {
+        return Err(vm.type_error("bool() takes no keyword arguments"));
+    }
     if a.len() > 2 {
         return Err(vm.type_error(format!("bool expected at most 1 argument, got {}", a.len() - 1)));
     }
@@ -2878,6 +2902,9 @@ fn gen_throw(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     margs(vm, "throw", a, 1, 3)?;
     let g = gen_of(vm, &a[0])?;
     let mut e = a[1].clone();
+    if a.len() > 2 {
+        crate::tb::warn(vm, "DeprecationWarning", "the (type, exc, tb) signature of throw() is deprecated, use the single-arg signature instead.")?;
+    }
     if let Value::Class(c) = &e {
         let args = match a.get(2) {
             Some(Value::None) | None => vec![],

@@ -28,7 +28,14 @@ def warn(message, category=None, stacklevel=1, source=None, skip_file_prefixes=(
             break
     if _log is not None:
         msg = message if isinstance(message, Warning) else category(message)
-        _log.append(WarningMessage(msg, category))
+        filename, lineno = "", 0
+        try:
+            import sys
+            f = sys._getframe(stacklevel)
+            filename, lineno = f.f_code.co_filename, f.f_lineno
+        except Exception:
+            pass
+        _log.append(WarningMessage(msg, category, filename, lineno))
 
 
 def warn_explicit(message, category, filename, lineno, *args, **kwargs):
