@@ -24,9 +24,11 @@
 ;   Slice (items: start, stop, step)
 ;   Prop (wrapped getter, setter), Static, ClassM (wrapped function)
 ;   Super (cls: the class to look after, self)
+;   Gen (gen): a generator, run a step at a time
 ;   Func and Class keep their defining class in cls (for super())
 ; ============================================================================
 
+Import "PyOps.rgr"
 Import "PyAst.rgr"
 
 Enum PyT:int (
@@ -53,6 +55,7 @@ Enum PyT:int (
     Static
     ClassM
     Super
+    Gen
 )
 
 class PyVal {
@@ -66,6 +69,7 @@ class PyVal {
     def vals:[PyVal]
     def index:[string:int]
     def attrs:[string:PyVal]
+    def akeys:[string]
     def defs:[string:PyVal]
     def bases:[PyVal]
     def cls@(optional):PyVal
@@ -83,9 +87,53 @@ class PyVal {
     ; Str: the code points, once asked for
     def cps:[int]
     def cpsKnown:boolean false
+    def gen@(optional):PyGen
+    ; a lazy chain: the iterator being read
+    def cur@(optional):PyVal
 
     Constructor (tag:PyT) {
         t = tag
+    }
+
+    ; attrs in the order they were first set (Go's maps have none)
+    fn putAttr:void (k:string v:PyVal) {
+        if ((has attrs k) == false) {
+            push akeys k
+        }
+        set attrs k v
+    }
+
+    fn delAttrKey:void (k:string) {
+        py_map_del attrs k
+        def kept:[string]
+        for akeys a:string i {
+            if (a != k) {
+                push kept a
+            }
+        }
+        akeys = kept
+    }
+
+    fn attrKeys:[string] () {
+        def out:[string]
+        def seen:[string:boolean]
+        for akeys a:string i {
+            if ((has attrs a) && ((has seen a) == false)) {
+                push out a
+                set seen a true
+            }
+        }
+        if ((array_length out) != (array_length (keys attrs))) {
+            ; set straight through a scope that shares this map
+            def rest:[string] (keys attrs)
+            for rest r:string j {
+                if ((has seen r) == false) {
+                    push out r
+                    push akeys r
+                }
+            }
+        }
+        return out
     }
 
     fn codes:[int] () {
@@ -111,4 +159,56 @@ class PyScope {
     ; names declared global (1) or nonlocal (2) in this scope
     def decl:[string:int]
     def isClass:boolean false
+}
+
+; ----------------------------------------------------------------------------
+; Generators. A generator runs its body until a yield, then unwinds the host
+; stack to the call that resumed it. Each block, loop, if, try and with that
+; runs inside the body keeps a slot in `live` saying where it is; resuming
+; walks back down the same slots and continues from there. The statement
+; that yielded runs again, and its yields give, in order, what was sent to
+; them (res), so the next yield in it is the one that suspends.
+; ----------------------------------------------------------------------------
+
+; what one yield in a statement gave back
+class PyGenRes {
+    ; 0 a value, 1 an exception to raise, 2 a `yield from` still delegating
+    def kind:int 0
+    def v:PyVal (new PyVal(PyT.None))
+    ; a delegating yield from: what to pass on next (sendKind 1 throws it)
+    def send:PyVal (new PyVal(PyT.None))
+    def sendKind:int 0
+}
+
+class PyGenSlot {
+    ; block: statement; while/for/try: phase; if: branch
+    def i:int 0
+    ; for: position; try: the handler
+    def j:int 0
+    ; try: the signal waiting for finally
+    def sig:int 0
+    ; for: the iterator; try: the exception handled; with: the manager
+    def v:PyVal (new PyVal(PyT.None))
+    ; try: the exception waiting for finally, and the return value kept
+    def w@(optional):PyVal
+    def keep:PyVal (new PyVal(PyT.None))
+    def res:[PyGenRes]
+    def used:int 0
+    def resumed:boolean false
+}
+
+class PyGen {
+    def func@(optional):PyVal
+    def node@(optional):PyNode
+    def scope@(optional):PyScope
+    def selfv@(optional):PyVal
+    def name:string ""
+    def live:[PyGenSlot]
+    def depth:int 0
+    def started:boolean false
+    def done:boolean false
+    def running:boolean false
+    ; the value yielded, or returned when done
+    def out:PyVal (new PyVal(PyT.None))
+    def line:int 0
 }

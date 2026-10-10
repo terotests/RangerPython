@@ -9,8 +9,8 @@
 ; to the run; a host error caught on the way (a stack overflow, a bug in the
 ; runtime) becomes a RecursionError or a RuntimeError there.
 ;
-; Generators run to the end when called and give an iterator over what they
-; yielded (a generator that never ends stops at the step limit).
+; A generator runs a step at a time: see PyGen in PyValue.rgr. A yield
+; unwinds to the resume with the SUSPEND marker as the exception.
 ; ============================================================================
 
 Import "PyOps.rgr"
@@ -22,11 +22,7 @@ Import "PyParser.rgr"
 Import "PyBuiltins.rgr"
 Import "PyMethods.rgr"
 Import "PyModules.rgr"
-
-; what a running generator has yielded so far
-class PyGenFrame {
-    def items:[PyVal]
-}
+Import "PyStdlib.rgr"
 
 ; a call in progress: for super() and the traceback
 class PyFrame {
@@ -58,17 +54,28 @@ class PyInterp {
     def maxDepth:int 200
     def steps:int 0
     def maxSteps:int 0
-    ; an endless generator stops here instead of filling memory
-    def maxYield:int 1000000
     def curLine:int 0
     def frames:[PyFrame]
-    def genStack:[PyGenFrame]
+    ; the generator whose body is running (none in a plain function)
+    def curGen@(optional):PyGen
+    ; set while a yield unwinds to its resume
+    def suspending:boolean false
+    def SUSPEND:PyVal (new PyVal(PyT.None))
+    def ENDED:PyVal (new PyVal(PyT.None))
+    ; a generator expression's first iterable, evaluated already
+    def compFirst@(optional):PyVal
     def reprDepth:int 0
     def globals:PyScope (new PyScope)
     def bi:PyBuiltins
     def meth:PyMethods
     def mods:PyModules
     def argv:[string]
+    ; folders import looks in after the working folder
+    def searchPath:[string]
+    ; sys.modules
+    def sysModules:PyVal (new PyVal(PyT.Dict))
+    ; the scope of the call being made to a builtin (eval, exec, locals)
+    def callScope:PyScope (new PyScope)
 
     Constructor (filesystem:PyFileSystem) {
         fs = filesystem
@@ -218,7 +225,7 @@ class PyInterp {
         if ((strlen msg) > 0) {
             push args (this.mkStr(msg))
         }
-        set e.attrs "args" (this.mkTuple(args))
+        e.putAttr("args" (this.mkTuple(args)))
         return e
     }
 
@@ -229,8 +236,8 @@ class PyInterp {
 
     fn raiseVal:void (e:PyVal) {
         if ((has e.attrs "__line__") == false) {
-            set e.attrs "__line__" (this.mkInt(curLine))
-            set e.attrs "__trace__" (this.mkStr((this.traceText())))
+            e.putAttr("__line__" (this.mkInt(curLine)))
+            e.putAttr("__trace__" (this.mkStr((this.traceText()))))
         }
         excValue = e
         py_raise ("python exception")
@@ -241,8 +248,8 @@ class PyInterp {
     ; recursion) is folded after three
     fn markExc:void (e:PyVal) {
         if ((has e.attrs "__line__") == false) {
-            set e.attrs "__line__" (this.mkInt(curLine))
-            set e.attrs "__trace__" (this.mkStr((this.traceText())))
+            e.putAttr("__line__" (this.mkInt(curLine)))
+            e.putAttr("__trace__" (this.mkStr((this.traceText()))))
         }
     }
 
@@ -450,6 +457,9 @@ class PyInterp {
             }
             case PyT.Iter {
                 return v.s
+            }
+            case PyT.Gen {
+                return "generator"
             }
             case PyT.Slice {
                 return "slice"
@@ -781,6 +791,9 @@ class PyInterp {
             }
             case PyT.Iter {
                 return ("<" + v.s + " object at " + (this.hexId(v)) + ">")
+            }
+            case PyT.Gen {
+                return ("<generator object " + v.s + " at " + (this.hexId(v)) + ">")
             }
             case PyT.Slice {
                 return ("slice(" + (this.joinRepr(v.items)) + ")")
@@ -1144,6 +1157,18 @@ class PyInterp {
                 }
             }
         }
+        if (this.isLazy(container)) {
+            def cit:PyVal (this.iterOf(container))
+            while true {
+                def cv@(optional):PyVal (this.nextOpt(cit))
+                if (null? cv) {
+                    return false
+                }
+                if (this.eq((unwrap cv) item)) {
+                    return true
+                }
+            }
+        }
         def all:[PyVal] (this.iterValues(container))
         for all a:PyVal j {
             if (this.eq(a item)) {
@@ -1283,6 +1308,17 @@ class PyInterp {
             }
             case PyT.Iter {
                 def out6:[PyVal]
+                if ((strlen v.mode) > 0) {
+                    while true {
+                        def lz@(optional):PyVal (this.lazyNext(v))
+                        if (null? lz) {
+                            break
+                        }
+                        push out6 (unwrap lz)
+                        this.tick()
+                    }
+                    return out6
+                }
                 def k3:int v.pos
                 def n2:int (array_length v.items)
                 while (k3 < n2) {
@@ -1294,6 +1330,15 @@ class PyInterp {
             }
             case PyT.File {
                 return (this.meth.fileLines(v))
+            }
+            case PyT.Gen {
+                def out8:[PyVal]
+                while (this.genRun(v NONE 0)) {
+                    def g:PyGen (unwrap v.gen)
+                    push out8 g.out
+                    this.tick()
+                }
+                return out8
             }
             case PyT.Inst {
                 def it3@(optional):PyVal (this.findMethod(v "__iter__"))
@@ -1567,7 +1612,7 @@ class PyInterp {
                 }
                 if (name == "__dict__") {
                     def d:PyVal (this.mkDict())
-                    def ks:[string] (keys obj.attrs)
+                    def ks:[string] (obj.attrKeys())
                     for ks k:string i {
                         if ((startsWith k "__") && (endsWith k "__") && (c.isExc)) {
                             continue
@@ -1629,7 +1674,7 @@ class PyInterp {
                 }
                 if (name == "__dict__") {
                     def d2:PyVal (this.mkDict())
-                    def ks2:[string] (keys obj.attrs)
+                    def ks2:[string] (obj.attrKeys())
                     for ks2 k2:string i2 {
                         this.dictSet(d2 (this.mkStr(k2)) (unwrap (get obj.attrs k2)))
                     }
@@ -1653,7 +1698,19 @@ class PyInterp {
                 return optr1582
             }
             case PyT.Module {
-                return (get obj.attrs name)
+                def mv@(optional):PyVal (get obj.attrs name)
+                if (null? mv) {
+                    ; a module's own __getattr__ (PEP 562)
+                    def mga@(optional):PyVal (get obj.attrs "__getattr__")
+                    if ((!null? mga) && (name != "__getattr__")) {
+                        def kn0:[string]
+                        def kv0:[PyVal]
+                        def got0:PyVal (this.callValue((unwrap mga) ([] _:PyVal ((this.mkStr(name)))) kn0 kv0))
+                        def r0@(optional):PyVal got0
+                        return r0
+                    }
+                }
+                return mv
             }
             case PyT.Super {
                 def self:PyVal (unwrap obj.self)
@@ -1731,6 +1788,13 @@ class PyInterp {
                 if ((name == "__func__") && (!null? obj.cls)) {
                     return obj.cls
                 }
+                ; a method shows its function's attributes
+                if (!null? obj.cls) {
+                    def bf:PyVal (unwrap obj.cls)
+                    if (bf.t == PyT.Func) {
+                        return (get bf.attrs name)
+                    }
+                }
                 return none
             }
             case PyT.Builtin {
@@ -1794,11 +1858,11 @@ class PyInterp {
                 this.callMethodVal((unwrap sa) obj ([] _:PyVal ((this.mkStr(name)) val)))
                 return
             }
-            set obj.attrs name val
+            obj.putAttr(name val)
             return
         }
         if ((obj.t == PyT.Class) || (obj.t == PyT.Module) || (obj.t == PyT.Func)) {
-            set obj.attrs name val
+            obj.putAttr(name val)
             return
         }
         this.raise("AttributeError" ("'" + (this.typeName(obj)) + "' object has no attribute '" + name + "'"))
@@ -1806,12 +1870,12 @@ class PyInterp {
 
     ; object.__setattr__(self, name, value), for a class that defines its own
     fn setAttrRaw:void (obj:PyVal name:string val:PyVal) {
-        set obj.attrs name val
+        obj.putAttr(name val)
     }
 
     fn delAttr:void (obj:PyVal name:string) {
         if (((obj.t == PyT.Inst) || (obj.t == PyT.Class) || (obj.t == PyT.Module)) && (has obj.attrs name)) {
-            py_map_del obj.attrs name
+            obj.delAttrKey(name)
             return
         }
         this.raise("AttributeError" name)
@@ -2033,7 +2097,7 @@ class PyInterp {
 
     fn makeExcArg:PyVal (name:string arg:PyVal) {
         def e:PyVal (this.makeExc((this.excClass(name)) ""))
-        set e.attrs "args" (this.mkTuple(([] _:PyVal (arg))))
+        e.putAttr("args" (this.mkTuple(([] _:PyVal (arg)))))
         return e
     }
 
@@ -2854,7 +2918,13 @@ class PyInterp {
                 return out
             }
             case PyK.GenExp {
+                def gcl:PyNode (itemAt n.kids 0)
+                def gsrc:PyVal (this.eval((unwrap gcl.k2) sc))
+                if (this.isLazy(gsrc)) {
+                    return (this.lazyGenexp(n gsrc sc))
+                }
                 def out2:PyVal (this.mkList(([] _:PyVal ())))
+                compFirst = gsrc
                 this.runComp(n out2 sc)
                 def g:PyVal (this.mkIter(out2.items))
                 g.s = "generator"
@@ -2888,32 +2958,33 @@ class PyInterp {
                 return wv
             }
             case PyK.Yield {
+                if (null? curGen) {
+                    this.raise("SyntaxError" "'yield' outside function")
+                }
+                def g:PyGen (unwrap curGen)
+                def ys:PyGenSlot (last g.live)
+                if (ys.used < (array_length ys.res)) {
+                    def r:PyGenRes (itemAt ys.res ys.used)
+                    ys.used = ys.used + 1
+                    if (r.kind == 1) {
+                        this.raiseVal(r.v)
+                    }
+                    return r.v
+                }
                 def yv:PyVal NONE
                 if (!null? n.k1) {
                     yv = (this.eval((unwrap n.k1) sc))
                 }
-                if ((array_length genStack) == 0) {
-                    this.raise("SyntaxError" "'yield' outside function")
-                }
-                def fr:PyGenFrame (last genStack)
-                push fr.items yv
-                if ((array_length fr.items) > maxYield) {
-                    this.raise("RuntimeError" ("generator produced more than " + (to_string maxYield) + " values: generators run to completion in this runtime, so an endless generator cannot be consumed lazily"))
-                }
+                g.out = yv
                 this.tick()
+                this.genSuspend()
                 return NONE
             }
             case PyK.YieldFrom {
-                def src2:PyVal (this.eval((unwrap n.k1) sc))
-                def vals:[PyVal] (this.iterValues(src2))
-                if ((array_length genStack) == 0) {
+                if (null? curGen) {
                     this.raise("SyntaxError" "'yield' outside function")
                 }
-                def fr2:PyGenFrame (last genStack)
-                for vals yv2:PyVal yi {
-                    push fr2.items yv2
-                }
-                return NONE
+                return (this.yieldFrom(n sc))
             }
             case PyK.Starred {
                 this.raise("SyntaxError" "can't use starred expression here")
@@ -3001,10 +3072,16 @@ class PyInterp {
         }
         ; the first iterable is evaluated in the enclosing scope
         def src:PyVal NONE
-        if ((ci == 0) && (!null? sc.parent)) {
+        if ((ci == 0) && (!null? compFirst)) {
+            src = (unwrap compFirst)
+            def nf@(optional):PyVal
+            compFirst = nf
+        } {
+          if ((ci == 0) && (!null? sc.parent)) {
             src = (this.eval((unwrap cl.k2) (unwrap sc.parent)))
         } {
             src = (this.eval((unwrap cl.k2) sc))
+          }
         }
         def tg:PyNode (unwrap cl.k1)
         if (src.t == PyT.Range) {
@@ -3133,9 +3210,125 @@ class PyInterp {
             push args (this.eval(a sc))
         }
         def saved:int curLine
+        if (f.t == PyT.Builtin) {
+            callScope = sc
+        }
         def r:PyVal (this.callValue(f args kn kv))
         curLine = saved
         return r
+    }
+
+    ; ---- eval, exec, compile
+
+    ; parses source as a module ("exec") or an expression ("eval"); a syntax
+    ; error raises SyntaxError with lineno and msg
+    fn parseSource:PyNode (src:string mode:string) {
+        def ps (new PyParser)
+        def tree@(optional):PyNode
+        try {
+            if (mode == "eval") {
+                tree = (ps.parseExpressionText((trim src) 1))
+            } {
+                tree = (ps.parseModule(src))
+            }
+        } {
+            if ((strlen ps.err) == 0) {
+                ps.err = (error_msg)
+            }
+        }
+        if ((strlen ps.err) > 0) {
+            def e:PyVal (this.makeExc((this.excClass("SyntaxError")) ps.err))
+            e.putAttr("msg" (this.mkStr(ps.err)))
+            e.putAttr("lineno" (this.mkInt(ps.errLine)))
+            e.putAttr("offset" NONE)
+            e.putAttr("text" NONE)
+            e.putAttr("filename" (this.mkStr("<string>")))
+            this.raiseVal(e)
+        }
+        def t:PyNode (unwrap tree)
+        return t
+    }
+
+    fn codeOf:PyVal (src:PyVal mode:string) {
+        if ((src.t == PyT.Builtin) && (src.mode == "code")) {
+            return src
+        }
+        if (src.t != PyT.Str) {
+            this.raise("TypeError" (mode + "() arg 1 must be a string, bytes or code object"))
+        }
+        def c (new PyVal(PyT.Builtin))
+        c.s = "<code>"
+        c.mode = "code"
+        c.putAttr("co_source" src)
+        c.putAttr("co_mode" (this.mkStr(mode)))
+        def tree:PyNode (this.parseSource(src.s mode))
+        c.node = tree
+        return c
+    }
+
+    ; the scope a run of code sees: the caller's, or one over a dict
+    fn scopeFor:PyScope (g:PyVal l:PyVal) {
+        def ns:PyVal g
+        if ((ns.t == PyT.None) && (l.t == PyT.Dict)) {
+            ns = l
+        }
+        if (ns.t == PyT.None) {
+            return callScope
+        }
+        if (ns.t != PyT.Dict) {
+            this.raise("TypeError" ("globals must be a dict, not " + (this.typeName(ns))))
+        }
+        def sc (new PyScope)
+        for ns.items k:PyVal i {
+            if (k.t == PyT.Str) {
+                set sc.vars k.s (itemAt ns.vals i)
+            }
+        }
+        if ((l.t == PyT.Dict) && ((this.same(l ns)) == false)) {
+            for l.items k2:PyVal i2 {
+                if (k2.t == PyT.Str) {
+                    set sc.vars k2.s (itemAt l.vals i2)
+                }
+            }
+        }
+        return sc
+    }
+
+    fn writeBack:void (sc:PyScope g:PyVal l:PyVal) {
+        def ns:PyVal g
+        if ((l.t == PyT.Dict) && ((ns.t == PyT.None) || ((this.same(l ns)) == false))) {
+            ns = l
+        }
+        if (ns.t != PyT.Dict) {
+            return
+        }
+        def ks:[string] (keys sc.vars)
+        for ks k:string i {
+            this.dictSet(ns (this.mkStr(k)) (unwrap (get sc.vars k)))
+        }
+    }
+
+    fn runCode:PyVal (fname:string src:PyVal g:PyVal l:PyVal) {
+        def mode:string fname
+        def code:PyVal (this.codeOf(src mode))
+        def cm@(optional):PyVal (get code.attrs "co_mode")
+        if (!null? cm) {
+            def cmv:PyVal (unwrap cm)
+            mode = cmv.s
+        }
+        def tree:PyNode (unwrap code.node)
+        def sc:PyScope (this.scopeFor(g l))
+        def saved:int curLine
+        def result:PyVal NONE
+        if (mode == "eval") {
+            result = (this.eval(tree sc))
+        } {
+            this.hoistDecls(tree.body sc)
+            this.execBlock(tree.body sc)
+        }
+        curLine = saved
+        this.writeBack(sc g l)
+        return result
     }
 
     fn zeroArgSuper:PyVal (sc:PyScope) {
@@ -3250,6 +3443,9 @@ class PyInterp {
         def result:PyVal NONE
         def failed:boolean false
         def err:PyVal NONE
+        def outerGen@(optional):PyGen curGen
+        def noGen@(optional):PyGen
+        curGen = noGen
         if (node.kind == PyK.Lambda) {
             try {
                 result = (this.eval((unwrap node.k1) sc))
@@ -3260,20 +3456,19 @@ class PyInterp {
         } {
             this.hoistDecls(node.body sc)
             if (node.i == 1) {
-                def gf (new PyGenFrame)
-                push genStack gf
-                try {
-                    this.execBlock(node.body sc)
-                } {
-                    failed = true
-                    err = (this.takeException((error_msg)))
+                def gen (new PyGen)
+                gen.func = f
+                gen.node = node
+                gen.scope = sc
+                gen.name = f.s
+                gen.line = node.line
+                if ((array_length args) > 0) {
+                    gen.selfv = (itemAt args 0)
                 }
-                removeLast genStack
-                if (failed == false) {
-                    def g:PyVal (this.mkIter(gf.items))
-                    g.s = "generator"
-                    result = g
-                }
+                def g (new PyVal(PyT.Gen))
+                g.gen = gen
+                g.s = f.s
+                result = g
             } {
                 try {
                     def sig:int (this.execBlock(node.body sc))
@@ -3287,11 +3482,8 @@ class PyInterp {
             }
         }
         removeLast frames
+        curGen = outerGen
         if failed {
-            if ((this.isExcInst(err)) && (this.excMatches(err (this.excClass("StopIteration")))) && (node.i == 1)) {
-                ; PEP 479: StopIteration inside a generator
-                this.raise("RuntimeError" "generator raised StopIteration")
-            }
             this.reraise(err)
         }
         retVal = NONE
@@ -3432,7 +3624,7 @@ class PyInterp {
         def obj (new PyVal(PyT.Inst))
         obj.cls = cls
         if cls.isExc {
-            set obj.attrs "args" (this.mkTuple(args))
+            obj.putAttr("args" (this.mkTuple(args)))
         }
         if ((!null? nw) && ((this.orNone(nw)).t == PyT.Static) || ((!null? nw) && ((this.orNone(nw)).t == PyT.Func))) {
             def nf:PyVal (unwrap nw)
@@ -3473,6 +3665,9 @@ class PyInterp {
     ; ---- statements
 
     fn execBlock:int (body:[PyNode] sc:PyScope) {
+        if (!null? curGen) {
+            return (this.execBlockGen(body sc))
+        }
         for body st:PyNode i {
             def sig:int (this.exec(st sc))
             if (sig != 0) {
@@ -3513,6 +3708,9 @@ class PyInterp {
                 return 0
             }
             case PyK.If {
+                if (!null? curGen) {
+                    return (this.execIfGen(n sc))
+                }
                 def c:PyVal (this.eval((unwrap n.k1) sc))
                 if (this.truthy(c)) {
                     return (this.execBlock(n.body sc))
@@ -3520,6 +3718,9 @@ class PyInterp {
                 return (this.execBlock(n.orelse sc))
             }
             case PyK.While {
+                if (!null? curGen) {
+                    return (this.execWhileGen(n sc))
+                }
                 while true {
                     def wc:PyVal (this.eval((unwrap n.k1) sc))
                     if ((this.truthy(wc)) == false) {
@@ -3536,6 +3737,9 @@ class PyInterp {
                 }
             }
             case PyK.For {
+                if (!null? curGen) {
+                    return (this.execForGen(n sc))
+                }
                 return (this.execFor(n sc))
             }
             case PyK.Break {
@@ -3566,6 +3770,9 @@ class PyInterp {
                 return 0
             }
             case PyK.Try {
+                if (!null? curGen) {
+                    return (this.execTryGen(n sc))
+                }
                 return (this.execTry(n sc))
             }
             case PyK.Raise {
@@ -3610,11 +3817,988 @@ class PyInterp {
                 return 0
             }
             case PyK.With {
+                if (!null? curGen) {
+                    return (this.execWithGen(n 0 sc))
+                }
                 return (this.execWith(n 0 sc))
             }
         }
         this.raise("SyntaxError" "unsupported statement")
         return 0
+    }
+
+    ; ---- generators (see PyGen)
+
+    fn genSuspend:void () {
+        suspending = true
+        excValue = SUSPEND
+        py_raise ("generator suspend")
+    }
+
+    ; a try or with in a generator passes a suspend on untouched
+    fn resuspend:void () {
+        excValue = SUSPEND
+        py_raise ("generator suspend")
+    }
+
+    fn genResuming:boolean (g:PyGen) {
+        return (g.depth < (array_length g.live))
+    }
+
+    ; the slot of the construct starting here: its saved one when resuming
+    fn genEnter:PyGenSlot (g:PyGen) {
+        if (g.depth < (array_length g.live)) {
+            def s:PyGenSlot (itemAt g.live g.depth)
+            g.depth = g.depth + 1
+            return s
+        }
+        def ns (new PyGenSlot)
+        push g.live ns
+        g.depth = g.depth + 1
+        return ns
+    }
+
+    fn genLeave:void (g:PyGen) {
+        removeLast g.live
+        g.depth = (array_length g.live)
+    }
+
+    ; an exception caught at depth d: the slots inside it are gone
+    fn genTruncate:void (g:PyGen d:int) {
+        while ((array_length g.live) > d) {
+            removeLast g.live
+        }
+        g.depth = d
+    }
+
+    fn clearRes:void (s:PyGenSlot) {
+        def none:[PyGenRes]
+        s.res = none
+        s.used = 0
+    }
+
+    fn stopIter:PyVal (v:PyVal) {
+        def e:PyVal (this.makeExc((this.excClass("StopIteration")) ""))
+        if (v.t != PyT.None) {
+            e.putAttr("args" (this.mkTuple(([] _:PyVal (v)))))
+        }
+        e.putAttr("value" v)
+        return e
+    }
+
+    ; run a generator to its next yield (true, the value in out) or to its
+    ; end (false, the return value in out); mode 1 throws sendv in
+    fn genRun:boolean (gv:PyVal sendv:PyVal mode:int) {
+        def g:PyGen (unwrap gv.gen)
+        if g.running {
+            this.raise("ValueError" "generator already executing")
+        }
+        if g.done {
+            if (mode == 1) {
+                this.raiseVal(sendv)
+            }
+            g.out = NONE
+            return false
+        }
+        if (g.started == false) {
+            if ((mode == 0) && (sendv.t != PyT.None)) {
+                this.raise("TypeError" "can't send non-None value to a just-started generator")
+            }
+            g.started = true
+            if (mode == 1) {
+                g.done = true
+                this.raiseVal(sendv)
+            }
+        } {
+            def top:PyGenSlot (last g.live)
+            def nres:int (array_length top.res)
+            def handed:boolean false
+            if (nres > 0) {
+                def lr:PyGenRes (itemAt top.res (nres - 1))
+                if (lr.kind == 2) {
+                    lr.send = sendv
+                    lr.sendKind = mode
+                    handed = true
+                }
+            }
+            if (handed == false) {
+                def r (new PyGenRes)
+                r.kind = mode
+                r.v = sendv
+                push top.res r
+            }
+            for g.live sl:PyGenSlot si {
+                sl.used = 0
+                sl.resumed = true
+            }
+        }
+        g.depth = 0
+        if ((array_length frames) >= maxDepth) {
+            this.raise("RecursionError" "maximum recursion depth exceeded")
+        }
+        def fr (new PyFrame)
+        fr.func = g.func
+        fr.self = g.selfv
+        fr.name = g.name
+        fr.line = g.line
+        fr.callLine = curLine
+        push frames fr
+        def keepLine:int curLine
+        def outer@(optional):PyGen curGen
+        curGen = g
+        g.running = true
+        def sig:int 0
+        def failed:boolean false
+        def err:PyVal NONE
+        def node:PyNode (unwrap g.node)
+        try {
+            sig = (this.execBlock(node.body (unwrap g.scope)))
+        } {
+            failed = true
+            err = (this.takeException((error_msg)))
+        }
+        g.running = false
+        curGen = outer
+        g.line = fr.line
+        removeLast frames
+        curLine = keepLine
+        if failed {
+            if suspending {
+                suspending = false
+                return true
+            }
+            g.done = true
+            def none:[PyGenSlot]
+            g.live = none
+            if ((this.isExcInst(err)) && (this.excMatches(err (this.excClass("StopIteration"))))) {
+                ; PEP 479: StopIteration inside a generator
+                def rx:PyVal (this.makeExc((this.excClass("RuntimeError")) "generator raised StopIteration"))
+                rx.putAttr("__cause__" err)
+                rx.putAttr("__context__" err)
+                this.raiseVal(rx)
+            }
+            this.reraise(err)
+        }
+        g.done = true
+        def none2:[PyGenSlot]
+        g.live = none2
+        g.out = NONE
+        if (sig == 3) {
+            g.out = retVal
+        }
+        retVal = NONE
+        return false
+    }
+
+    ; next(g) / g.send(v) / g.throw(e): the value yielded, or StopIteration
+    fn genStep:PyVal (gv:PyVal sendv:PyVal mode:int) {
+        def g:PyGen (unwrap gv.gen)
+        if (this.genRun(gv sendv mode)) {
+            return g.out
+        }
+        this.raiseVal((this.stopIter(g.out)))
+        return NONE
+    }
+
+    fn genClose:void (gv:PyVal) {
+        def g:PyGen (unwrap gv.gen)
+        if ((g.started == false) || g.done) {
+            g.done = true
+            return
+        }
+        def exit:PyVal (this.makeExc((this.excClass("GeneratorExit")) ""))
+        def yielded:boolean false
+        def failed:boolean false
+        def err:PyVal NONE
+        try {
+            yielded = (this.genRun(gv exit 1))
+        } {
+            failed = true
+            err = (this.takeException((error_msg)))
+        }
+        if failed {
+            if ((this.excMatches(err (this.excClass("GeneratorExit")))) || (this.excMatches(err (this.excClass("StopIteration"))))) {
+                return
+            }
+            this.reraise(err)
+        }
+        if yielded {
+            this.raise("RuntimeError" "generator ignored GeneratorExit")
+        }
+    }
+
+    ; an iterator over v: generators and iterators as they are
+    fn iterOf:PyVal (v:PyVal) {
+        if ((v.t == PyT.Gen) || (v.t == PyT.Iter)) {
+            return v
+        }
+        if (v.t == PyT.Inst) {
+            def im@(optional):PyVal (this.findMethod(v "__iter__"))
+            if (!null? im) {
+                def r:PyVal (this.callMethodVal((unwrap im) v ([] _:PyVal ())))
+                if ((r.t == PyT.Gen) || (r.t == PyT.Iter)) {
+                    return r
+                }
+                if (r.t == PyT.Inst) {
+                    if (null? (this.findMethod(r "__next__"))) {
+                        this.raise("TypeError" ("iter() returned non-iterator of type '" + (this.typeName(r)) + "'"))
+                    }
+                    return r
+                }
+                return (this.mkIter((this.iterValues(r))))
+            }
+        }
+        return (this.mkIter((this.iterValues(v))))
+    }
+
+    ; the next value of an iterator, none at the end
+    fn nextOpt@(optional):PyVal (it:PyVal) {
+        def none@(optional):PyVal
+        if (it.t == PyT.Gen) {
+            if (this.genRun(it NONE 0)) {
+                def g:PyGen (unwrap it.gen)
+                def out@(optional):PyVal g.out
+                return out
+            }
+            return none
+        }
+        if (it.t == PyT.Iter) {
+            if ((strlen it.mode) > 0) {
+                return (this.lazyNext(it))
+            }
+            if (it.pos < (array_length it.items)) {
+                def v@(optional):PyVal (itemAt it.items it.pos)
+                it.pos = it.pos + 1
+                return v
+            }
+            return none
+        }
+        def nx@(optional):PyVal (this.findMethod(it "__next__"))
+        if (null? nx) {
+            this.raise("TypeError" ("'" + (this.typeName(it)) + "' object is not an iterator"))
+        }
+        def got:PyVal (this.callNext((unwrap nx) it))
+        if (got == ENDED) {
+            return none
+        }
+        def r@(optional):PyVal got
+        return r
+    }
+
+    ; it.__next__(), or ENDED at StopIteration
+    fn callNext:PyVal (nx:PyVal it:PyVal) {
+        def got:PyVal ENDED
+        try {
+            got = (this.callMethodVal(nx it ([] _:PyVal ())))
+        } {
+            def ex:PyVal (this.takeException((error_msg)))
+            if ((this.excMatches(ex (this.excClass("StopIteration")))) == false) {
+                this.raiseVal(ex)
+            }
+        }
+        return got
+    }
+
+    fn yieldFrom:PyVal (n:PyNode sc:PyScope) {
+        def g:PyGen (unwrap curGen)
+        def s:PyGenSlot (last g.live)
+        def gr (new PyGenRes)
+        if (s.used < (array_length s.res)) {
+            gr = (itemAt s.res s.used)
+            if (gr.kind == 0) {
+                s.used = s.used + 1
+                return gr.v
+            }
+            if (gr.kind == 1) {
+                s.used = s.used + 1
+                this.raiseVal(gr.v)
+            }
+        } {
+            def src:PyVal (this.eval((unwrap n.k1) sc))
+            gr.kind = 2
+            gr.v = (this.iterOf(src))
+            gr.send = NONE
+            gr.sendKind = 0
+            push s.res gr
+        }
+        def sendv:PyVal gr.send
+        def mode:int gr.sendKind
+        gr.send = NONE
+        gr.sendKind = 0
+        def sub:PyVal gr.v
+        if (sub.t == PyT.Gen) {
+            def sg:PyGen (unwrap sub.gen)
+            if (this.genRun(sub sendv mode)) {
+                g.out = sg.out
+                this.genSuspend()
+            }
+            gr.kind = 0
+            gr.v = sg.out
+            s.used = s.used + 1
+            return gr.v
+        }
+        if (mode == 1) {
+            gr.kind = 0
+            s.used = s.used + 1
+            def th@(optional):PyVal (this.getAttrOpt(sub "throw"))
+            if (null? th) {
+                this.raiseVal(sendv)
+            }
+            def kn:[string]
+            def kv:[PyVal]
+            g.out = (this.callValue((unwrap th) ([] _:PyVal (sendv)) kn kv))
+            gr.kind = 2
+            s.used = s.used - 1
+            this.genSuspend()
+        }
+        if ((sendv.t != PyT.None) && (sub.t == PyT.Inst)) {
+            def sd@(optional):PyVal (this.getAttrOpt(sub "send"))
+            if (!null? sd) {
+                def kn2:[string]
+                def kv2:[PyVal]
+                def sent:PyVal NONE
+                def stopped:boolean false
+                try {
+                    sent = (this.callValue((unwrap sd) ([] _:PyVal (sendv)) kn2 kv2))
+                } {
+                    def ex:PyVal (this.takeException((error_msg)))
+                    if ((this.isExcInst(ex)) && (this.excMatches(ex (this.excClass("StopIteration"))))) {
+                        stopped = true
+                        gr.v = (this.orNone((this.getAttrOpt(ex "value"))))
+                    } {
+                        this.raiseVal(ex)
+                    }
+                }
+                if stopped {
+                    gr.kind = 0
+                    s.used = s.used + 1
+                    return gr.v
+                }
+                g.out = sent
+                this.genSuspend()
+            }
+        }
+        def got@(optional):PyVal (this.nextOpt(sub))
+        if (!null? got) {
+            g.out = (unwrap got)
+            this.genSuspend()
+        }
+        gr.kind = 0
+        gr.v = NONE
+        s.used = s.used + 1
+        return NONE
+    }
+
+    ; ---- lazy iterators: an Iter whose mode names how it makes its next value
+
+    fn isLazy:boolean (v:PyVal) {
+        if ((v.t == PyT.Gen) || (v.t == PyT.Inst)) {
+            return true
+        }
+        return ((v.t == PyT.Iter) && ((strlen v.mode) > 0))
+    }
+
+    fn mkLazy:PyVal (mode:string name:string) {
+        def v (new PyVal(PyT.Iter))
+        v.id = (this.newId())
+        v.mode = mode
+        v.s = name
+        return v
+    }
+
+    fn call1v:PyVal (f:PyVal a:PyVal) {
+        def kn:[string]
+        def kv:[PyVal]
+        return (this.callValue(f ([] _:PyVal (a)) kn kv))
+    }
+
+    fn lazyNext@(optional):PyVal (it:PyVal) {
+        def none@(optional):PyVal
+        def m:string it.mode
+        if (m == "map") {
+            def margs:[PyVal]
+            for it.items src:PyVal i {
+                def v@(optional):PyVal (this.nextOpt(src))
+                if (null? v) {
+                    return none
+                }
+                push margs (unwrap v)
+            }
+            def kn:[string]
+            def kv:[PyVal]
+            def mr@(optional):PyVal (this.callValue((unwrap it.cls) margs kn kv))
+            return mr
+        }
+        if ((m == "filter") || (m == "filterfalse")) {
+            while true {
+                def fv@(optional):PyVal (this.nextOpt((unwrap it.wrapped)))
+                if (null? fv) {
+                    return none
+                }
+                def x:PyVal (unwrap fv)
+                def f:PyVal (unwrap it.cls)
+                def ok:boolean false
+                if (f.t == PyT.None) {
+                    ok = (this.truthy(x))
+                } {
+                    ok = (this.truthy((this.call1v(f x))))
+                }
+                if (ok == (m == "filter")) {
+                    return fv
+                }
+            }
+        }
+        if (m == "zip") {
+            def tup:[PyVal]
+            def k:int 0
+            for it.items src2:PyVal i2 {
+                def zv@(optional):PyVal (this.nextOpt(src2))
+                if (null? zv) {
+                    if (it.i == 1) {
+                        if (k > 0) {
+                            this.raise("ValueError" ("zip() argument " + (to_string (k + 1)) + " is shorter than argument" + (this.zipArgs(k))))
+                        }
+                        def j:int 1
+                        while (j < (array_length it.items)) {
+                            def more@(optional):PyVal (this.nextOpt((itemAt it.items j)))
+                            if (!null? more) {
+                                this.raise("ValueError" ("zip() argument " + (to_string (j + 1)) + " is longer than argument" + (this.zipArgs(j))))
+                            }
+                            j = j + 1
+                        }
+                    }
+                    return none
+                }
+                push tup (unwrap zv)
+                k = k + 1
+            }
+            def zt@(optional):PyVal (this.mkTuple(tup))
+            return zt
+        }
+        if (m == "enumerate") {
+            def ev@(optional):PyVal (this.nextOpt((unwrap it.wrapped)))
+            if (null? ev) {
+                return none
+            }
+            def ep@(optional):PyVal (this.pair((this.mkInt(it.i)) (unwrap ev)))
+            it.i = it.i + 1
+            return ep
+        }
+        if (m == "count") {
+            def cur@(optional):PyVal it.wrapped
+            it.wrapped = (this.binop("+" (unwrap it.wrapped) (unwrap it.cls)))
+            return cur
+        }
+        if (m == "cycle") {
+            if (it.i == 0) {
+                def cv@(optional):PyVal (this.nextOpt((unwrap it.wrapped)))
+                if (!null? cv) {
+                    push it.vals (unwrap cv)
+                    return cv
+                }
+                it.i = 1
+                it.pos = 0
+            }
+            def nv:int (array_length it.vals)
+            if (nv == 0) {
+                return none
+            }
+            def cy@(optional):PyVal (itemAt it.vals (it.pos % nv))
+            it.pos = it.pos + 1
+            return cy
+        }
+        if (m == "repeat") {
+            if (it.i == 0) {
+                return none
+            }
+            if (it.i > 0) {
+                it.i = it.i - 1
+            }
+            def rv@(optional):PyVal it.wrapped
+            return rv
+        }
+        if (m == "islice") {
+            if ((it.i2 >= 0) && (it.i >= it.i2)) {
+                return none
+            }
+            while (it.pos < it.i) {
+                def skip@(optional):PyVal (this.nextOpt((unwrap it.wrapped)))
+                if (null? skip) {
+                    return none
+                }
+                it.pos = it.pos + 1
+            }
+            def iv@(optional):PyVal (this.nextOpt((unwrap it.wrapped)))
+            if (null? iv) {
+                return none
+            }
+            it.pos = it.pos + 1
+            it.i = it.i + it.i3
+            return iv
+        }
+        if (m == "takewhile") {
+            if (it.i == 1) {
+                return none
+            }
+            def tv@(optional):PyVal (this.nextOpt((unwrap it.wrapped)))
+            if (null? tv) {
+                return none
+            }
+            if (this.truthy((this.call1v((unwrap it.cls) (unwrap tv))))) {
+                return tv
+            }
+            it.i = 1
+            return none
+        }
+        if (m == "dropwhile") {
+            while true {
+                def dv@(optional):PyVal (this.nextOpt((unwrap it.wrapped)))
+                if (null? dv) {
+                    return none
+                }
+                if ((it.i == 0) && (this.truthy((this.call1v((unwrap it.cls) (unwrap dv)))))) {
+                    continue
+                }
+                it.i = 1
+                return dv
+            }
+        }
+        if (m == "chain") {
+            while true {
+                if (!null? it.cur) {
+                    def chv@(optional):PyVal (this.nextOpt((unwrap it.cur)))
+                    if (!null? chv) {
+                        return chv
+                    }
+                    it.cur = none
+                }
+                def nxt@(optional):PyVal (this.nextOpt((unwrap it.wrapped)))
+                if (null? nxt) {
+                    return none
+                }
+                it.cur = (this.iterOf((unwrap nxt)))
+            }
+        }
+        this.raise("RuntimeError" ("internal error: iterator mode " + m))
+        return none
+    }
+
+    fn zipArgs:string (k:int) {
+        if (k == 1) {
+            return " 1"
+        }
+        return ("s 1-" + (to_string k))
+    }
+
+    ; a generator expression over a lazy source runs as a generator
+    fn genexpBody:[PyNode] (n:PyNode) {
+        if ((array_length n.body) > 0) {
+            return n.body
+        }
+        def y (new PyNode(PyK.Yield n.line))
+        y.k1 = n.k1
+        def st (new PyNode(PyK.ExprStmt n.line))
+        st.k1 = y
+        def inner:[PyNode]
+        push inner st
+        def i:int ((array_length n.kids) - 1)
+        while (i >= 0) {
+            def cl:PyNode (itemAt n.kids i)
+            def wrap:[PyNode]
+            if (cl.kind == PyK.CompIf) {
+                def ifn (new PyNode(PyK.If cl.line))
+                ifn.k1 = cl.k1
+                ifn.body = inner
+                push wrap ifn
+            } {
+                def fn1 (new PyNode(PyK.For cl.line))
+                fn1.k1 = cl.k1
+                if (i == 0) {
+                    def src (new PyNode(PyK.Name cl.line))
+                    src.s = ".0"
+                    fn1.k2 = src
+                } {
+                    fn1.k2 = cl.k2
+                }
+                fn1.body = inner
+                push wrap fn1
+            }
+            inner = wrap
+            i = i - 1
+        }
+        n.body = inner
+        return inner
+    }
+
+    fn lazyGenexp:PyVal (n:PyNode src:PyVal sc:PyScope) {
+        def cs (new PyScope)
+        cs.parent = sc
+        cs.globals = (this.moduleScope(sc))
+        set cs.decl "__comp__" 3
+        set cs.vars ".0" (this.iterOf(src))
+        this.genexpBody(n)
+        def gen (new PyGen)
+        gen.node = n
+        gen.scope = cs
+        gen.name = "<genexpr>"
+        gen.line = n.line
+        def g (new PyVal(PyT.Gen))
+        g.gen = gen
+        g.s = "<genexpr>"
+        return g
+    }
+
+    fn execBlockGen:int (body:[PyNode] sc:PyScope) {
+        def g:PyGen (unwrap curGen)
+        def i:int 0
+        def resumed:boolean (this.genResuming(g))
+        def s:PyGenSlot (this.genEnter(g))
+        if resumed {
+            s.resumed = false
+            i = s.i
+        } {
+            s.i = 0
+        }
+        def nb:int (array_length body)
+        while (i < nb) {
+            def sig:int (this.exec((itemAt body i) sc))
+            if (sig != 0) {
+                this.genLeave(g)
+                return sig
+            }
+            i = i + 1
+            s.i = i
+            this.clearRes(s)
+        }
+        this.genLeave(g)
+        return 0
+    }
+
+    fn execIfGen:int (n:PyNode sc:PyScope) {
+        def g:PyGen (unwrap curGen)
+        def br:int 0
+        if (this.genResuming(g)) {
+            def rs:PyGenSlot (this.genEnter(g))
+            rs.resumed = false
+            br = rs.i
+        } {
+            def c:PyVal (this.eval((unwrap n.k1) sc))
+            if ((this.truthy(c)) == false) {
+                br = 1
+            }
+            def ns:PyGenSlot (this.genEnter(g))
+            ns.i = br
+        }
+        def sig:int 0
+        if (br == 0) {
+            sig = (this.execBlock(n.body sc))
+        } {
+            sig = (this.execBlock(n.orelse sc))
+        }
+        this.genLeave(g)
+        return sig
+    }
+
+    fn execWhileGen:int (n:PyNode sc:PyScope) {
+        def g:PyGen (unwrap curGen)
+        def resumed:boolean (this.genResuming(g))
+        def s:PyGenSlot (this.genEnter(g))
+        if resumed {
+            s.resumed = false
+        } {
+            s.i = 0
+        }
+        while true {
+            if (s.i == 0) {
+                def wc:PyVal (this.eval((unwrap n.k1) sc))
+                this.clearRes(s)
+                if (this.truthy(wc)) {
+                    s.i = 1
+                } {
+                    s.i = 2
+                }
+            }
+            if (s.i == 2) {
+                def os:int (this.execBlock(n.orelse sc))
+                this.genLeave(g)
+                return os
+            }
+            def ws:int (this.execBlock(n.body sc))
+            if (ws == 1) {
+                this.genLeave(g)
+                return 0
+            }
+            if (ws == 3) {
+                this.genLeave(g)
+                return 3
+            }
+            s.i = 0
+            this.tick()
+        }
+        return 0
+    }
+
+    ; a for loop's next item, from the iterator its slot keeps
+    fn loopNext@(optional):PyVal (s:PyGenSlot) {
+        def none@(optional):PyVal
+        def it:PyVal s.v
+        if (it.t == PyT.Range) {
+            if (s.j < (this.rangeLen(it))) {
+                def x:int (it.i + (s.j * it.i3))
+                s.j = s.j + 1
+                def rv@(optional):PyVal (this.mkInt(x))
+                return rv
+            }
+            return none
+        }
+        if (it.t == PyT.List) {
+            if (s.j < (array_length it.items)) {
+                def lv@(optional):PyVal (itemAt it.items s.j)
+                s.j = s.j + 1
+                return lv
+            }
+            return none
+        }
+        return (this.nextOpt(it))
+    }
+
+    fn execForGen:int (n:PyNode sc:PyScope) {
+        def g:PyGen (unwrap curGen)
+        def resumed:boolean (this.genResuming(g))
+        def s:PyGenSlot (new PyGenSlot)
+        if resumed {
+            s = (this.genEnter(g))
+            s.resumed = false
+        } {
+            def src:PyVal (this.eval((unwrap n.k2) sc))
+            def it:PyVal src
+            if ((src.t != PyT.Range) && (src.t != PyT.List)) {
+                it = (this.iterOf(src))
+            }
+            s = (this.genEnter(g))
+            s.v = it
+            s.j = 0
+            s.i = 1
+        }
+        def tg:PyNode (unwrap n.k1)
+        while true {
+            if (s.i == 2) {
+                def os:int (this.execBlock(n.orelse sc))
+                this.genLeave(g)
+                return os
+            }
+            if resumed {
+                resumed = false
+            } {
+                def item@(optional):PyVal (this.loopNext(s))
+                if (null? item) {
+                    s.i = 2
+                    continue
+                }
+                this.assign(tg (unwrap item) sc)
+            }
+            def sig:int (this.execBlock(n.body sc))
+            if (sig == 1) {
+                this.genLeave(g)
+                return 0
+            }
+            if (sig == 3) {
+                this.genLeave(g)
+                return 3
+            }
+            this.tick()
+        }
+        return 0
+    }
+
+    fn execTryGen:int (n:PyNode sc:PyScope) {
+        def g:PyGen (unwrap curGen)
+        def resumed:boolean (this.genResuming(g))
+        def s:PyGenSlot (this.genEnter(g))
+        if resumed {
+            s.resumed = false
+        } {
+            s.i = 0
+        }
+        def myDepth:int g.depth
+        if (s.i == 0) {
+            def failed:boolean false
+            def caught:PyVal NONE
+            def sig:int 0
+            try {
+                sig = (this.execBlock(n.body sc))
+            } {
+                failed = true
+                caught = (this.takeException((error_msg)))
+            }
+            if failed {
+                if suspending {
+                    this.resuspend()
+                }
+                this.genTruncate(g myDepth)
+                s.i = 3
+                s.w = caught
+                s.sig = 0
+                for n.handlers h:PyNode hi {
+                    def matches:boolean false
+                    if (null? h.k1) {
+                        matches = true
+                    } {
+                        def hfail:boolean false
+                        def herr:PyVal NONE
+                        try {
+                            def hv:PyVal (this.eval((unwrap h.k1) sc))
+                            matches = (this.excMatches(caught hv))
+                        } {
+                            hfail = true
+                            herr = (this.takeException((error_msg)))
+                        }
+                        if hfail {
+                            s.w = herr
+                            break
+                        }
+                    }
+                    if matches {
+                        def none@(optional):PyVal
+                        s.w = none
+                        s.i = 1
+                        s.j = hi
+                        s.v = caught
+                        if ((strlen h.s) > 0) {
+                            this.store(h.s caught sc)
+                        }
+                        break
+                    }
+                }
+            } {
+                s.sig = sig
+                if ((sig == 0) && ((array_length n.orelse) > 0)) {
+                    s.i = 2
+                } {
+                    s.i = 3
+                }
+            }
+            s.keep = retVal
+        }
+        if (s.i == 1) {
+            def h2:PyNode (itemAt n.handlers s.j)
+            push handling s.v
+            def bfail:boolean false
+            def berr:PyVal NONE
+            def bsig:int 0
+            try {
+                bsig = (this.execBlock(h2.body sc))
+            } {
+                bfail = true
+                berr = (this.takeException((error_msg)))
+            }
+            removeLast handling
+            if (bfail && suspending) {
+                this.resuspend()
+            }
+            if ((strlen h2.s) > 0) {
+                py_map_del sc.vars h2.s
+            }
+            s.sig = bsig
+            if bfail {
+                this.genTruncate(g myDepth)
+                if ((this.isExcInst(berr)) && ((has berr.attrs "__context__") == false) && ((this.same(berr s.v)) == false)) {
+                    berr.putAttr("__context__" s.v)
+                }
+                s.w = berr
+                s.sig = 0
+            }
+            s.i = 3
+            s.keep = retVal
+        }
+        if (s.i == 2) {
+            def ofail:boolean false
+            def oerr:PyVal NONE
+            def osig:int 0
+            try {
+                osig = (this.execBlock(n.orelse sc))
+            } {
+                ofail = true
+                oerr = (this.takeException((error_msg)))
+            }
+            if (ofail && suspending) {
+                this.resuspend()
+            }
+            s.sig = osig
+            if ofail {
+                this.genTruncate(g myDepth)
+                s.w = oerr
+                s.sig = 0
+            }
+            s.i = 3
+            s.keep = retVal
+        }
+        if ((array_length n.final) > 0) {
+            def fsig:int (this.execBlock(n.final sc))
+            if (fsig != 0) {
+                this.genLeave(g)
+                return fsig
+            }
+            retVal = s.keep
+        }
+        this.genLeave(g)
+        if (!null? s.w) {
+            this.reraise((unwrap s.w))
+        }
+        return s.sig
+    }
+
+    fn execWithGen:int (n:PyNode idx:int sc:PyScope) {
+        if (idx >= (array_length n.kids)) {
+            return (this.execBlock(n.body sc))
+        }
+        def g:PyGen (unwrap curGen)
+        def ctx:PyVal NONE
+        if (this.genResuming(g)) {
+            def rs:PyGenSlot (this.genEnter(g))
+            rs.resumed = false
+            ctx = rs.v
+        } {
+            def item:PyNode (itemAt n.kids idx)
+            ctx = (this.eval((unwrap item.k1) sc))
+            def ns:PyGenSlot (this.genEnter(g))
+            ns.v = ctx
+            def entered:PyVal (this.callAttr(ctx "__enter__" ([] _:PyVal ())))
+            if (!null? item.k2) {
+                this.assign((unwrap item.k2) entered sc)
+            }
+        }
+        def myDepth:int g.depth
+        def sig:int 0
+        def failed:boolean false
+        def err:PyVal NONE
+        try {
+            sig = (this.execWithGen(n (idx + 1) sc))
+        } {
+            failed = true
+            err = (this.takeException((error_msg)))
+        }
+        if failed {
+            if suspending {
+                this.resuspend()
+            }
+            this.genTruncate(g myDepth)
+            this.genLeave(g)
+            def cls:PyVal NONE
+            if (!null? err.cls) {
+                cls = (unwrap err.cls)
+            }
+            def keep:PyVal (this.callAttr(ctx "__exit__" ([] _:PyVal (cls err NONE))))
+            if ((this.truthy(keep)) == false) {
+                this.reraise(err)
+            }
+            return 0
+        }
+        this.genLeave(g)
+        def keepRet:PyVal retVal
+        this.callAttr(ctx "__exit__" ([] _:PyVal (NONE NONE NONE)))
+        retVal = keepRet
+        return sig
     }
 
     fn execAug:void (n:PyNode sc:PyScope) {
@@ -3705,7 +4889,7 @@ class PyInterp {
             }
             return (this.execBlock(n.orelse sc))
         }
-        if (src.t == PyT.Iter) {
+        if ((src.t == PyT.Iter) && ((strlen src.mode) == 0)) {
             ; next() inside the loop advances the same iterator
             while (src.pos < (array_length src.items)) {
                 def item:PyVal (itemAt src.items src.pos)
@@ -3716,6 +4900,24 @@ class PyInterp {
                     return 0
                 }
                 if (sig3 == 3) {
+                    return 3
+                }
+            }
+            return (this.execBlock(n.orelse sc))
+        }
+        if (this.isLazy(src)) {
+            def it:PyVal (this.iterOf(src))
+            while true {
+                def got@(optional):PyVal (this.nextOpt(it))
+                if (null? got) {
+                    break
+                }
+                this.assign(tg (unwrap got) sc)
+                def sig5:int (this.execBlock(n.body sc))
+                if (sig5 == 1) {
+                    return 0
+                }
+                if (sig5 == 3) {
                     return 3
                 }
             }
@@ -3781,7 +4983,7 @@ class PyInterp {
         def ks:[string] (keys body.vars)
         for ks k:string j {
             def v:PyVal (unwrap (get body.vars k))
-            set cls.attrs k v
+            cls.putAttr(k v)
             this.setOwner(v cls)
         }
         def cv:PyVal (this.applyDecorators(n.decos cls sc))
@@ -3865,7 +5067,7 @@ class PyInterp {
                     }
                     if bfail {
                         if ((this.isExcInst(berr)) && ((has berr.attrs "__context__") == false) && ((this.same(berr caught)) == false)) {
-                            set berr.attrs "__context__" caught
+                            berr.putAttr("__context__" caught)
                         }
                         pending = berr
                     }
@@ -3919,7 +5121,7 @@ class PyInterp {
         }
         if (!null? n.k2) {
             def cause:PyVal (this.eval((unwrap n.k2) sc))
-            set e.attrs "__cause__" cause
+            e.putAttr("__cause__" cause)
         }
         this.raiseVal(e)
     }
@@ -3974,38 +5176,110 @@ class PyInterp {
         if (!null? m) {
             return (unwrap m)
         }
+        ; a package's parent first: import a.b imports a
+        def dot:int (lastIndexOf name ".")
+        def parent@(optional):PyVal
+        if (dot > 0) {
+            parent = (this.importModule((substring name 0 dot)))
+            def again@(optional):PyVal (get modules name)
+            if (!null? again) {
+                return (unwrap again)
+            }
+        }
         def made@(optional):PyVal (this.mods.make(name))
         if (null? made) {
-            ; a .py file in the virtual filesystem's working folder
-            def path:string ((replace name "." "/") + ".py")
-            def src@(optional):string (fs.read(path))
-            if (null? src) {
-                this.raise("ModuleNotFoundError" ("No module named '" + name + "'"))
-            }
-            def mod:PyVal (this.runModuleSource(name (unwrap src)))
-            set modules name mod
-            return mod
+            made = (this.importFromFiles(name))
+        }
+        if (null? made) {
+            this.raise("ModuleNotFoundError" ("No module named '" + name + "'"))
         }
         def mv:PyVal (unwrap made)
         set modules name mv
+        this.dictSet(sysModules (this.mkStr(name)) mv)
+        if (!null? parent) {
+            def pv:PyVal (unwrap parent)
+            pv.putAttr((substring name (dot + 1) (strlen name)) mv)
+        }
         return mv
+    }
+
+    ; name.py or name/__init__.py in the working folder or a search path folder
+    fn importFromFiles@(optional):PyVal (name:string) {
+        def none@(optional):PyVal
+        def rel:string (replace name "." "/")
+        def roots:[string]
+        push roots ""
+        for searchPath sp:string i {
+            push roots sp
+        }
+        for roots root:string j {
+            def base:string rel
+            if ((strlen root) > 0) {
+                base = (root + "/" + rel)
+            }
+            def cands:[string]
+            push cands (base + ".py")
+            push cands (base + "/__init__.py")
+            for cands c:string k {
+                def src@(optional):string (fs.read(c))
+                if (!null? src) {
+                    def mod:PyVal (this.runModuleSource(name (unwrap src)))
+                    mod.putAttr("__file__" (this.mkStr((fs.normalize(c)))))
+                    if (endsWith c "/__init__.py") {
+                        mod.putAttr("__path__" (this.mkList(([] _:PyVal ((this.mkStr((fs.normalize(base)))))))))
+                    }
+                    def got@(optional):PyVal mod
+                    return got
+                }
+            }
+        }
+        ; the modules of lib/, kept in the runtime
+        def lsrc@(optional):string (PyStdlib.source(name))
+        if (!null? lsrc) {
+            def lmod:PyVal (this.runModuleSource(name (unwrap lsrc)))
+            lmod.putAttr("__file__" (this.mkStr(("<stdlib>/" + rel + ".py"))))
+            if (PyStdlib.isPackage(name)) {
+                lmod.putAttr("__path__" (this.mkList(([] _:PyVal ()))))
+            }
+            def lgot@(optional):PyVal lmod
+            return lgot
+        }
+        return none
     }
 
     fn runModuleSource:PyVal (name:string src:string) {
         def ps (new PyParser)
-        def tree:PyNode (ps.parseModule(src))
+        def tree@(optional):PyNode
+        try {
+            tree = (ps.parseModule(src))
+        } {
+            if ((strlen ps.err) == 0) {
+                ps.err = (error_msg)
+            }
+        }
         if ((strlen ps.err) > 0) {
             this.raise("SyntaxError" (ps.err + " (" + name + ".py, line " + (to_string ps.errLine) + ")"))
         }
         def mod (new PyVal(PyT.Module))
         mod.s = name
         set modules name mod
+        ; the module's globals are its attributes (a module half run by a
+        ; circular import already shows what it has defined)
         def msc (new PyScope)
+        msc.vars = mod.attrs
         set msc.vars "__name__" (this.mkStr(name))
-        this.execBlock(tree.body msc)
-        def ks:[string] (keys msc.vars)
-        for ks k:string i {
-            set mod.attrs k (unwrap (get msc.vars k))
+        def failed:boolean false
+        def caught:PyVal NONE
+        def tr:PyNode (unwrap tree)
+        try {
+            this.execBlock(tr.body msc)
+        } {
+            caught = (this.takeException((error_msg)))
+            failed = true
+        }
+        if failed {
+            py_map_del modules name
+            this.reraise(caught)
         }
         return mod
     }
@@ -4041,7 +5315,7 @@ class PyInterp {
         while (i < (array_length n.strs)) {
             def name:string (itemAt n.strs i)
             if (name == "*") {
-                def ks:[string] (keys mod.attrs)
+                def ks:[string] (mod.attrKeys())
                 for ks k:string j {
                     if ((startsWith k "_") == false) {
                         this.store(k (unwrap (get mod.attrs k)) sc)
@@ -4050,12 +5324,22 @@ class PyInterp {
             } {
                 def alias:string (itemAt n.names i)
                 def v@(optional):PyVal (get mod.attrs name)
+                if ((null? v) && (has mod.attrs "__getattr__") && ((has modules (n.s + "." + name)) == false) && (null? (this.importFromFiles((n.s + "." + name))))) {
+                    v = (this.getAttrOpt(mod name))
+                }
                 if (null? v) {
                     ; a submodule: from os import path
-                    def sub@(optional):PyVal (this.mods.make((n.s + "." + name)))
+                    def sub@(optional):PyVal (get modules (n.s + "." + name))
+                    if (null? sub) {
+                        sub = (this.mods.make((n.s + "." + name)))
+                    }
+                    if (null? sub) {
+                        sub = (this.importFromFiles((n.s + "." + name)))
+                    }
                     if (null? sub) {
                         this.raise("ImportError" ("cannot import name '" + name + "' from '" + n.s + "'"))
                     }
+                    set modules (n.s + "." + name) (unwrap sub)
                     v = sub
                 }
                 if ((strlen alias) > 0) {

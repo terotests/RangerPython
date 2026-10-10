@@ -39,8 +39,23 @@ class PyModules {
         for ns n:string i {
             def b (new PyVal(PyT.Builtin))
             b.s = (m.s + "." + n)
-            set m.attrs n b
+            m.putAttr(n b)
         }
+    }
+
+    fn floatInfo:PyVal () {
+        def m:PyVal (this.newModule("sys.float_info"))
+        m.putAttr("max" (ip.mkFloat((py_parse_float "1.7976931348623157e308"))))
+        m.putAttr("min" (ip.mkFloat((py_parse_float "2.2250738585072014e-308"))))
+        m.putAttr("epsilon" (ip.mkFloat((py_parse_float "2.220446049250313e-16"))))
+        m.putAttr("dig" (ip.mkInt(15)))
+        m.putAttr("mant_dig" (ip.mkInt(53)))
+        m.putAttr("max_exp" (ip.mkInt(1024)))
+        m.putAttr("min_exp" (ip.mkInt(-1021)))
+        m.putAttr("max_10_exp" (ip.mkInt(308)))
+        m.putAttr("min_10_exp" (ip.mkInt(-307)))
+        m.putAttr("radix" (ip.mkInt(2)))
+        return m
     }
 
     fn newModule:PyVal (name:string) {
@@ -71,11 +86,11 @@ class PyModules {
         if (name == "math") {
             def m:PyVal (this.newModule("math"))
             this.fns(m "sqrt sin cos tan asin acos atan atan2 sinh cosh tanh exp expm1 log log10 log2 log1p pow floor ceil trunc fabs hypot degrees radians isnan isinf isfinite isclose gcd lcm factorial comb perm prod fsum copysign fmod modf dist isqrt")
-            set m.attrs "pi" (ip.mkFloat(3.141592653589793))
-            set m.attrs "e" (ip.mkFloat(2.718281828459045))
-            set m.attrs "tau" (ip.mkFloat(6.283185307179586))
-            set m.attrs "inf" (ip.mkFloat((py_inf)))
-            set m.attrs "nan" (ip.mkFloat((py_nan)))
+            m.putAttr("pi" (ip.mkFloat(3.141592653589793)))
+            m.putAttr("e" (ip.mkFloat(2.718281828459045)))
+            m.putAttr("tau" (ip.mkFloat(6.283185307179586)))
+            m.putAttr("inf" (ip.mkFloat((py_inf))))
+            m.putAttr("nan" (ip.mkFloat((py_nan))))
             def optr79@(optional):PyVal m
             return optr79
         }
@@ -94,32 +109,32 @@ class PyModules {
             jc.isExc = true
             push jc.bases (unwrap ve)
             ip.computeMro(jc)
-            set m3.attrs "JSONDecodeError" jc
+            m3.putAttr("JSONDecodeError" jc)
             def optr96@(optional):PyVal m3
             return optr96
         }
         if (name == "os") {
             def m4:PyVal (this.newModule("os"))
             this.fns(m4 "getcwd chdir listdir mkdir makedirs remove unlink rmdir rename replace walk getenv")
-            set m4.attrs "sep" (ip.mkStr("/"))
-            set m4.attrs "linesep" (ip.mkStr("\n"))
-            set m4.attrs "name" (ip.mkStr("posix"))
-            set m4.attrs "curdir" (ip.mkStr("."))
-            set m4.attrs "environ" (ip.mkDict())
-            set m4.attrs "path" (unwrap (this.make("os.path")))
+            m4.putAttr("sep" (ip.mkStr("/")))
+            m4.putAttr("linesep" (ip.mkStr("\n")))
+            m4.putAttr("name" (ip.mkStr("posix")))
+            m4.putAttr("curdir" (ip.mkStr(".")))
+            m4.putAttr("environ" (ip.mkDict()))
+            m4.putAttr("path" (unwrap (this.make("os.path"))))
             def optr107@(optional):PyVal m4
             return optr107
         }
         if (name == "os.path") {
             def m5:PyVal (this.newModule("os.path"))
             this.fns(m5 "join exists isfile isdir basename dirname split splitext abspath normpath getsize isabs expanduser")
-            set m5.attrs "sep" (ip.mkStr("/"))
+            m5.putAttr("sep" (ip.mkStr("/")))
             def optr113@(optional):PyVal m5
             return optr113
         }
         if (name == "sys") {
             def m6:PyVal (this.newModule("sys"))
-            this.fns(m6 "exit setrecursionlimit getrecursionlimit")
+            this.fns(m6 "exit setrecursionlimit getrecursionlimit getsizeof intern _ranger_step_budget")
             def args:[PyVal]
             for ip.argv a:string i {
                 push args (ip.mkStr(a))
@@ -127,36 +142,39 @@ class PyModules {
             if ((array_length args) == 0) {
                 push args (ip.mkStr("main.py"))
             }
-            set m6.attrs "argv" (ip.mkList(args))
+            m6.putAttr("argv" (ip.mkList(args)))
             def so (new PyVal(PyT.File))
             so.s = "<stdout>"
             so.mode = "w"
-            set m6.attrs "stdout" so
+            m6.putAttr("stdout" so)
             def se (new PyVal(PyT.File))
             se.s = "<stderr>"
             se.mode = "w"
-            set m6.attrs "stderr" se
-            set m6.attrs "maxsize" (ip.mkInt(9007199254740991))
-            set m6.attrs "version" (ip.mkStr("3.13.0 (Ranger Python runtime)"))
-            set m6.attrs "platform" (ip.mkStr("ranger"))
-            set m6.attrs "path" (ip.mkList(([] _:PyVal ())))
-            set m6.attrs "modules" (ip.mkDict())
+            m6.putAttr("stderr" se)
+            m6.putAttr("maxsize" (ip.mkInt(9007199254740991)))
+            m6.putAttr("version" (ip.mkStr("3.13.0 (Ranger Python runtime)")))
+            m6.putAttr("platform" (ip.mkStr("ranger")))
+            m6.putAttr("path" (ip.mkList(([] _:PyVal ()))))
+            m6.putAttr("modules" ip.sysModules)
+            m6.putAttr("byteorder" (ip.mkStr("little")))
+            m6.putAttr("implementation" (this.newModule("ranger")))
+            m6.putAttr("float_info" (this.floatInfo()))
             def optr139@(optional):PyVal m6
             return optr139
         }
         if (name == "string") {
             def m7:PyVal (this.newModule("string"))
-            set m7.attrs "ascii_lowercase" (ip.mkStr("abcdefghijklmnopqrstuvwxyz"))
-            set m7.attrs "ascii_uppercase" (ip.mkStr("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
-            set m7.attrs "ascii_letters" (ip.mkStr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
-            set m7.attrs "digits" (ip.mkStr("0123456789"))
-            set m7.attrs "hexdigits" (ip.mkStr("0123456789abcdefABCDEF"))
-            set m7.attrs "octdigits" (ip.mkStr("01234567"))
+            m7.putAttr("ascii_lowercase" (ip.mkStr("abcdefghijklmnopqrstuvwxyz")))
+            m7.putAttr("ascii_uppercase" (ip.mkStr("ABCDEFGHIJKLMNOPQRSTUVWXYZ")))
+            m7.putAttr("ascii_letters" (ip.mkStr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")))
+            m7.putAttr("digits" (ip.mkStr("0123456789")))
+            m7.putAttr("hexdigits" (ip.mkStr("0123456789abcdefABCDEF")))
+            m7.putAttr("octdigits" (ip.mkStr("01234567")))
             def punct:string ("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
-            set m7.attrs "punctuation" (ip.mkStr(punct))
+            m7.putAttr("punctuation" (ip.mkStr(punct)))
             def ws:string (" \t\n\r" + (py_chr 11) + (py_chr 12))
-            set m7.attrs "whitespace" (ip.mkStr(ws))
-            set m7.attrs "printable" (ip.mkStr(("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" + punct + ws)))
+            m7.putAttr("whitespace" (ip.mkStr(ws)))
+            m7.putAttr("printable" (ip.mkStr(("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" + punct + ws))))
             def optr154@(optional):PyVal m7
             return optr154
         }
@@ -168,10 +186,10 @@ class PyModules {
         }
         if (name == "collections") {
             def m9:PyVal (this.newModule("collections"))
-            set m9.attrs "defaultdict" (this.nativeClass("defaultdict"))
-            set m9.attrs "Counter" (this.nativeClass("Counter"))
-            set m9.attrs "OrderedDict" (this.nativeClass("OrderedDict"))
-            set m9.attrs "deque" (this.nativeClass("deque"))
+            m9.putAttr("defaultdict" (this.nativeClass("defaultdict")))
+            m9.putAttr("Counter" (this.nativeClass("Counter")))
+            m9.putAttr("OrderedDict" (this.nativeClass("OrderedDict")))
+            m9.putAttr("deque" (this.nativeClass("deque")))
             this.fns(m9 "namedtuple")
             def optr168@(optional):PyVal m9
             return optr168
@@ -196,7 +214,7 @@ class PyModules {
             se2.isExc = true
             push se2.bases (unwrap (get ip.builtins "ValueError"))
             ip.computeMro(se2)
-            set m12.attrs "StatisticsError" se2
+            m12.putAttr("StatisticsError" se2)
             def optr189@(optional):PyVal m12
             return optr189
         }
@@ -315,6 +333,18 @@ class PyModules {
             }
             if (f == "getrecursionlimit") {
                 return (ip.mkInt(1000))
+            }
+            if (f == "intern") {
+                return (itemAt args 0)
+            }
+            if (f == "getsizeof") {
+                return (ip.mkInt(64))
+            }
+            if (f == "_ranger_step_budget") {
+                ; the steps the code after this may take (the conformance runner
+                ; gives each test its own budget)
+                ip.maxSteps = (ip.steps + (ip.bi.toInt((itemAt args 0) "budget")))
+                return ip.NONE
             }
         }
         if (mod == "time") {
@@ -2046,7 +2076,7 @@ class PyModules {
         if (kind == "deque") {
             def d (new PyVal(PyT.List))
             d.mode = "deque"
-            set d.attrs "__class__" cls
+            d.putAttr("__class__" cls)
             if (n > 0) {
                 d.items = (this.listOf((itemAt args 0)))
             }
@@ -2058,11 +2088,11 @@ class PyModules {
             return d
         }
         def dd:PyVal (ip.mkDict())
-        set dd.attrs "__class__" cls
+        dd.putAttr("__class__" cls)
         def start:int 0
         if (kind == "defaultdict") {
             if ((n > 0) && ((ip.argAt(args 0)).t != PyT.None)) {
-                set dd.attrs "__missing__" (itemAt args 0)
+                dd.putAttr("__missing__" (itemAt args 0))
             }
             start = 1
         }
@@ -2145,15 +2175,15 @@ class PyModules {
             }
         }
         def cls:PyVal (this.nativeClass(name))
-        set cls.attrs "_fields" (ip.mkTuple(fields))
+        cls.putAttr("_fields" (ip.mkTuple(fields)))
         def dv@(optional):PyVal (ip.bi.kw(kn kv "defaults"))
         if (!null? dv) {
-            set cls.attrs "__defaults__" (ip.mkTuple((this.listOf((unwrap dv)))))
+            cls.putAttr("__defaults__" (ip.mkTuple((this.listOf((unwrap dv))))))
         }
         def mk (new PyVal(PyT.Builtin))
         mk.s = "collections._make"
         mk.wrapped = cls
-        set cls.attrs "_make" mk
+        cls.putAttr("_make" mk)
         return cls
     }
 
@@ -2204,7 +2234,7 @@ class PyModules {
             }
         }
         def t:PyVal (ip.mkTuple(vals))
-        set t.attrs "__class__" cls
+        t.putAttr("__class__" cls)
         return t
     }
 
@@ -2260,7 +2290,7 @@ class PyModules {
             }
         }
         def t2:PyVal (ip.mkTuple(vals))
-        set t2.attrs "__class__" cls
+        t2.putAttr("__class__" cls)
         return t2
     }
 
@@ -2327,10 +2357,77 @@ class PyModules {
         def n:int (array_length args)
         def out:[PyVal]
         if ((f == "chain") || (f == "chain_from_iterable")) {
-            def srcs:[PyVal] args
+            def lc:PyVal (ip.mkLazy("chain" "chain"))
             if (f == "chain_from_iterable") {
-                srcs = (this.listOf((itemAt args 0)))
+                lc.wrapped = (ip.iterOf((itemAt args 0)))
+            } {
+                lc.wrapped = (ip.mkIter(args))
             }
+            return lc
+        }
+        if (f == "count") {
+            def lcount:PyVal (ip.mkLazy("count" "count"))
+            def cst:PyVal (ip.bi.arg(args 0 kn kv "start"))
+            def cstep:PyVal (ip.bi.arg(args 1 kn kv "step"))
+            if (cst.t == PyT.None) {
+                cst = (ip.mkInt(0))
+            }
+            if (cstep.t == PyT.None) {
+                cstep = (ip.mkInt(1))
+            }
+            lcount.wrapped = cst
+            lcount.cls = cstep
+            return lcount
+        }
+        if (f == "cycle") {
+            def lcy:PyVal (ip.mkLazy("cycle" "cycle"))
+            lcy.wrapped = (ip.iterOf((ip.argAt(args 0))))
+            return lcy
+        }
+        if (f == "islice") {
+            def ls:PyVal (ip.mkLazy("islice" "islice"))
+            ls.i = 0
+            ls.i2 = -1
+            ls.i3 = 1
+            if (n == 2) {
+                if ((itemAt args 1).t != PyT.None) {
+                    def sv1:PyVal (itemAt args 1)
+                    ls.i2 = (ip.bi.toInt(sv1 "islice"))
+                }
+            } {
+                if ((ip.argAt(args 1)).t != PyT.None) {
+                    def sv2:PyVal (itemAt args 1)
+                    ls.i = (ip.bi.toInt(sv2 "islice"))
+                }
+                if ((ip.argAt(args 2)).t != PyT.None) {
+                    def sv3:PyVal (itemAt args 2)
+                    ls.i2 = (ip.bi.toInt(sv3 "islice"))
+                }
+                if ((n > 3) && ((ip.argAt(args 3)).t != PyT.None)) {
+                    def sv4:PyVal (itemAt args 3)
+                    ls.i3 = (ip.bi.toInt(sv4 "islice"))
+                }
+            }
+            if ((ls.i < 0) || (ls.i2 < -1) || (ls.i3 < 1)) {
+                ip.raise("ValueError" "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.")
+            }
+            ls.wrapped = (ip.iterOf((itemAt args 0)))
+            return ls
+        }
+        if ((f == "takewhile") || (f == "dropwhile")) {
+            def ltw:PyVal (ip.mkLazy(f f))
+            ltw.cls = (itemAt args 0)
+            ltw.wrapped = (ip.iterOf((ip.argAt(args 1))))
+            return ltw
+        }
+        if (f == "filterfalse") {
+            def lff:PyVal (ip.mkLazy("filterfalse" "filterfalse"))
+            lff.cls = (itemAt args 0)
+            lff.wrapped = (ip.iterOf((ip.argAt(args 1))))
+            return lff
+        }
+        if (f == "__unused_chain") {
+            def srcs:[PyVal] args
             for srcs s:PyVal i {
                 for (this.listOf(s)) v:PyVal j {
                     push out v
@@ -2583,7 +2680,10 @@ class PyModules {
         if (f == "repeat") {
             def times:PyVal (ip.bi.arg(args 1 kn kv "times"))
             if (times.t == PyT.None) {
-                ip.raise("NotImplementedError" "itertools.repeat() without times is infinite; this runtime evaluates iterators eagerly")
+                def lr:PyVal (ip.mkLazy("repeat" "repeat"))
+                lr.wrapped = (itemAt args 0)
+                lr.i = -1
+                return lr
             }
             def i7:int 0
             while (i7 < times.i) {
@@ -2696,7 +2796,7 @@ class PyModules {
                 i2 = i2 + 1
             }
             for kn k:string ki {
-                set p.attrs k (itemAt kv ki)
+                p.putAttr(k (itemAt kv ki))
             }
             return p
         }
@@ -2705,7 +2805,7 @@ class PyModules {
                 def w (new PyVal(PyT.Builtin))
                 w.s = "functools._lru_wrapper"
                 w.wrapped = (itemAt args 0)
-                set w.attrs "__cache__" (ip.mkDict())
+                w.putAttr("__cache__" (ip.mkDict()))
                 return w
             }
             def deco (new PyVal(PyT.Builtin))
@@ -2760,7 +2860,7 @@ class PyModules {
             }
             def kn2:[string]
             def kv2:[PyVal]
-            def ks:[string] (keys b.attrs)
+            def ks:[string] (b.attrKeys())
             for ks k:string ki {
                 if ((indexOf kn k) < 0) {
                     push kn2 k
@@ -2796,8 +2896,8 @@ class PyModules {
             def kc:PyVal (this.cmpKeyClass())
             def o (new PyVal(PyT.Inst))
             o.cls = kc
-            set o.attrs "cmp" target
-            set o.attrs "obj" (itemAt args 0)
+            o.putAttr("cmp" target)
+            o.putAttr("obj" (itemAt args 0))
             return o
         }
         if (b.s == "collections._make") {
@@ -2816,13 +2916,13 @@ class PyModules {
         c.mode = "builtin"
         def lt (new PyVal(PyT.Builtin))
         lt.s = "functools._cmp_lt"
-        set c.attrs "__lt__" lt
+        c.putAttr("__lt__" lt)
         def gt (new PyVal(PyT.Builtin))
         gt.s = "functools._cmp_gt"
-        set c.attrs "__gt__" gt
+        c.putAttr("__gt__" gt)
         def eq (new PyVal(PyT.Builtin))
         eq.s = "functools._cmp_eq"
-        set c.attrs "__eq__" eq
+        c.putAttr("__eq__" eq)
         set ip.builtins "__cmp_key_class__" c
         return c
     }
@@ -2984,9 +3084,9 @@ class PyModules {
     }
 
     fn copyAttrs:void (src:PyVal dst:PyVal) {
-        def ks:[string] (keys src.attrs)
+        def ks:[string] (src.attrKeys())
         for ks k:string i {
-            set dst.attrs k (unwrap (get src.attrs k))
+            dst.putAttr(k (unwrap (get src.attrs k)))
         }
     }
 
@@ -3033,9 +3133,9 @@ class PyModules {
                 }
                 def o (new PyVal(PyT.Inst))
                 o.cls = v.cls
-                def ks:[string] (keys v.attrs)
+                def ks:[string] (v.attrKeys())
                 for ks k2:string i3 {
-                    set o.attrs k2 (this.deepCopy((unwrap (get v.attrs k2))))
+                    o.putAttr(k2 (this.deepCopy((unwrap (get v.attrs k2)))))
                 }
                 return o
             }

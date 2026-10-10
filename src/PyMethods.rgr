@@ -30,6 +30,7 @@ class PyMethods {
         this.addNames("int" "bit_length conjugate is_integer __index__ __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ to_bytes")
         this.addNames("float" "is_integer conjugate hex __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ as_integer_ratio")
         this.addNames("iter" "__next__ __iter__")
+        this.addNames("generator" "__next__ __iter__ send throw close")
         this.addNames("range" "index count __len__ __iter__ __contains__")
     }
 
@@ -77,6 +78,9 @@ class PyMethods {
             }
             case PyT.Iter {
                 return "iter"
+            }
+            case PyT.Gen {
+                return "generator"
             }
             case PyT.Range {
                 return "range"
@@ -132,6 +136,36 @@ class PyMethods {
             if (name == "closed") {
                 def optr125@(optional):PyVal (ip.mkBool(obj.closed))
                 return optr125
+            }
+        }
+        if (obj.t == PyT.Gen) {
+            def g:PyGen (unwrap obj.gen)
+            if (name == "gi_running") {
+                def optrg1@(optional):PyVal (ip.mkBool(g.running))
+                return optrg1
+            }
+            if (name == "__name__") {
+                def optrg2@(optional):PyVal (ip.mkStr(g.name))
+                return optrg2
+            }
+            if (name == "__qualname__") {
+                def optrg3@(optional):PyVal (ip.mkStr(g.name))
+                return optrg3
+            }
+            if (name == "gi_frame") {
+                if g.done {
+                    def optrg4@(optional):PyVal ip.NONE
+                    return optrg4
+                }
+                def fo (new PyVal(PyT.Inst))
+                fo.putAttr("f_lineno" (ip.mkInt(g.line)))
+                fo.putAttr("f_locals" ip.NONE)
+                def optrg5@(optional):PyVal fo
+                return optrg5
+            }
+            if (name == "gi_yieldfrom") {
+                def optrg6@(optional):PyVal ip.NONE
+                return optrg6
             }
         }
         if (obj.t == PyT.Range) {
@@ -225,7 +259,7 @@ class PyMethods {
             return (ip.mods.ntMethod(self name args kn kv))
         }
         if (name == "lru.cache_clear") {
-            set self.attrs "__cache__" (ip.mkDict())
+            self.putAttr("__cache__" (ip.mkDict()))
             return ip.NONE
         }
         if (startsWith name "unbound:") {
@@ -285,7 +319,7 @@ class PyMethods {
             return ip.NONE
         }
         if (name == "__iter__") {
-            if ((self.t == PyT.Iter) || (self.t == PyT.File)) {
+            if ((self.t == PyT.Iter) || (self.t == PyT.File) || (self.t == PyT.Gen)) {
                 return self
             }
             return (ip.mkIter((ip.iterValues(self))))
@@ -327,7 +361,17 @@ class PyMethods {
             case PyT.File {
                 return (this.fileMethod(self name args kn kv))
             }
+            case PyT.Gen {
+                return (this.genMethod(self name args))
+            }
             case PyT.Iter {
+                if ((name == "__next__") && ((strlen self.mode) > 0)) {
+                    def lnx@(optional):PyVal (ip.nextOpt(self))
+                    if (null? lnx) {
+                        ip.raise("StopIteration" "")
+                    }
+                    return (unwrap lnx)
+                }
                 if (name == "__next__") {
                     if (self.pos < (array_length self.items)) {
                         def r:PyVal (itemAt self.items self.pos)
@@ -391,6 +435,40 @@ class PyMethods {
             return (ip.pair((ip.mkInt((py_trunc x))) (ip.mkInt((py_trunc den)))))
         }
         ip.raise("AttributeError" ("'" + (ip.typeName(self)) + "' object has no attribute '" + name + "'"))
+        return ip.NONE
+    }
+
+    fn genMethod:PyVal (self:PyVal name:string args:[PyVal]) {
+        if (name == "__next__") {
+            return (ip.genStep(self ip.NONE 0))
+        }
+        if (name == "send") {
+            return (ip.genStep(self (this.arg(args 0)) 0))
+        }
+        if (name == "throw") {
+            def e:PyVal (this.arg(args 0))
+            if (e.t == PyT.Class) {
+                def kn:[string]
+                def kv:[PyVal]
+                def eargs:[PyVal]
+                if ((array_length args) > 1) {
+                    def a1:PyVal (itemAt args 1)
+                    if (a1.t != PyT.None) {
+                        push eargs a1
+                    }
+                }
+                e = (ip.instantiate(e eargs kn kv))
+            }
+            if ((ip.isExcInst(e)) == false) {
+                ip.raise("TypeError" "exceptions must be classes or instances deriving from BaseException, not " + (ip.typeName(e)))
+            }
+            return (ip.genStep(self e 1))
+        }
+        if (name == "close") {
+            ip.genClose(self)
+            return ip.NONE
+        }
+        ip.raise("AttributeError" ("'generator' object has no attribute '" + name + "'"))
         return ip.NONE
     }
 
@@ -1656,9 +1734,9 @@ class PyMethods {
         if (name == "copy") {
             def c:PyVal (ip.copyDict(self))
             c.mode = self.mode
-            def ak:[string] (keys self.attrs)
+            def ak:[string] (self.attrKeys())
             for ak a:string ai {
-                set c.attrs a (unwrap (get self.attrs a))
+                c.putAttr(a (unwrap (get self.attrs a)))
             }
             return c
         }

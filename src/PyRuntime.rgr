@@ -29,6 +29,7 @@ class PyRuntime {
     def maxSteps:int 0
     def echo:boolean false
     def argv:[string]
+    def searchPath:[string]
 
     Constructor () {
         fs = (new PyFileSystem)
@@ -71,6 +72,11 @@ class PyRuntime {
         fs.cwd = (fs.normalize(path))
     }
 
+    ; a folder import looks in after the working folder
+    fn addPath:void (dir:string) {
+        push searchPath dir
+    }
+
     fn addArg:void (a:string) {
         push argv a
     }
@@ -102,6 +108,7 @@ class PyRuntime {
         ip.maxSteps = maxSteps
         ip.echo = echo
         ip.argv = argv
+        ip.searchPath = searchPath
         def ok:boolean true
         try {
             ip.runTree((unwrap tree))

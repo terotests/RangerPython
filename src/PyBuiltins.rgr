@@ -39,7 +39,7 @@ class PyBuiltins {
     }
 
     fn install:void () {
-        def names:[string] ([] _:string ("print" "len" "range" "enumerate" "zip" "map" "filter" "sorted" "reversed" "sum" "min" "max" "abs" "round" "int" "float" "str" "bool" "list" "tuple" "dict" "set" "frozenset" "isinstance" "issubclass" "type" "repr" "ascii" "chr" "ord" "hex" "oct" "bin" "divmod" "pow" "any" "all" "open" "format" "hash" "id" "iter" "next" "getattr" "setattr" "hasattr" "delattr" "callable" "input" "vars" "globals" "locals" "dir" "property" "staticmethod" "classmethod" "super" "object" "slice" "exit" "quit" "__object_init__" "__build_class__"))
+        def names:[string] ([] _:string ("print" "len" "range" "enumerate" "zip" "map" "filter" "sorted" "reversed" "sum" "min" "max" "abs" "round" "int" "float" "str" "bool" "list" "tuple" "dict" "set" "frozenset" "isinstance" "issubclass" "type" "repr" "ascii" "chr" "ord" "hex" "oct" "bin" "divmod" "pow" "any" "all" "open" "format" "hash" "id" "iter" "next" "getattr" "setattr" "hasattr" "delattr" "callable" "input" "vars" "globals" "locals" "dir" "property" "staticmethod" "classmethod" "super" "object" "slice" "exit" "quit" "__object_init__" "__build_class__" "__import__" "eval" "exec" "compile"))
         for names n:string i {
             this.put(n)
         }
@@ -771,10 +771,34 @@ class PyBuiltins {
         def fv@(optional):PyVal (this.kw(kn kv "file"))
         if ((!null? fv) && ((ip.orNone(fv)).t != PyT.None)) {
             def f:PyVal (unwrap fv)
+            this.writeTo(f text)
+            return
+        }
+        ; print goes where sys.stdout points (contextlib.redirect_stdout)
+        def sm@(optional):PyVal (get ip.modules "sys")
+        if (!null? sm) {
+            def smv:PyVal (unwrap sm)
+            def so@(optional):PyVal (get smv.attrs "stdout")
+            if (!null? so) {
+                def sov:PyVal (unwrap so)
+                if ((sov.t != PyT.File) || (sov.s != "<stdout>")) {
+                    this.writeTo(sov text)
+                    return
+                }
+            }
+        }
+        ip.writeOut(text)
+    }
+
+    ; a file, or any object with a write method
+    fn writeTo:void (f:PyVal text:string) {
+        if (f.t == PyT.File) {
             ip.meth.fileWrite(f text)
             return
         }
-        ip.writeOut(text)
+        def kn:[string]
+        def kv:[PyVal]
+        ip.callValue((ip.getAttr(f "write")) ([] _:PyVal ((ip.mkStr(text)))) kn kv)
     }
 
     ; ---- the call
@@ -814,6 +838,12 @@ class PyBuiltins {
             if (sv.t != PyT.None) {
                 start = (this.toInt(sv "enumerate"))
             }
+            if (ip.isLazy(src)) {
+                def le:PyVal (ip.mkLazy("enumerate" "enumerate"))
+                le.wrapped = (ip.iterOf(src))
+                le.i = start
+                return le
+            }
             def vals:[PyVal] (ip.iterValues(src))
             def out:[PyVal]
             for vals v:PyVal i {
@@ -824,6 +854,23 @@ class PyBuiltins {
             return it
         }
         if (name == "zip") {
+            def anyLazy:boolean false
+            for args za:PyVal zi {
+                if (ip.isLazy(za)) {
+                    anyLazy = true
+                }
+            }
+            if anyLazy {
+                def lz:PyVal (ip.mkLazy("zip" "zip"))
+                for args zb:PyVal zj {
+                    push lz.items (ip.iterOf(zb))
+                }
+                def zs@(optional):PyVal (this.kw(kn kv "strict"))
+                if ((!null? zs) && (ip.truthy((unwrap zs)))) {
+                    lz.i = 1
+                }
+                return lz
+            }
             def lists:[PyVal]
             def shortest:int -1
             def longest:int 0
@@ -863,6 +910,24 @@ class PyBuiltins {
                 ip.raise("TypeError" "map() must have at least two arguments.")
             }
             def f:PyVal (itemAt args 0)
+            def mLazy:boolean false
+            def mi:int 1
+            while (mi < n) {
+                if (ip.isLazy((itemAt args mi))) {
+                    mLazy = true
+                }
+                mi = mi + 1
+            }
+            if mLazy {
+                def lm:PyVal (ip.mkLazy("map" "map"))
+                lm.cls = f
+                def mj:int 1
+                while (mj < n) {
+                    push lm.items (ip.iterOf((itemAt args mj)))
+                    mj = mj + 1
+                }
+                return lm
+            }
             def lists2:[PyVal]
             def shortest2:int -1
             def ai:int 1
@@ -891,6 +956,12 @@ class PyBuiltins {
         if (name == "filter") {
             this.need("filter" args 2 2)
             def f2:PyVal (itemAt args 0)
+            if (ip.isLazy((itemAt args 1))) {
+                def lf:PyVal (ip.mkLazy("filter" "filter"))
+                lf.cls = f2
+                lf.wrapped = (ip.iterOf((itemAt args 1)))
+                return lf
+            }
             def vals2:[PyVal] (ip.iterValues((itemAt args 1)))
             def out4:[PyVal]
             for vals2 v2:PyVal i3 {
@@ -1174,9 +1245,13 @@ class PyBuiltins {
         }
         if (name == "any") {
             this.need("any" args 1 1)
-            def avals:[PyVal] (ip.iterValues((itemAt args 0)))
-            for avals av:PyVal aii {
-                if (ip.truthy(av)) {
+            def ait:PyVal (ip.iterOf((itemAt args 0)))
+            while true {
+                def av@(optional):PyVal (ip.nextOpt(ait))
+                if (null? av) {
+                    break
+                }
+                if (ip.truthy((unwrap av))) {
                     return ip.TRUE
                 }
             }
@@ -1184,9 +1259,13 @@ class PyBuiltins {
         }
         if (name == "all") {
             this.need("all" args 1 1)
-            def alvals:[PyVal] (ip.iterValues((itemAt args 0)))
-            for alvals alv:PyVal alii {
-                if ((ip.truthy(alv)) == false) {
+            def alit:PyVal (ip.iterOf((itemAt args 0)))
+            while true {
+                def alv@(optional):PyVal (ip.nextOpt(alit))
+                if (null? alv) {
+                    break
+                }
+                if ((ip.truthy((unwrap alv))) == false) {
                     return ip.FALSE
                 }
             }
@@ -1219,14 +1298,14 @@ class PyBuiltins {
         if (name == "iter") {
             this.need("iter" args 1 1)
             def iv:PyVal (itemAt args 0)
-            if (iv.t == PyT.Iter) {
+            if ((iv.t == PyT.Iter) || (iv.t == PyT.Gen)) {
                 return iv
             }
             if (iv.t == PyT.Inst) {
                 def im@(optional):PyVal (ip.findMethod(iv "__iter__"))
                 if (!null? im) {
                     def got:PyVal (ip.callMethodVal((unwrap im) iv ([] _:PyVal ())))
-                    if ((got.t == PyT.Inst) || (got.t == PyT.Iter)) {
+                    if ((got.t == PyT.Inst) || (got.t == PyT.Iter) || (got.t == PyT.Gen)) {
                         return got
                     }
                     return (ip.mkIter((ip.iterValues(got))))
@@ -1239,6 +1318,26 @@ class PyBuiltins {
         if (name == "next") {
             this.need("next" args 1 2)
             def nv:PyVal (itemAt args 0)
+            if (nv.t == PyT.Gen) {
+                if (n == 2) {
+                    if (ip.genRun(nv ip.NONE 0)) {
+                        def ng:PyGen (unwrap nv.gen)
+                        return ng.out
+                    }
+                    return (itemAt args 1)
+                }
+                return (ip.genStep(nv ip.NONE 0))
+            }
+            if ((nv.t == PyT.Iter) && ((strlen nv.mode) > 0)) {
+                def lnv@(optional):PyVal (ip.nextOpt(nv))
+                if (!null? lnv) {
+                    return (unwrap lnv)
+                }
+                if (n == 2) {
+                    return (itemAt args 1)
+                }
+                ip.raise("StopIteration" "")
+            }
             if (nv.t == PyT.Iter) {
                 if (nv.pos < (array_length nv.items)) {
                     def r2:PyVal (itemAt nv.items nv.pos)
@@ -1326,12 +1425,28 @@ class PyBuiltins {
             if (n == 1) {
                 return (ip.getAttr((itemAt args 0) "__dict__"))
             }
+            def from:PyScope ip.callScope
+            if (name == "globals") {
+                from = (ip.moduleScope(ip.callScope))
+            }
             def gd:PyVal (ip.mkDict())
-            def gks:[string] (keys ip.globals.vars)
+            def gks:[string] (keys from.vars)
             for gks gk:string gki {
-                ip.dictSet(gd (ip.mkStr(gk)) (unwrap (get ip.globals.vars gk)))
+                ip.dictSet(gd (ip.mkStr(gk)) (unwrap (get from.vars gk)))
             }
             return gd
+        }
+        if ((name == "eval") || (name == "exec")) {
+            def g:PyVal (this.arg(args 1 kn kv "globals"))
+            def l:PyVal (this.arg(args 2 kn kv "locals"))
+            return (ip.runCode(name (this.arg(args 0 kn kv "source")) g l))
+        }
+        if (name == "compile") {
+            def mode:string (ip.toStr((this.arg(args 2 kn kv "mode"))))
+            if (mode == "single") {
+                mode = "exec"
+            }
+            return (ip.codeOf((this.arg(args 0 kn kv "source")) mode))
         }
         if (name == "dir") {
             def names:[string]
@@ -1340,10 +1455,10 @@ class PyBuiltins {
             } {
                 def dv:PyVal (itemAt args 0)
                 if ((dv.t == PyT.Inst) || (dv.t == PyT.Module) || (dv.t == PyT.Class)) {
-                    names = (keys dv.attrs)
+                    names = (dv.attrKeys())
                     if ((dv.t == PyT.Inst) && (!null? dv.cls)) {
                         def dc:PyVal (unwrap dv.cls)
-                        def cks:[string] (keys dc.attrs)
+                        def cks:[string] (dc.attrKeys())
                         for cks ck:string cki {
                             push names ck
                         }
@@ -1422,6 +1537,16 @@ class PyBuiltins {
             }
             ip.raiseVal((ip.makeExcArg("SystemExit" code)))
         }
+        if (name == "__import__") {
+            def mn:string (ip.toStr((itemAt args 0)))
+            def mod:PyVal (ip.importModule(mn))
+            def fl:PyVal (this.arg(args 3 kn kv "fromlist"))
+            def dot:int (indexOf mn ".")
+            if ((dot > 0) && ((ip.truthy(fl)) == false)) {
+                return (ip.importModule((substring mn 0 dot)))
+            }
+            return mod
+        }
         if (name == "__object_init__") {
             ; object.__init__ (and BaseException.__init__ through super())
             if (n > 0) {
@@ -1433,7 +1558,7 @@ class PyBuiltins {
                         push rest (itemAt args ri2)
                         ri2 = ri2 + 1
                     }
-                    set self.attrs "args" (ip.mkTuple(rest))
+                    self.putAttr("args" (ip.mkTuple(rest)))
                 }
             }
             return ip.NONE

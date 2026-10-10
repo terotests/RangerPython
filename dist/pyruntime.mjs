@@ -42,6 +42,7 @@ export class PyVal  {
     this.vals = [];
     this.index = {};
     this.attrs = {};
+    this.akeys = [];
     this.defs = {};
     this.bases = [];
     this.cls = undefined;
@@ -57,8 +58,49 @@ export class PyVal  {
     this.isExc = false;
     this.cps = [];
     this.cpsKnown = false;
+    this.gen = undefined;
+    this.cur = undefined;
     this.t = tag;
   }
+  putAttr (k, v) {
+    if ( ( typeof(this.attrs[k] ) != "undefined" && Object.prototype.hasOwnProperty.call(this.attrs, k) ) == false ) {
+      this.akeys.push(k);
+    }
+    this.attrs[k] = v;
+  };
+  delAttrKey (k) {
+    delete this.attrs[k];
+    let kept = [];
+    // Loop start
+    for ( const a of this.akeys) {
+      if ( a != k ) {
+        kept.push(a);
+      }
+    }
+    this.akeys = kept;
+  };
+  attrKeys () {
+    let out = [];
+    let seen = {};
+    // Loop start
+    for ( const a of this.akeys) {
+      if ( ( typeof(this.attrs[a] ) != "undefined" && Object.prototype.hasOwnProperty.call(this.attrs, a) ) && ( typeof(seen[a] ) != "undefined" && Object.prototype.hasOwnProperty.call(seen, a) ) == false ) {
+        out.push(a);
+        seen[a] = true;
+      }
+    }
+    if ( out.length != Object.keys(this.attrs).length ) {
+      const rest = Object.keys(this.attrs);
+      // Loop start
+      for ( const r of rest) {
+        if ( ( typeof(seen[r] ) != "undefined" && Object.prototype.hasOwnProperty.call(seen, r) ) == false ) {
+          out.push(r);
+          this.akeys.push(r);
+        }
+      }
+    }
+    return out;
+  };
   codes () {
     if ( this.cpsKnown == false ) {
       this.cps = Array.from(this.s, (rg_c) => rg_c.codePointAt(0));
@@ -78,6 +120,43 @@ export class PyScope  {
     this.globals = undefined;
     this.decl = {};
     this.isClass = false;
+  }
+}
+export class PyGenRes  {
+  constructor() {
+    this.kind = 0;
+    this.v = new PyVal(0);
+    this.send = new PyVal(0);
+    this.sendKind = 0;
+  }
+}
+export class PyGenSlot  {
+  constructor() {
+    this.i = 0;
+    this.j = 0;
+    this.sig = 0;
+    this.v = new PyVal(0);
+    this.w = undefined;
+    this.keep = new PyVal(0);
+    this.res = [];
+    this.used = 0;
+    this.resumed = false;
+  }
+}
+export class PyGen  {
+  constructor() {
+    this.func = undefined;
+    this.node = undefined;
+    this.scope = undefined;
+    this.selfv = undefined;
+    this.name = "";
+    this.live = [];
+    this.depth = 0;
+    this.started = false;
+    this.done = false;
+    this.running = false;
+    this.out = new PyVal(0);
+    this.line = 0;
   }
 }
 export class PySpec  {
@@ -3122,7 +3201,7 @@ export class PyBuiltins  {
     return c;
   };
   install () {
-    const names = ["print", "len", "range", "enumerate", "zip", "map", "filter", "sorted", "reversed", "sum", "min", "max", "abs", "round", "int", "float", "str", "bool", "list", "tuple", "dict", "set", "frozenset", "isinstance", "issubclass", "type", "repr", "ascii", "chr", "ord", "hex", "oct", "bin", "divmod", "pow", "any", "all", "open", "format", "hash", "id", "iter", "next", "getattr", "setattr", "hasattr", "delattr", "callable", "input", "vars", "globals", "locals", "dir", "property", "staticmethod", "classmethod", "super", "object", "slice", "exit", "quit", "__object_init__", "__build_class__"];
+    const names = ["print", "len", "range", "enumerate", "zip", "map", "filter", "sorted", "reversed", "sum", "min", "max", "abs", "round", "int", "float", "str", "bool", "list", "tuple", "dict", "set", "frozenset", "isinstance", "issubclass", "type", "repr", "ascii", "chr", "ord", "hex", "oct", "bin", "divmod", "pow", "any", "all", "open", "format", "hash", "id", "iter", "next", "getattr", "setattr", "hasattr", "delattr", "callable", "input", "vars", "globals", "locals", "dir", "property", "staticmethod", "classmethod", "super", "object", "slice", "exit", "quit", "__object_init__", "__build_class__", "__import__", "eval", "exec", "compile"];
     // Loop start
     for ( const n of names) {
       this.put(n);
@@ -3842,10 +3921,36 @@ export class PyBuiltins  {
     const __REGx3 = this.ip.orNone(fv);
     if ( ((typeof(fv) !== "undefined" && fv != null ) ) && __REGx3.t != 0 ) {
       const f = fv;
+      this.writeTo(f, text);
+      return;
+    }
+    const sm = ( Object.prototype.hasOwnProperty.call(this.ip.modules, "sys") ? this.ip.modules["sys"] : undefined );
+    if ( (typeof(sm) !== "undefined" && sm != null )  ) {
+      const smv = sm;
+      const so = ( Object.prototype.hasOwnProperty.call(smv.attrs, "stdout") ? smv.attrs["stdout"] : undefined );
+      if ( (typeof(so) !== "undefined" && so != null )  ) {
+        const sov = so;
+        if ( sov.t != 16 || sov.s != "<stdout>" ) {
+          this.writeTo(sov, text);
+          return;
+        }
+      }
+    }
+    this.ip.writeOut(text);
+  };
+  writeTo (f, text) {
+    if ( f.t == 16 ) {
       this.ip.meth.fileWrite(f, text);
       return;
     }
-    this.ip.writeOut(text);
+    let kn = [];
+    let kv = [];
+    this.ip.callValue(
+      this.ip.getAttr(f, "write"),
+      [this.ip.mkStr(text)],
+      kn,
+      kv
+    );
   };
   call (name, args, kn, kv) {
     const n = args.length;
@@ -3882,6 +3987,12 @@ export class PyBuiltins  {
       if ( sv.t != 0 ) {
         start = this.toInt(sv, "enumerate");
       }
+      if ( this.ip.isLazy(src) ) {
+        const le = this.ip.mkLazy("enumerate", "enumerate");
+        le.wrapped = this.ip.iterOf(src);
+        le.i = start;
+        return le;
+      }
       const vals = this.ip.iterValues(src);
       let out = [];
       // Loop start
@@ -3894,6 +4005,25 @@ export class PyBuiltins  {
       return it;
     }
     if ( name == "zip" ) {
+      let anyLazy = false;
+      // Loop start
+      for ( const za of args) {
+        if ( this.ip.isLazy(za) ) {
+          anyLazy = true;
+        }
+      }
+      if ( anyLazy ) {
+        const lz = this.ip.mkLazy("zip", "zip");
+        // Loop start
+        for ( const zb of args) {
+          lz.items.push(this.ip.iterOf(zb));
+        }
+        const zs = this.kw(kn, kv, "strict");
+        if ( ((typeof(zs) !== "undefined" && zs != null ) ) && this.ip.truthy(zs) ) {
+          lz.i = 1;
+        }
+        return lz;
+      }
       let lists = [];
       let shortest = -1;
       let longest = 0;
@@ -3935,6 +4065,24 @@ export class PyBuiltins  {
         this.ip.raise("TypeError", "map() must have at least two arguments.");
       }
       const f = args[0];
+      let mLazy = false;
+      let mi = 1;
+      while (mi < n) {
+        if ( this.ip.isLazy(args[mi]) ) {
+          mLazy = true;
+        }
+        mi = mi + 1;
+      };
+      if ( mLazy ) {
+        const lm = this.ip.mkLazy("map", "map");
+        lm.cls = f;
+        let mj = 1;
+        while (mj < n) {
+          lm.items.push(this.ip.iterOf(args[mj]));
+          mj = mj + 1;
+        };
+        return lm;
+      }
       let lists2 = [];
       let shortest2 = -1;
       let ai = 1;
@@ -3964,6 +4112,12 @@ export class PyBuiltins  {
     if ( name == "filter" ) {
       this.need("filter", args, 2, 2);
       const f2 = args[0];
+      if ( this.ip.isLazy(args[1]) ) {
+        const lf = this.ip.mkLazy("filter", "filter");
+        lf.cls = f2;
+        lf.wrapped = this.ip.iterOf(args[1]);
+        return lf;
+      }
       const vals2 = this.ip.iterValues(args[1]);
       let out4 = [];
       // Loop start
@@ -4266,24 +4420,30 @@ export class PyBuiltins  {
     }
     if ( name == "any" ) {
       this.need("any", args, 1, 1);
-      const avals = this.ip.iterValues(args[0]);
-      // Loop start
-      for ( const av of avals) {
+      const ait = this.ip.iterOf(args[0]);
+      while (true) {
+        const av = this.ip.nextOpt(ait);
+        if ( typeof(av) === "undefined" ) {
+          break;
+        }
         if ( this.ip.truthy(av) ) {
           return this.ip.TRUE;
         }
-      }
+      };
       return this.ip.FALSE;
     }
     if ( name == "all" ) {
       this.need("all", args, 1, 1);
-      const alvals = this.ip.iterValues(args[0]);
-      // Loop start
-      for ( const alv of alvals) {
+      const alit = this.ip.iterOf(args[0]);
+      while (true) {
+        const alv = this.ip.nextOpt(alit);
+        if ( typeof(alv) === "undefined" ) {
+          break;
+        }
         if ( this.ip.truthy(alv) == false ) {
           return this.ip.FALSE;
         }
-      }
+      };
       return this.ip.TRUE;
     }
     if ( name == "open" ) {
@@ -4313,14 +4473,14 @@ export class PyBuiltins  {
     if ( name == "iter" ) {
       this.need("iter", args, 1, 1);
       const iv = args[0];
-      if ( iv.t == 17 ) {
+      if ( iv.t == 17 || iv.t == 23 ) {
         return iv;
       }
       if ( iv.t == 12 ) {
         const im = this.ip.findMethod(iv, "__iter__");
         if ( (typeof(im) !== "undefined" && im != null )  ) {
           const got = this.ip.callMethodVal(im, iv, []);
-          if ( got.t == 12 || got.t == 17 ) {
+          if ( (got.t == 12 || got.t == 17) || got.t == 23 ) {
             return got;
           }
           return this.ip.mkIter(this.ip.iterValues(got));
@@ -4333,6 +4493,26 @@ export class PyBuiltins  {
     if ( name == "next" ) {
       this.need("next", args, 1, 2);
       const nv = args[0];
+      if ( nv.t == 23 ) {
+        if ( n == 2 ) {
+          if ( this.ip.genRun(nv, this.ip.NONE, 0) ) {
+            const ng = nv.gen;
+            return ng.out;
+          }
+          return args[1];
+        }
+        return this.ip.genStep(nv, this.ip.NONE, 0);
+      }
+      if ( nv.t == 17 && nv.mode.length > 0 ) {
+        const lnv = this.ip.nextOpt(nv);
+        if ( (typeof(lnv) !== "undefined" && lnv != null )  ) {
+          return lnv;
+        }
+        if ( n == 2 ) {
+          return args[1];
+        }
+        this.ip.raise("StopIteration", "");
+      }
       if ( nv.t == 17 ) {
         if ( nv.pos < nv.items.length ) {
           const r2 = nv.items[nv.pos];
@@ -4420,17 +4600,33 @@ export class PyBuiltins  {
       if ( n == 1 ) {
         return this.ip.getAttr(args[0], "__dict__");
       }
+      let from = this.ip.callScope;
+      if ( name == "globals" ) {
+        from = this.ip.moduleScope(this.ip.callScope);
+      }
       const gd = this.ip.mkDict();
-      const gks = Object.keys(this.ip.globals.vars);
+      const gks = Object.keys(from.vars);
       // Loop start
       for ( const gk of gks) {
         this.ip.dictSet(
           gd,
           this.ip.mkStr(gk),
-          ( Object.prototype.hasOwnProperty.call(this.ip.globals.vars, gk) ? this.ip.globals.vars[gk] : undefined )
+          ( Object.prototype.hasOwnProperty.call(from.vars, gk) ? from.vars[gk] : undefined )
         );
       }
       return gd;
+    }
+    if ( name == "eval" || name == "exec" ) {
+      const g = this.arg(args, 1, kn, kv, "globals");
+      const l_1 = this.arg(args, 2, kn, kv, "locals");
+      return this.ip.runCode(name, this.arg(args, 0, kn, kv, "source"), g, l_1);
+    }
+    if ( name == "compile" ) {
+      let mode = this.ip.toStr(this.arg(args, 2, kn, kv, "mode"));
+      if ( mode == "single" ) {
+        mode = "exec";
+      }
+      return this.ip.codeOf(this.arg(args, 0, kn, kv, "source"), mode);
     }
     if ( name == "dir" ) {
       let names = [];
@@ -4439,10 +4635,10 @@ export class PyBuiltins  {
       } else {
         const dv = args[0];
         if ( (dv.t == 12 || dv.t == 13) || dv.t == 11 ) {
-          names = Object.keys(dv.attrs);
+          names = dv.attrKeys();
           if ( dv.t == 12 && ((typeof(dv.cls) !== "undefined" && dv.cls != null ) ) ) {
             const dc = dv.cls;
-            const cks = Object.keys(dc.attrs);
+            const cks = dc.attrKeys();
             // Loop start
             for ( const ck of cks) {
               names.push(ck);
@@ -4523,6 +4719,16 @@ export class PyBuiltins  {
       }
       this.ip.raiseVal(this.ip.makeExcArg("SystemExit", code));
     }
+    if ( name == "__import__" ) {
+      const mn = this.ip.toStr(args[0]);
+      const mod = this.ip.importModule(mn);
+      const fl = this.arg(args, 3, kn, kv, "fromlist");
+      const dot = mn.indexOf(".");
+      if ( dot > 0 && this.ip.truthy(fl) == false ) {
+        return this.ip.importModule(mn.substring(0, dot ));
+      }
+      return mod;
+    }
     if ( name == "__object_init__" ) {
       if ( n > 0 ) {
         const __self = args[0];
@@ -4533,7 +4739,7 @@ export class PyBuiltins  {
             rest.push(args[ri2]);
             ri2 = ri2 + 1;
           };
-          __self.attrs["args"] = this.ip.mkTuple(rest);
+          __self.putAttr("args", this.ip.mkTuple(rest));
         }
       }
       return this.ip.NONE;
@@ -4882,6 +5088,7 @@ export class PyMethods  {
     this.addNames("int", "bit_length conjugate is_integer __index__ __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ to_bytes");
     this.addNames("float", "is_integer conjugate hex __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ as_integer_ratio");
     this.addNames("iter", "__next__ __iter__");
+    this.addNames("generator", "__next__ __iter__ send throw close");
     this.addNames("range", "index count __len__ __iter__ __contains__");
   }
   addNames (kind, names) {
@@ -4919,6 +5126,8 @@ export class PyMethods  {
         return "float";
       case 17 : 
         return "iter";
+      case 23 : 
+        return "generator";
       case 15 : 
         return "range";
     };
@@ -4970,6 +5179,36 @@ export class PyMethods  {
       if ( name == "closed" ) {
         const optr125 = this.ip.mkBool(obj.closed);
         return optr125;
+      }
+    }
+    if ( obj.t == 23 ) {
+      const g = obj.gen;
+      if ( name == "gi_running" ) {
+        const optrg1 = this.ip.mkBool(g.running);
+        return optrg1;
+      }
+      if ( name == "__name__" ) {
+        const optrg2 = this.ip.mkStr(g.name);
+        return optrg2;
+      }
+      if ( name == "__qualname__" ) {
+        const optrg3 = this.ip.mkStr(g.name);
+        return optrg3;
+      }
+      if ( name == "gi_frame" ) {
+        if ( g.done ) {
+          const optrg4 = this.ip.NONE;
+          return optrg4;
+        }
+        const fo = new PyVal(12);
+        fo.putAttr("f_lineno", this.ip.mkInt(g.line));
+        fo.putAttr("f_locals", this.ip.NONE);
+        const optrg5 = fo;
+        return optrg5;
+      }
+      if ( name == "gi_yieldfrom" ) {
+        const optrg6 = this.ip.NONE;
+        return optrg6;
       }
     }
     if ( obj.t == 15 ) {
@@ -5057,7 +5296,7 @@ export class PyMethods  {
       return this.ip.mods.ntMethod(__self, name, args, kn, kv);
     }
     if ( name == "lru.cache_clear" ) {
-      __self.attrs["__cache__"] = this.ip.mkDict();
+      __self.putAttr("__cache__", this.ip.mkDict());
       return this.ip.NONE;
     }
     if ( name.startsWith("unbound:") ) {
@@ -5118,7 +5357,7 @@ export class PyMethods  {
       return this.ip.NONE;
     }
     if ( name == "__iter__" ) {
-      if ( __self.t == 17 || __self.t == 16 ) {
+      if ( (__self.t == 17 || __self.t == 16) || __self.t == 23 ) {
         return __self;
       }
       return this.ip.mkIter(this.ip.iterValues(__self));
@@ -5154,7 +5393,16 @@ export class PyMethods  {
         return this.setMethod(__self, name, args);
       case 16 : 
         return this.fileMethod(__self, name, args, kn, kv);
+      case 23 : 
+        return this.genMethod(__self, name, args);
       case 17 : 
+        if ( name == "__next__" && __self.mode.length > 0 ) {
+          const lnx = this.ip.nextOpt(__self);
+          if ( typeof(lnx) === "undefined" ) {
+            this.ip.raise("StopIteration", "");
+          }
+          return lnx;
+        }
         if ( name == "__next__" ) {
           if ( __self.pos < __self.items.length ) {
             const r = __self.items[__self.pos];
@@ -5216,6 +5464,39 @@ export class PyMethods  {
       return this.ip.pair(this.ip.mkInt(Math.trunc(x)), this.ip.mkInt(Math.trunc(den)));
     }
     this.ip.raise("AttributeError", ((("'" + this.ip.typeName(__self)) + "' object has no attribute '") + name) + "'");
+    return this.ip.NONE;
+  };
+  genMethod (__self, name, args) {
+    if ( name == "__next__" ) {
+      return this.ip.genStep(__self, this.ip.NONE, 0);
+    }
+    if ( name == "send" ) {
+      return this.ip.genStep(__self, this.arg(args, 0), 0);
+    }
+    if ( name == "throw" ) {
+      let e = this.arg(args, 0);
+      if ( e.t == 11 ) {
+        let kn = [];
+        let kv = [];
+        let eargs = [];
+        if ( args.length > 1 ) {
+          const a1 = args[1];
+          if ( a1.t != 0 ) {
+            eargs.push(a1);
+          }
+        }
+        e = this.ip.instantiate(e, eargs, kn, kv);
+      }
+      if ( this.ip.isExcInst(e) == false ) {
+        this.ip.raise("TypeError", "exceptions must be classes or instances deriving from BaseException, not " + this.ip.typeName(e));
+      }
+      return this.ip.genStep(__self, e, 1);
+    }
+    if ( name == "close" ) {
+      this.ip.genClose(__self);
+      return this.ip.NONE;
+    }
+    this.ip.raise("AttributeError", ("'generator' object has no attribute '" + name) + "'");
     return this.ip.NONE;
   };
   seqCommon (__self, name, args) {
@@ -6538,10 +6819,10 @@ export class PyMethods  {
     if ( name == "copy" ) {
       const c = this.ip.copyDict(__self);
       c.mode = __self.mode;
-      const ak = Object.keys(__self.attrs);
+      const ak = __self.attrKeys();
       // Loop start
       for ( const a of ak) {
-        c.attrs[a] = ( Object.prototype.hasOwnProperty.call(__self.attrs, a) ? __self.attrs[a] : undefined );
+        c.putAttr(a, ( Object.prototype.hasOwnProperty.call(__self.attrs, a) ? __self.attrs[a] : undefined ));
       }
       return c;
     }
@@ -6964,8 +7245,22 @@ export class PyModules  {
     for ( const n of ns) {
       const b = new PyVal(10);
       b.s = (m.s + ".") + n;
-      m.attrs[n] = b;
+      m.putAttr(n, b);
     }
+  };
+  floatInfo () {
+    const m = this.newModule("sys.float_info");
+    m.putAttr("max", this.ip.mkFloat(Number("1.7976931348623157e308")));
+    m.putAttr("min", this.ip.mkFloat(Number("2.2250738585072014e-308")));
+    m.putAttr("epsilon", this.ip.mkFloat(Number("2.220446049250313e-16")));
+    m.putAttr("dig", this.ip.mkInt(15));
+    m.putAttr("mant_dig", this.ip.mkInt(53));
+    m.putAttr("max_exp", this.ip.mkInt(1024));
+    m.putAttr("min_exp", this.ip.mkInt(-1021));
+    m.putAttr("max_10_exp", this.ip.mkInt(308));
+    m.putAttr("min_10_exp", this.ip.mkInt(-307));
+    m.putAttr("radix", this.ip.mkInt(2));
+    return m;
   };
   newModule (name) {
     const m = new PyVal(13);
@@ -6993,11 +7288,11 @@ export class PyModules  {
     if ( name == "math" ) {
       const m = this.newModule("math");
       this.fns(m, "sqrt sin cos tan asin acos atan atan2 sinh cosh tanh exp expm1 log log10 log2 log1p pow floor ceil trunc fabs hypot degrees radians isnan isinf isfinite isclose gcd lcm factorial comb perm prod fsum copysign fmod modf dist isqrt");
-      m.attrs["pi"] = this.ip.mkFloat(3.141592653589793);
-      m.attrs["e"] = this.ip.mkFloat(2.718281828459045);
-      m.attrs["tau"] = this.ip.mkFloat(6.283185307179586);
-      m.attrs["inf"] = this.ip.mkFloat(Infinity);
-      m.attrs["nan"] = this.ip.mkFloat(NaN);
+      m.putAttr("pi", this.ip.mkFloat(3.141592653589793));
+      m.putAttr("e", this.ip.mkFloat(2.718281828459045));
+      m.putAttr("tau", this.ip.mkFloat(6.283185307179586));
+      m.putAttr("inf", this.ip.mkFloat(Infinity));
+      m.putAttr("nan", this.ip.mkFloat(NaN));
       const optr79 = m;
       return optr79;
     }
@@ -7016,32 +7311,32 @@ export class PyModules  {
       jc.isExc = true;
       jc.bases.push(ve);
       this.ip.computeMro(jc);
-      m3.attrs["JSONDecodeError"] = jc;
+      m3.putAttr("JSONDecodeError", jc);
       const optr96 = m3;
       return optr96;
     }
     if ( name == "os" ) {
       const m4 = this.newModule("os");
       this.fns(m4, "getcwd chdir listdir mkdir makedirs remove unlink rmdir rename replace walk getenv");
-      m4.attrs["sep"] = this.ip.mkStr("/");
-      m4.attrs["linesep"] = this.ip.mkStr("\n");
-      m4.attrs["name"] = this.ip.mkStr("posix");
-      m4.attrs["curdir"] = this.ip.mkStr(".");
-      m4.attrs["environ"] = this.ip.mkDict();
-      m4.attrs["path"] = this.make("os.path");
+      m4.putAttr("sep", this.ip.mkStr("/"));
+      m4.putAttr("linesep", this.ip.mkStr("\n"));
+      m4.putAttr("name", this.ip.mkStr("posix"));
+      m4.putAttr("curdir", this.ip.mkStr("."));
+      m4.putAttr("environ", this.ip.mkDict());
+      m4.putAttr("path", this.make("os.path"));
       const optr107 = m4;
       return optr107;
     }
     if ( name == "os.path" ) {
       const m5 = this.newModule("os.path");
       this.fns(m5, "join exists isfile isdir basename dirname split splitext abspath normpath getsize isabs expanduser");
-      m5.attrs["sep"] = this.ip.mkStr("/");
+      m5.putAttr("sep", this.ip.mkStr("/"));
       const optr113 = m5;
       return optr113;
     }
     if ( name == "sys" ) {
       const m6 = this.newModule("sys");
-      this.fns(m6, "exit setrecursionlimit getrecursionlimit");
+      this.fns(m6, "exit setrecursionlimit getrecursionlimit getsizeof intern _ranger_step_budget");
       let args = [];
       // Loop start
       for ( let i = 0; i < this.ip.argv.length; i++) {
@@ -7051,36 +7346,39 @@ export class PyModules  {
       if ( args.length == 0 ) {
         args.push(this.ip.mkStr("main.py"));
       }
-      m6.attrs["argv"] = this.ip.mkList(args);
+      m6.putAttr("argv", this.ip.mkList(args));
       const so = new PyVal(16);
       so.s = "<stdout>";
       so.mode = "w";
-      m6.attrs["stdout"] = so;
+      m6.putAttr("stdout", so);
       const se = new PyVal(16);
       se.s = "<stderr>";
       se.mode = "w";
-      m6.attrs["stderr"] = se;
-      m6.attrs["maxsize"] = this.ip.mkInt(9007199254740991);
-      m6.attrs["version"] = this.ip.mkStr("3.13.0 (Ranger Python runtime)");
-      m6.attrs["platform"] = this.ip.mkStr("ranger");
-      m6.attrs["path"] = this.ip.mkList([]);
-      m6.attrs["modules"] = this.ip.mkDict();
+      m6.putAttr("stderr", se);
+      m6.putAttr("maxsize", this.ip.mkInt(9007199254740991));
+      m6.putAttr("version", this.ip.mkStr("3.13.0 (Ranger Python runtime)"));
+      m6.putAttr("platform", this.ip.mkStr("ranger"));
+      m6.putAttr("path", this.ip.mkList([]));
+      m6.putAttr("modules", this.ip.sysModules);
+      m6.putAttr("byteorder", this.ip.mkStr("little"));
+      m6.putAttr("implementation", this.newModule("ranger"));
+      m6.putAttr("float_info", this.floatInfo());
       const optr139 = m6;
       return optr139;
     }
     if ( name == "string" ) {
       const m7 = this.newModule("string");
-      m7.attrs["ascii_lowercase"] = this.ip.mkStr("abcdefghijklmnopqrstuvwxyz");
-      m7.attrs["ascii_uppercase"] = this.ip.mkStr("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-      m7.attrs["ascii_letters"] = this.ip.mkStr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
-      m7.attrs["digits"] = this.ip.mkStr("0123456789");
-      m7.attrs["hexdigits"] = this.ip.mkStr("0123456789abcdefABCDEF");
-      m7.attrs["octdigits"] = this.ip.mkStr("01234567");
+      m7.putAttr("ascii_lowercase", this.ip.mkStr("abcdefghijklmnopqrstuvwxyz"));
+      m7.putAttr("ascii_uppercase", this.ip.mkStr("ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+      m7.putAttr("ascii_letters", this.ip.mkStr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+      m7.putAttr("digits", this.ip.mkStr("0123456789"));
+      m7.putAttr("hexdigits", this.ip.mkStr("0123456789abcdefABCDEF"));
+      m7.putAttr("octdigits", this.ip.mkStr("01234567"));
       const punct = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
-      m7.attrs["punctuation"] = this.ip.mkStr(punct);
+      m7.putAttr("punctuation", this.ip.mkStr(punct));
       const ws = (" \t\n\r" + String.fromCodePoint(11)) + String.fromCodePoint(12);
-      m7.attrs["whitespace"] = this.ip.mkStr(ws);
-      m7.attrs["printable"] = this.ip.mkStr((("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" + punct) + ws));
+      m7.putAttr("whitespace", this.ip.mkStr(ws));
+      m7.putAttr("printable", this.ip.mkStr((("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" + punct) + ws)));
       const optr154 = m7;
       return optr154;
     }
@@ -7092,10 +7390,10 @@ export class PyModules  {
     }
     if ( name == "collections" ) {
       const m9 = this.newModule("collections");
-      m9.attrs["defaultdict"] = this.nativeClass("defaultdict");
-      m9.attrs["Counter"] = this.nativeClass("Counter");
-      m9.attrs["OrderedDict"] = this.nativeClass("OrderedDict");
-      m9.attrs["deque"] = this.nativeClass("deque");
+      m9.putAttr("defaultdict", this.nativeClass("defaultdict"));
+      m9.putAttr("Counter", this.nativeClass("Counter"));
+      m9.putAttr("OrderedDict", this.nativeClass("OrderedDict"));
+      m9.putAttr("deque", this.nativeClass("deque"));
       this.fns(m9, "namedtuple");
       const optr168 = m9;
       return optr168;
@@ -7120,7 +7418,7 @@ export class PyModules  {
       se2.isExc = true;
       se2.bases.push(( Object.prototype.hasOwnProperty.call(this.ip.builtins, "ValueError") ? this.ip.builtins["ValueError"] : undefined ));
       this.ip.computeMro(se2);
-      m12.attrs["StatisticsError"] = se2;
+      m12.putAttr("StatisticsError", se2);
       const optr189 = m12;
       return optr189;
     }
@@ -7224,6 +7522,16 @@ export class PyModules  {
       }
       if ( f == "getrecursionlimit" ) {
         return this.ip.mkInt(1000);
+      }
+      if ( f == "intern" ) {
+        return args[0];
+      }
+      if ( f == "getsizeof" ) {
+        return this.ip.mkInt(64);
+      }
+      if ( f == "_ranger_step_budget" ) {
+        this.ip.maxSteps = this.ip.steps + this.ip.bi.toInt(args[0], "budget");
+        return this.ip.NONE;
       }
     }
     if ( mod == "time" ) {
@@ -8999,7 +9307,7 @@ export class PyModules  {
     if ( kind == "deque" ) {
       const d = new PyVal(5);
       d.mode = "deque";
-      d.attrs["__class__"] = cls;
+      d.putAttr("__class__", cls);
       if ( n > 0 ) {
         d.items = this.listOf(args[0]);
       }
@@ -9011,12 +9319,12 @@ export class PyModules  {
       return d;
     }
     const dd = this.ip.mkDict();
-    dd.attrs["__class__"] = cls;
+    dd.putAttr("__class__", cls);
     let start = 0;
     if ( kind == "defaultdict" ) {
       const __REGx1 = this.ip.argAt(args, 0);
       if ( n > 0 && __REGx1.t != 0 ) {
-        dd.attrs["__missing__"] = args[0];
+        dd.putAttr("__missing__", args[0]);
       }
       start = 1;
     }
@@ -9108,15 +9416,15 @@ export class PyModules  {
       }
     }
     const cls = this.nativeClass(name);
-    cls.attrs["_fields"] = this.ip.mkTuple(fields);
+    cls.putAttr("_fields", this.ip.mkTuple(fields));
     const dv = this.ip.bi.kw(kn, kv, "defaults");
     if ( (typeof(dv) !== "undefined" && dv != null )  ) {
-      cls.attrs["__defaults__"] = this.ip.mkTuple(this.listOf(dv));
+      cls.putAttr("__defaults__", this.ip.mkTuple(this.listOf(dv)));
     }
     const mk = new PyVal(10);
     mk.s = "collections._make";
     mk.wrapped = cls;
-    cls.attrs["_make"] = mk;
+    cls.putAttr("_make", mk);
     return cls;
   };
   ntMake (cls, args, kn, kv) {
@@ -9176,7 +9484,7 @@ export class PyModules  {
       }
     }
     const t = this.ip.mkTuple(vals);
-    t.attrs["__class__"] = cls;
+    t.putAttr("__class__", cls);
     return t;
   };
   ntAttr (t, name) {
@@ -9239,7 +9547,7 @@ export class PyModules  {
       }
     }
     const t2 = this.ip.mkTuple(vals);
-    t2.attrs["__class__"] = cls;
+    t2.putAttr("__class__", cls);
     return t2;
   };
   reprOf (v) {
@@ -9305,10 +9613,81 @@ export class PyModules  {
     const n = args.length;
     let out = [];
     if ( f == "chain" || f == "chain_from_iterable" ) {
-      let srcs = args;
+      const lc = this.ip.mkLazy("chain", "chain");
       if ( f == "chain_from_iterable" ) {
-        srcs = this.listOf(args[0]);
+        lc.wrapped = this.ip.iterOf(args[0]);
+      } else {
+        lc.wrapped = this.ip.mkIter(args);
       }
+      return lc;
+    }
+    if ( f == "count" ) {
+      const lcount = this.ip.mkLazy("count", "count");
+      let cst = this.ip.bi.arg(args, 0, kn, kv, "start");
+      let cstep = this.ip.bi.arg(args, 1, kn, kv, "step");
+      if ( cst.t == 0 ) {
+        cst = this.ip.mkInt(0);
+      }
+      if ( cstep.t == 0 ) {
+        cstep = this.ip.mkInt(1);
+      }
+      lcount.wrapped = cst;
+      lcount.cls = cstep;
+      return lcount;
+    }
+    if ( f == "cycle" ) {
+      const lcy = this.ip.mkLazy("cycle", "cycle");
+      lcy.wrapped = this.ip.iterOf(this.ip.argAt(args, 0));
+      return lcy;
+    }
+    if ( f == "islice" ) {
+      const ls = this.ip.mkLazy("islice", "islice");
+      ls.i = 0;
+      ls.i2 = -1;
+      ls.i3 = 1;
+      if ( n == 2 ) {
+        const __REGx1 = args[1];
+        if ( __REGx1.t != 0 ) {
+          const sv1 = args[1];
+          ls.i2 = this.ip.bi.toInt(sv1, "islice");
+        }
+      } else {
+        const __REGx2 = this.ip.argAt(args, 1);
+        if ( __REGx2.t != 0 ) {
+          const sv2 = args[1];
+          ls.i = this.ip.bi.toInt(sv2, "islice");
+        }
+        const __REGx3 = this.ip.argAt(args, 2);
+        if ( __REGx3.t != 0 ) {
+          const sv3 = args[2];
+          ls.i2 = this.ip.bi.toInt(sv3, "islice");
+        }
+        const __REGx4 = this.ip.argAt(args, 3);
+        if ( n > 3 && __REGx4.t != 0 ) {
+          const sv4 = args[3];
+          ls.i3 = this.ip.bi.toInt(sv4, "islice");
+        }
+      }
+      if ( (ls.i < 0 || ls.i2 < -1) || ls.i3 < 1 ) {
+        this.ip.raise("ValueError", "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.");
+      }
+      ls.wrapped = this.ip.iterOf(args[0]);
+      return ls;
+    }
+    if ( f == "takewhile" || f == "dropwhile" ) {
+      const ltw = this.ip.mkLazy(f, f);
+      ltw.cls = args[0];
+      ltw.wrapped = this.ip.iterOf(this.ip.argAt(args, 1));
+      return ltw;
+    }
+    if ( f == "filterfalse" ) {
+      const lff = this.ip.mkLazy("filterfalse", "filterfalse");
+      lff.cls = args[0];
+      lff.wrapped = this.ip.iterOf(this.ip.argAt(args, 1));
+      return lff;
+    }
+    if ( f == "__unused_chain" ) {
+      const srcs = args;
       // Loop start
       for ( const s of srcs) {
         // Loop start
@@ -9381,8 +9760,8 @@ export class PyModules  {
       let has = false;
       let total = this.ip.NONE;
       const iv = this.ip.bi.kw(kn, kv, "initial");
-      const __REGx1 = this.ip.orNone(iv);
-      if ( ((typeof(iv) !== "undefined" && iv != null ) ) && __REGx1.t != 0 ) {
+      const __REGx5 = this.ip.orNone(iv);
+      if ( ((typeof(iv) !== "undefined" && iv != null ) ) && __REGx5.t != 0 ) {
         total = iv;
         has = true;
         out.push(total);
@@ -9439,24 +9818,24 @@ export class PyModules  {
       let stop = -1;
       let step = 1;
       if ( n == 2 ) {
-        const __REGx2 = args[1];
-        if ( __REGx2.t != 0 ) {
+        const __REGx6 = args[1];
+        if ( __REGx6.t != 0 ) {
           const tv4 = args[1];
           stop = tv4.i;
         }
       } else {
-        const __REGx3 = args[1];
-        if ( __REGx3.t != 0 ) {
+        const __REGx7 = args[1];
+        if ( __REGx7.t != 0 ) {
           const tv5 = args[1];
           start = tv5.i;
         }
-        const __REGx4 = args[2];
-        if ( __REGx4.t != 0 ) {
+        const __REGx8 = args[2];
+        if ( __REGx8.t != 0 ) {
           const tv6 = args[2];
           stop = tv6.i;
         }
-        const __REGx5 = this.ip.argAt(args, 3);
-        if ( n > 3 && __REGx5.t != 0 ) {
+        const __REGx9 = this.ip.argAt(args, 3);
+        if ( n > 3 && __REGx9.t != 0 ) {
           const tv7 = args[3];
           step = tv7.i;
         }
@@ -9591,7 +9970,10 @@ export class PyModules  {
     if ( f == "repeat" ) {
       const times = this.ip.bi.arg(args, 1, kn, kv, "times");
       if ( times.t == 0 ) {
-        this.ip.raise("NotImplementedError", "itertools.repeat() without times is infinite; this runtime evaluates iterators eagerly");
+        const lr = this.ip.mkLazy("repeat", "repeat");
+        lr.wrapped = args[0];
+        lr.i = -1;
+        return lr;
       }
       let i7 = 0;
       while (i7 < times.i) {
@@ -9702,7 +10084,7 @@ export class PyModules  {
       // Loop start
       for ( let ki = 0; ki < kn.length; ki++) {
         var k = kn[ki];
-        p.attrs[k] = kv[ki];
+        p.putAttr(k, kv[ki]);
       }
       return p;
     }
@@ -9713,7 +10095,7 @@ export class PyModules  {
         const w = new PyVal(10);
         w.s = "functools._lru_wrapper";
         w.wrapped = args[0];
-        w.attrs["__cache__"] = this.ip.mkDict();
+        w.putAttr("__cache__", this.ip.mkDict());
         return w;
       }
       const deco = new PyVal(10);
@@ -9772,7 +10154,7 @@ export class PyModules  {
       }
       let kn2 = [];
       let kv2 = [];
-      const ks = Object.keys(b.attrs);
+      const ks = b.attrKeys();
       // Loop start
       for ( const k of ks) {
         if ( kn.indexOf(k) < 0 ) {
@@ -9814,8 +10196,8 @@ export class PyModules  {
       const kc = this.cmpKeyClass();
       const o = new PyVal(12);
       o.cls = kc;
-      o.attrs["cmp"] = target;
-      o.attrs["obj"] = args[0];
+      o.putAttr("cmp", target);
+      o.putAttr("obj", args[0]);
       return o;
     }
     if ( b.s == "collections._make" ) {
@@ -9833,13 +10215,13 @@ export class PyModules  {
     c.mode = "builtin";
     const lt = new PyVal(10);
     lt.s = "functools._cmp_lt";
-    c.attrs["__lt__"] = lt;
+    c.putAttr("__lt__", lt);
     const gt = new PyVal(10);
     gt.s = "functools._cmp_gt";
-    c.attrs["__gt__"] = gt;
+    c.putAttr("__gt__", gt);
     const eq = new PyVal(10);
     eq.s = "functools._cmp_eq";
-    c.attrs["__eq__"] = eq;
+    c.putAttr("__eq__", eq);
     this.ip.builtins["__cmp_key_class__"] = c;
     return c;
   };
@@ -9999,10 +10381,10 @@ export class PyModules  {
     return v;
   };
   copyAttrs (src, dst) {
-    const ks = Object.keys(src.attrs);
+    const ks = src.attrKeys();
     // Loop start
     for ( const k of ks) {
-      dst.attrs[k] = ( Object.prototype.hasOwnProperty.call(src.attrs, k) ? src.attrs[k] : undefined );
+      dst.putAttr(k, ( Object.prototype.hasOwnProperty.call(src.attrs, k) ? src.attrs[k] : undefined ));
     }
   };
   deepCopy (v) {
@@ -10049,21 +10431,72 @@ export class PyModules  {
         }
         const o = new PyVal(12);
         o.cls = v.cls;
-        const ks = Object.keys(v.attrs);
+        const ks = v.attrKeys();
         // Loop start
         for ( const k2 of ks) {
-          o.attrs[k2] = this.deepCopy(( Object.prototype.hasOwnProperty.call(v.attrs, k2) ? v.attrs[k2] : undefined ));
+          o.putAttr(k2, this.deepCopy(( Object.prototype.hasOwnProperty.call(v.attrs, k2) ? v.attrs[k2] : undefined )));
         }
         return o;
     };
     return v;
   };
 }
-export class PyGenFrame  {
-  constructor() {
-    this.items = [];
-  }
+export class PyStdlib  {
 }
+PyStdlib.source = function(name) {
+  let none;
+  if ( name == "abc" ) {
+    const s0 = "# SPDX-License-Identifier: MIT\n# abc for the Ranger Python runtime: abstract methods are recorded, and a\n# class with any left unimplemented refuses to be instantiated.\n\ndef abstractmethod(funcobj):\n    funcobj.__isabstractmethod__ = True\n    return funcobj\n\n\ndef _abstracts(cls):\n    names = set()\n    for klass in reversed(cls.__mro__):\n        for name, value in klass.__dict__.items():\n            if getattr(value, \"__isabstractmethod__\", False):\n                names.add(name)\n            elif name in names:\n                names.discard(name)\n    return names\n\n\nclass ABC:\n    def __new__(cls, *args, **kwargs):\n        missing = sorted(_abstracts(cls))\n        if missing:\n            plural = \"s\" if len(missing) > 1 else \"\"\n            raise TypeError(\"Can't instantiate abstract class %s without an implementation for abstract method%s %s\" % (cls.__name__, plural, \", \".join(\"'\" + m + \"'\" for m in missing)))\n        return object.__new__(cls)\n\n\nABCMeta = type\nabstractproperty = abstractmethod\nabstractclassmethod = abstractmethod\nabstractstaticmethod = abstractmethod\n";
+    return s0;
+  }
+  if ( name == "contextlib" ) {
+    const s1 = "# SPDX-License-Identifier: MIT\n# contextlib for the Ranger Python runtime.\nimport sys\n\n\nclass AbstractContextManager:\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc_value, tb):\n        return None\n\n\nclass ContextDecorator:\n    def __call__(self, func):\n        def inner(*args, **kwds):\n            with self:\n                return func(*args, **kwds)\n        return inner\n\n\nclass suppress(AbstractContextManager):\n    def __init__(self, *exceptions):\n        self._exceptions = exceptions\n\n    def __exit__(self, exc_type, exc_value, tb):\n        return exc_type is not None and issubclass(exc_type, self._exceptions)\n\n\nclass nullcontext(AbstractContextManager):\n    def __init__(self, enter_result=None):\n        self.enter_result = enter_result\n\n    def __enter__(self):\n        return self.enter_result\n\n    def __exit__(self, *exc):\n        return None\n\n\nclass closing(AbstractContextManager):\n    def __init__(self, thing):\n        self.thing = thing\n\n    def __enter__(self):\n        return self.thing\n\n    def __exit__(self, *exc):\n        self.thing.close()\n\n\nclass _Redirect(AbstractContextManager):\n    _stream = \"stdout\"\n\n    def __init__(self, new_target):\n        self._new_target = new_target\n        self._old = []\n\n    def __enter__(self):\n        self._old.append(getattr(sys, self._stream))\n        setattr(sys, self._stream, self._new_target)\n        return self._new_target\n\n    def __exit__(self, *exc):\n        setattr(sys, self._stream, self._old.pop())\n\n\nclass redirect_stdout(_Redirect):\n    _stream = \"stdout\"\n\n\nclass redirect_stderr(_Redirect):\n    _stream = \"stderr\"\n\n\nclass ExitStack(AbstractContextManager):\n    def __init__(self):\n        self._callbacks = []\n\n    def enter_context(self, cm):\n        result = cm.__enter__()\n        self._callbacks.append(cm.__exit__)\n        return result\n\n    def callback(self, fn, *args, **kwds):\n        self._callbacks.append(lambda *exc: fn(*args, **kwds))\n        return fn\n\n    def push(self, exit_fn):\n        self._callbacks.append(exit_fn)\n        return exit_fn\n\n    def close(self):\n        self.__exit__(None, None, None)\n\n    def __exit__(self, *exc):\n        suppressed = False\n        while self._callbacks:\n            cb = self._callbacks.pop()\n            if cb(*exc):\n                suppressed = True\n                exc = (None, None, None)\n        return suppressed\n\n\nclass _GeneratorContextManager(ContextDecorator, AbstractContextManager):\n    def __init__(self, func, args, kwds):\n        self.gen = func(*args, **kwds)\n        self.func, self.args, self.kwds = func, args, kwds\n        self.__doc__ = getattr(func, \"__doc__\", None)\n\n    def _recreate_cm(self):\n        return self.__class__(self.func, self.args, self.kwds)\n\n    def __call__(self, func):\n        def inner(*args, **kwds):\n            with self._recreate_cm():\n                return func(*args, **kwds)\n        return inner\n\n    def __enter__(self):\n        del self.args, self.kwds, self.func\n        try:\n            return next(self.gen)\n        except StopIteration:\n            raise RuntimeError(\"generator didn't yield\") from None\n\n    def __exit__(self, typ, value, traceback):\n        if typ is None:\n            try:\n                next(self.gen)\n            except StopIteration:\n                return False\n            else:\n                try:\n                    raise RuntimeError(\"generator didn't stop\")\n                finally:\n                    self.gen.close()\n        else:\n            if value is None:\n                value = typ()\n            try:\n                self.gen.throw(value)\n            except StopIteration as exc:\n                return exc is not value\n            except RuntimeError as exc:\n                if exc is value:\n                    return False\n                if isinstance(value, StopIteration) and exc.__cause__ is value:\n                    return False\n                raise\n            except BaseException as exc:\n                if exc is not value:\n                    raise\n                return False\n            try:\n                raise RuntimeError(\"generator didn't stop after throw()\")\n            finally:\n                self.gen.close()\n\n\ndef contextmanager(func):\n    def helper(*args, **kwds):\n        return _GeneratorContextManager(func, args, kwds)\n    helper.__name__ = getattr(func, \"__name__\", \"helper\")\n    helper.__doc__ = getattr(func, \"__doc__\", None)\n    helper.__wrapped__ = func\n    return helper\n";
+    return s1;
+  }
+  if ( name == "gc" ) {
+    const s2 = "# SPDX-License-Identifier: MIT\n# gc for the Ranger Python runtime: memory is the host's, so these do nothing.\n_enabled = True\ndef collect(generation=2): return 0\ndef enable():\n    global _enabled\n    _enabled = True\ndef disable():\n    global _enabled\n    _enabled = False\ndef isenabled(): return _enabled\ndef get_referrers(*objs): return []\ndef get_referents(*objs): return []\ndef is_tracked(obj): return False\ndef freeze(): pass\ngarbage = []\n";
+    return s2;
+  }
+  if ( name == "io" ) {
+    const s3 = "# SPDX-License-Identifier: MIT\n# io for the Ranger Python runtime: StringIO, and open as in builtins.\n\nopen = open\nSEEK_SET = 0\nSEEK_CUR = 1\nSEEK_END = 2\n\n\nclass UnsupportedOperation(OSError, ValueError):\n    pass\n\n\nclass StringIO:\n    def __init__(self, initial_value=\"\", newline=\"\\n\"):\n        self._parts = [initial_value] if initial_value else []\n        self._value = None\n        self._pos = 0\n        self.closed = False\n\n    def _text(self):\n        if self._value is None:\n            self._value = \"\".join(self._parts)\n            self._parts = [self._value]\n        return self._value\n\n    def write(self, s):\n        if self.closed:\n            raise ValueError(\"I/O operation on closed file.\")\n        if not isinstance(s, str):\n            raise TypeError(\"string argument expected, got '%s'\" % type(s).__name__)\n        text = self._text()\n        if self._pos == len(text):\n            self._parts.append(s)\n            self._value = None\n        else:\n            self._value = text[:self._pos] + s + text[self._pos + len(s):]\n            self._parts = [self._value]\n        self._pos += len(s)\n        return len(s)\n\n    def writelines(self, lines):\n        for line in lines:\n            self.write(line)\n\n    def getvalue(self):\n        return self._text()\n\n    def read(self, size=-1):\n        text = self._text()\n        if size is None or size < 0:\n            out = text[self._pos:]\n        else:\n            out = text[self._pos:self._pos + size]\n        self._pos += len(out)\n        return out\n\n    def readline(self, size=-1):\n        text = self._text()\n        end = text.find(\"\\n\", self._pos)\n        end = len(text) if end < 0 else end + 1\n        out = text[self._pos:end]\n        self._pos = end\n        return out\n\n    def readlines(self):\n        out = []\n        while True:\n            line = self.readline()\n            if not line:\n                return out\n            out.append(line)\n\n    def __iter__(self):\n        return iter(self.readlines())\n\n    def seek(self, pos, whence=0):\n        if whence == 0:\n            self._pos = pos\n        elif whence == 2:\n            self._pos = len(self._text()) + pos\n        else:\n            self._pos += pos\n        return self._pos\n\n    def tell(self):\n        return self._pos\n\n    def truncate(self, size=None):\n        text = self._text()\n        if size is None:\n            size = self._pos\n        self._value = text[:size]\n        self._parts = [self._value]\n        return size\n\n    def flush(self):\n        pass\n\n    def close(self):\n        self.closed = True\n\n    def readable(self):\n        return True\n\n    def writable(self):\n        return True\n\n    def seekable(self):\n        return True\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, *args):\n        self.close()\n        return False\n\n\nTextIOWrapper = StringIO\n";
+    return s3;
+  }
+  if ( name == "keyword" ) {
+    const s4 = "# SPDX-License-Identifier: MIT\nkwlist = [\"False\", \"None\", \"True\", \"and\", \"as\", \"assert\", \"async\", \"await\", \"break\", \"class\", \"continue\", \"def\", \"del\", \"elif\", \"else\", \"except\", \"finally\", \"for\", \"from\", \"global\", \"if\", \"import\", \"in\", \"is\", \"lambda\", \"nonlocal\", \"not\", \"or\", \"pass\", \"raise\", \"return\", \"try\", \"while\", \"with\", \"yield\"]\nsoftkwlist = [\"_\", \"case\", \"match\", \"type\"]\ndef iskeyword(s): return s in kwlist\ndef issoftkeyword(s): return s in softkwlist\n";
+    return s4;
+  }
+  if ( name == "operator" ) {
+    const s5 = "# SPDX-License-Identifier: MIT\n# operator for the Ranger Python runtime.\n\ndef lt(a, b): return a < b\ndef le(a, b): return a <= b\ndef eq(a, b): return a == b\ndef ne(a, b): return a != b\ndef ge(a, b): return a >= b\ndef gt(a, b): return a > b\ndef not_(a): return not a\ndef truth(a): return bool(a)\ndef is_(a, b): return a is b\ndef is_not(a, b): return a is not b\ndef is_none(a): return a is None\ndef is_not_none(a): return a is not None\ndef abs(a): return __builtins_abs(a)\ndef add(a, b): return a + b\ndef and_(a, b): return a & b\ndef floordiv(a, b): return a // b\ndef index(a): return a.__index__() if hasattr(a, \"__index__\") else int(a)\ndef inv(a): return ~a\ninvert = inv\ndef lshift(a, b): return a << b\ndef mod(a, b): return a % b\ndef mul(a, b): return a * b\ndef matmul(a, b): return a @ b\ndef neg(a): return -a\ndef or_(a, b): return a | b\ndef pos(a): return +a\ndef pow(a, b): return a ** b\ndef rshift(a, b): return a >> b\ndef sub(a, b): return a - b\ndef truediv(a, b): return a / b\ndef xor(a, b): return a ^ b\ndef concat(a, b): return a + b\ndef contains(a, b): return b in a\ndef countOf(a, b):\n    n = 0\n    for x in a:\n        if x is b or x == b:\n            n += 1\n    return n\ndef delitem(a, b): del a[b]\ndef getitem(a, b): return a[b]\ndef indexOf(a, b):\n    for i, x in enumerate(a):\n        if x is b or x == b:\n            return i\n    raise ValueError(\"sequence.index(x): x not in sequence\")\ndef setitem(a, b, c): a[b] = c\ndef length_hint(obj, default=0):\n    try:\n        return len(obj)\n    except TypeError:\n        return default\ndef iadd(a, b):\n    a += b\n    return a\ndef isub(a, b):\n    a -= b\n    return a\ndef imul(a, b):\n    a *= b\n    return a\ndef iconcat(a, b):\n    a += b\n    return a\n\ndef __builtins_abs(a):\n    return a if a >= 0 else -a\n\n\nclass attrgetter:\n    def __init__(self, attr, *attrs):\n        self._attrs = (attr,) + attrs\n\n    def __call__(self, obj):\n        out = []\n        for name in self._attrs:\n            v = obj\n            for part in name.split(\".\"):\n                v = getattr(v, part)\n            out.append(v)\n        if len(out) == 1:\n            return out[0]\n        return tuple(out)\n\n\nclass itemgetter:\n    def __init__(self, item, *items):\n        self._items = (item,) + items\n\n    def __call__(self, obj):\n        if len(self._items) == 1:\n            return obj[self._items[0]]\n        return tuple(obj[i] for i in self._items)\n\n\nclass methodcaller:\n    def __init__(self, name, *args, **kwargs):\n        self._name = name\n        self._args = args\n        self._kwargs = kwargs\n\n    def __call__(self, obj):\n        return getattr(obj, self._name)(*self._args, **self._kwargs)\n";
+    return s5;
+  }
+  if ( name == "textwrap" ) {
+    const s6 = "# SPDX-License-Identifier: MIT\n# textwrap for the Ranger Python runtime: dedent, indent, wrap, fill, shorten.\n\ndef dedent(text):\n    lines = text.split(\"\\n\")\n    margin = None\n    for line in lines:\n        stripped = line.lstrip(\" \\t\")\n        if not stripped:\n            continue\n        ws = line[:len(line) - len(stripped)]\n        if margin is None:\n            margin = ws\n        else:\n            n = 0\n            while n < len(margin) and n < len(ws) and margin[n] == ws[n]:\n                n += 1\n            margin = margin[:n]\n    out = []\n    for line in lines:\n        if not line.strip(\" \\t\"):\n            out.append(line.lstrip(\" \\t\") if line.strip() == \"\" else line)\n        elif margin:\n            out.append(line[len(margin):])\n        else:\n            out.append(line)\n    return \"\\n\".join(\"\" if l.strip() == \"\" else l for l in out)\n\n\ndef indent(text, prefix, predicate=None):\n    if predicate is None:\n        predicate = lambda line: line.strip()\n    out = []\n    for line in text.splitlines(True):\n        out.append(prefix + line if predicate(line) else line)\n    return \"\".join(out)\n\n\ndef wrap(text, width=70, initial_indent=\"\", subsequent_indent=\"\", break_long_words=True, **kwargs):\n    words = text.split()\n    lines = []\n    cur = initial_indent\n    empty = True\n    for w in words:\n        prefix = initial_indent if not lines else subsequent_indent\n        if empty:\n            cand = prefix + w\n        else:\n            cand = cur + \" \" + w\n        if len(cand) <= width or empty and not break_long_words:\n            cur = cand\n            empty = False\n        elif empty:\n            while len(prefix + w) > width:\n                lines.append(prefix + w[:width - len(prefix)])\n                w = w[width - len(prefix):]\n                prefix = subsequent_indent\n            cur = prefix + w\n            empty = False\n        else:\n            lines.append(cur)\n            cur = subsequent_indent + w\n    if not empty:\n        lines.append(cur)\n    return lines\n\n\ndef fill(text, width=70, **kwargs):\n    return \"\\n\".join(wrap(text, width, **kwargs))\n\n\ndef shorten(text, width, placeholder=\" [...]\", **kwargs):\n    text = \" \".join(text.split())\n    if len(text) <= width:\n        return text\n    words = text.split()\n    out = \"\"\n    for w in words:\n        cand = w if not out else out + \" \" + w\n        if len(cand) + len(placeholder) > width:\n            break\n        out = cand\n    return out + placeholder\n";
+    return s6;
+  }
+  if ( name == "traceback" ) {
+    const s7 = "# SPDX-License-Identifier: MIT\n# traceback for the Ranger Python runtime: the exception's type and message.\nimport sys\n\ndef format_exception_only(exc, value=None):\n    if value is None and isinstance(exc, BaseException):\n        value = exc\n    msg = str(value)\n    name = type(value).__name__\n    return [name + (\": \" + msg if msg else \"\") + \"\\n\"]\n\ndef format_exception(exc, value=None, tb=None, limit=None, chain=True):\n    return [\"Traceback (most recent call last):\\n\"] + format_exception_only(exc, value)\n\ndef format_exc(limit=None, chain=True):\n    return \"NoneType: None\\n\"\n\ndef print_exc(limit=None, file=None, chain=True):\n    print(format_exc(), end=\"\", file=file)\n\ndef print_exception(exc, value=None, tb=None, limit=None, file=None, chain=True):\n    print(\"\".join(format_exception(exc, value)), end=\"\", file=file)\n\ndef format_stack(f=None, limit=None):\n    return []\n\ndef extract_stack(f=None, limit=None):\n    return []\n";
+    return s7;
+  }
+  if ( name == "types" ) {
+    const s8 = "# SPDX-License-Identifier: MIT\n# types for the Ranger Python runtime.\n\ndef _f():\n    pass\n\nclass _C:\n    def _m(self):\n        pass\n\nFunctionType = type(_f)\nLambdaType = type(lambda: None)\nMethodType = type(_C()._m)\nBuiltinFunctionType = type(len)\nBuiltinMethodType = type([].append)\nModuleType = type(__import__(\"sys\"))\nNoneType = type(None)\nEllipsisType = type(...)\nNotImplementedType = type(NotImplemented)\nGeneratorType = type((x for x in ()))\n\n\nclass SimpleNamespace:\n    def __init__(self, mapping_or_iterable=(), /, **kwargs):\n        if isinstance(mapping_or_iterable, dict):\n            for k in mapping_or_iterable:\n                setattr(self, k, mapping_or_iterable[k])\n        else:\n            for k, v in mapping_or_iterable:\n                setattr(self, k, v)\n        for k in kwargs:\n            setattr(self, k, kwargs[k])\n\n    def __repr__(self):\n        items = [\"%s=%r\" % (k, v) for k, v in self.__dict__.items()]\n        return \"namespace(\" + \", \".join(items) + \")\"\n\n    def __eq__(self, other):\n        return isinstance(other, SimpleNamespace) and self.__dict__ == other.__dict__\n\n\nclass MappingProxyType:\n    def __init__(self, mapping):\n        self._m = mapping\n\n    def __getitem__(self, k):\n        return self._m[k]\n\n    def __len__(self):\n        return len(self._m)\n\n    def __iter__(self):\n        return iter(self._m)\n\n    def __contains__(self, k):\n        return k in self._m\n\n    def get(self, k, default=None):\n        return self._m.get(k, default)\n\n    def keys(self):\n        return self._m.keys()\n\n    def values(self):\n        return self._m.values()\n\n    def items(self):\n        return self._m.items()\n\n    def copy(self):\n        return dict(self._m)\n\n\ndef new_class(name, bases=(), kwds=None, exec_body=None):\n    ns = {}\n    if exec_body is not None:\n        exec_body(ns)\n    return type(name, bases, ns)\n";
+    return s8;
+  }
+  if ( name == "unittest" ) {
+    const s9 = "# SPDX-License-Identifier: MIT\n#\n# unittest for the Ranger Python runtime: TestCase with the assert methods,\n# skips, expected failures, subTest, setUp/tearDown/cleanups, TestResult,\n# TestSuite, TestLoader and main(). Written against CPython's documented\n# behaviour, not copied from it.\n\nimport sys\n\n\nclass SkipTest(Exception):\n    pass\n\n\ndef _id(obj):\n    return obj\n\n\ndef skip(reason):\n    def decorator(obj):\n        obj.__unittest_skip__ = True\n        obj.__unittest_skip_why__ = reason\n        return obj\n    if callable(reason) and not isinstance(reason, str):\n        fn = reason\n        reason = \"\"\n        return decorator(fn)\n    return decorator\n\n\ndef skipIf(condition, reason):\n    if condition:\n        return skip(reason)\n    return _id\n\n\ndef skipUnless(condition, reason):\n    if not condition:\n        return skip(reason)\n    return _id\n\n\ndef expectedFailure(fn):\n    fn.__unittest_expecting_failure__ = True\n    return fn\n\n\ndef _safe_repr(obj):\n    try:\n        return repr(obj)\n    except Exception:\n        return object.__repr__(obj)\n\n\ndef _matches(pattern, text):\n    # a regular expression is matched as text with its escapes removed\n    # (there is no re module yet); a pattern with other syntax matches\n    if pattern is None:\n        return True\n    if not isinstance(pattern, str):\n        pattern = getattr(pattern, \"pattern\", str(pattern))\n    special = \"^$*+?{}[]|()\"\n    plain = \"\"\n    i = 0\n    while i < len(pattern):\n        ch = pattern[i]\n        if ch == \"\\\\\" and i + 1 < len(pattern):\n            plain += pattern[i + 1]\n            i += 2\n            continue\n        if ch in special:\n            return True\n        if ch == \".\":\n            return True\n        plain += ch\n        i += 1\n    return plain in text\n\n\nclass _AssertRaisesContext:\n    def __init__(self, expected, test_case, regex=None, msg=None):\n        self.expected = expected\n        self.test_case = test_case\n        self.regex = regex\n        self.msg = msg\n        self.exception = None\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc_value, tb):\n        if exc_type is None:\n            try:\n                name = self.expected.__name__\n            except AttributeError:\n                name = str(self.expected)\n            raise self.test_case.failureException(self.msg or (name + \" not raised\"))\n        if not issubclass(exc_type, self.expected):\n            return False\n        self.exception = exc_value\n        if self.regex is not None and not _matches(self.regex, str(exc_value)):\n            raise self.test_case.failureException('\"%s\" does not match \"%s\"' % (self.regex, str(exc_value)))\n        return True\n\n\nclass _AssertWarnsContext:\n    def __init__(self, expected, test_case):\n        self.expected = expected\n        self.test_case = test_case\n        self.warning = None\n        self.warnings = []\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc_value, tb):\n        return False\n\n\nclass _SubTest:\n    def __init__(self, case, msg, params):\n        self.case = case\n        self.msg = msg\n        self.params = params\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, exc_type, exc_value, tb):\n        if exc_type is None:\n            return False\n        if issubclass(exc_type, SkipTest):\n            return True\n        if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):\n            return False\n        self.case._subtest_failures.append((exc_type, exc_value))\n        return True\n\n\nclass TestCase:\n    failureException = AssertionError\n    longMessage = True\n    maxDiff = 640\n\n    def __init__(self, methodName=\"runTest\"):\n        self._testMethodName = methodName\n        self._cleanups = []\n        self._subtest_failures = []\n\n    def __repr__(self):\n        return \"<%s testMethod=%s>\" % (type(self).__name__, self._testMethodName)\n\n    def __str__(self):\n        return \"%s (%s)\" % (self._testMethodName, type(self).__name__)\n\n    def id(self):\n        return type(self).__name__ + \".\" + self._testMethodName\n\n    def shortDescription(self):\n        return None\n\n    def setUp(self):\n        pass\n\n    def tearDown(self):\n        pass\n\n    @classmethod\n    def setUpClass(cls):\n        pass\n\n    @classmethod\n    def tearDownClass(cls):\n        pass\n\n    def addCleanup(self, function, *args, **kwargs):\n        self._cleanups.append((function, args, kwargs))\n\n    def enterContext(self, cm):\n        result = cm.__enter__()\n        self.addCleanup(cm.__exit__, None, None, None)\n        return result\n\n    def doCleanups(self):\n        while self._cleanups:\n            function, args, kwargs = self._cleanups.pop()\n            function(*args, **kwargs)\n\n    def skipTest(self, reason):\n        raise SkipTest(reason)\n\n    def subTest(self, msg=None, **params):\n        return _SubTest(self, msg, params)\n\n    def run(self, result=None):\n        if result is None:\n            result = TestResult()\n        result.startTest(self)\n        method = getattr(self, self._testMethodName)\n        cls_skip = getattr(type(self), \"__unittest_skip__\", False)\n        if cls_skip or getattr(method, \"__unittest_skip__\", False):\n            why = getattr(method, \"__unittest_skip_why__\", \"\") or getattr(type(self), \"__unittest_skip_why__\", \"\")\n            result.addSkip(self, why)\n            result.stopTest(self)\n            return result\n        expecting = getattr(method, \"__unittest_expecting_failure__\", False)\n        outcome = None\n        try:\n            self.setUp()\n        except SkipTest as e:\n            outcome = (\"skip\", str(e))\n        except Exception as e:\n            outcome = (\"error\", e)\n        if outcome is None:\n            try:\n                method()\n            except SkipTest as e:\n                outcome = (\"skip\", str(e))\n            except AssertionError as e:\n                outcome = (\"fail\", e)\n            except Exception as e:\n                outcome = (\"error\", e)\n            if outcome is None and self._subtest_failures:\n                et, ev = self._subtest_failures[0]\n                if issubclass(et, AssertionError):\n                    outcome = (\"fail\", ev)\n                else:\n                    outcome = (\"error\", ev)\n            try:\n                self.tearDown()\n            except Exception as e:\n                if outcome is None:\n                    outcome = (\"error\", e)\n        try:\n            self.doCleanups()\n        except Exception as e:\n            if outcome is None:\n                outcome = (\"error\", e)\n        if outcome is None:\n            if expecting:\n                result.addUnexpectedSuccess(self)\n            else:\n                result.addSuccess(self)\n        elif outcome[0] == \"skip\":\n            result.addSkip(self, outcome[1])\n        elif expecting:\n            result.addExpectedFailure(self, outcome[1])\n        elif outcome[0] == \"fail\":\n            result.addFailure(self, outcome[1])\n        else:\n            result.addError(self, outcome[1])\n        result.stopTest(self)\n        return result\n\n    def __call__(self, *args, **kwds):\n        return self.run(*args, **kwds)\n\n    def debug(self):\n        self.setUp()\n        getattr(self, self._testMethodName)()\n        self.tearDown()\n        self.doCleanups()\n\n    # ---- assertions\n\n    def _formatMessage(self, msg, standardMsg):\n        if msg is None:\n            return standardMsg\n        if not self.longMessage:\n            return msg\n        return \"%s : %s\" % (standardMsg, msg)\n\n    def fail(self, msg=None):\n        raise self.failureException(msg)\n\n    def assertTrue(self, expr, msg=None):\n        if not expr:\n            self.fail(self._formatMessage(msg, \"%s is not true\" % _safe_repr(expr)))\n\n    def assertFalse(self, expr, msg=None):\n        if expr:\n            self.fail(self._formatMessage(msg, \"%s is not false\" % _safe_repr(expr)))\n\n    def assertEqual(self, first, second, msg=None):\n        if not first == second:\n            self.fail(self._formatMessage(msg, \"%s != %s\" % (_safe_repr(first), _safe_repr(second))))\n\n    def assertNotEqual(self, first, second, msg=None):\n        if not first != second:\n            self.fail(self._formatMessage(msg, \"%s == %s\" % (_safe_repr(first), _safe_repr(second))))\n\n    assertEquals = assertEqual\n    assertNotEquals = assertNotEqual\n    failUnless = assertTrue\n    failIf = assertFalse\n\n    def assertListEqual(self, first, second, msg=None):\n        self.assertIsInstance(first, list, msg)\n        self.assertIsInstance(second, list, msg)\n        self.assertEqual(first, second, msg)\n\n    def assertTupleEqual(self, first, second, msg=None):\n        self.assertIsInstance(first, tuple, msg)\n        self.assertIsInstance(second, tuple, msg)\n        self.assertEqual(first, second, msg)\n\n    def assertDictEqual(self, first, second, msg=None):\n        self.assertIsInstance(first, dict, msg)\n        self.assertIsInstance(second, dict, msg)\n        self.assertEqual(first, second, msg)\n\n    def assertSetEqual(self, first, second, msg=None):\n        self.assertEqual(set(first), set(second), msg)\n\n    def assertSequenceEqual(self, first, second, msg=None, seq_type=None):\n        if seq_type is not None:\n            self.assertIsInstance(first, seq_type, msg)\n            self.assertIsInstance(second, seq_type, msg)\n        self.assertEqual(list(first), list(second), msg)\n\n    def assertMultiLineEqual(self, first, second, msg=None):\n        self.assertEqual(first, second, msg)\n\n    def assertCountEqual(self, first, second, msg=None):\n        a = list(first)\n        b = list(second)\n        if len(a) != len(b):\n            self.fail(self._formatMessage(msg, \"Element counts were not equal\"))\n        rest = list(b)\n        for x in a:\n            found = False\n            for i in range(len(rest)):\n                if rest[i] == x:\n                    del rest[i]\n                    found = True\n                    break\n            if not found:\n                self.fail(self._formatMessage(msg, \"Element counts were not equal\"))\n\n    def assertIs(self, first, second, msg=None):\n        if first is not second:\n            self.fail(self._formatMessage(msg, \"%s is not %s\" % (_safe_repr(first), _safe_repr(second))))\n\n    def assertIsNot(self, first, second, msg=None):\n        if first is second:\n            self.fail(self._formatMessage(msg, \"unexpectedly identical: %s\" % _safe_repr(first)))\n\n    def assertIsNone(self, obj, msg=None):\n        if obj is not None:\n            self.fail(self._formatMessage(msg, \"%s is not None\" % _safe_repr(obj)))\n\n    def assertIsNotNone(self, obj, msg=None):\n        if obj is None:\n            self.fail(self._formatMessage(msg, \"unexpectedly None\"))\n\n    def assertIn(self, member, container, msg=None):\n        if member not in container:\n            self.fail(self._formatMessage(msg, \"%s not found in %s\" % (_safe_repr(member), _safe_repr(container))))\n\n    def assertNotIn(self, member, container, msg=None):\n        if member in container:\n            self.fail(self._formatMessage(msg, \"%s unexpectedly found in %s\" % (_safe_repr(member), _safe_repr(container))))\n\n    def assertIsInstance(self, obj, cls, msg=None):\n        if not isinstance(obj, cls):\n            self.fail(self._formatMessage(msg, \"%s is not an instance of %r\" % (_safe_repr(obj), cls)))\n\n    def assertNotIsInstance(self, obj, cls, msg=None):\n        if isinstance(obj, cls):\n            self.fail(self._formatMessage(msg, \"%s is an instance of %r\" % (_safe_repr(obj), cls)))\n\n    def assertGreater(self, a, b, msg=None):\n        if not a > b:\n            self.fail(self._formatMessage(msg, \"%s not greater than %s\" % (_safe_repr(a), _safe_repr(b))))\n\n    def assertGreaterEqual(self, a, b, msg=None):\n        if not a >= b:\n            self.fail(self._formatMessage(msg, \"%s not greater than or equal to %s\" % (_safe_repr(a), _safe_repr(b))))\n\n    def assertLess(self, a, b, msg=None):\n        if not a < b:\n            self.fail(self._formatMessage(msg, \"%s not less than %s\" % (_safe_repr(a), _safe_repr(b))))\n\n    def assertLessEqual(self, a, b, msg=None):\n        if not a <= b:\n            self.fail(self._formatMessage(msg, \"%s not less than or equal to %s\" % (_safe_repr(a), _safe_repr(b))))\n\n    def assertAlmostEqual(self, first, second, places=None, msg=None, delta=None):\n        if first == second:\n            return\n        diff = abs(first - second)\n        if delta is not None:\n            if diff <= delta:\n                return\n            standard = \"%s != %s within %s delta (%s difference)\" % (_safe_repr(first), _safe_repr(second), _safe_repr(delta), _safe_repr(diff))\n        else:\n            if places is None:\n                places = 7\n            if round(diff, places) == 0:\n                return\n            standard = \"%s != %s within %r places (%s difference)\" % (_safe_repr(first), _safe_repr(second), places, _safe_repr(diff))\n        self.fail(self._formatMessage(msg, standard))\n\n    def assertNotAlmostEqual(self, first, second, places=None, msg=None, delta=None):\n        diff = abs(first - second)\n        if delta is not None:\n            if not (first == second) and diff > delta:\n                return\n        else:\n            if places is None:\n                places = 7\n            if not (first == second) and round(diff, places) != 0:\n                return\n        self.fail(self._formatMessage(msg, \"%s == %s\" % (_safe_repr(first), _safe_repr(second))))\n\n    def assertRaises(self, expected_exception, *args, **kwargs):\n        ctx = _AssertRaisesContext(expected_exception, self, None, kwargs.pop(\"msg\", None))\n        if not args:\n            return ctx\n        callable_obj = args[0]\n        with ctx:\n            callable_obj(*args[1:], **kwargs)\n        return ctx\n\n    def assertRaisesRegex(self, expected_exception, expected_regex, *args, **kwargs):\n        ctx = _AssertRaisesContext(expected_exception, self, expected_regex, kwargs.pop(\"msg\", None))\n        if not args:\n            return ctx\n        callable_obj = args[0]\n        with ctx:\n            callable_obj(*args[1:], **kwargs)\n        return ctx\n\n    assertRaisesRegexp = assertRaisesRegex\n\n    def assertWarns(self, expected_warning, *args, **kwargs):\n        ctx = _AssertWarnsContext(expected_warning, self)\n        if not args:\n            return ctx\n        with ctx:\n            args[0](*args[1:], **kwargs)\n        return ctx\n\n    def assertWarnsRegex(self, expected_warning, expected_regex, *args, **kwargs):\n        return self.assertWarns(expected_warning, *args, **kwargs)\n\n    def assertNoLogs(self, logger=None, level=None):\n        return _AssertWarnsContext(None, self)\n\n    def assertRegex(self, text, expected_regex, msg=None):\n        if not _matches(expected_regex, text):\n            self.fail(self._formatMessage(msg, \"Regex didn't match: %r not found in %r\" % (expected_regex, text)))\n\n    def assertNotRegex(self, text, unexpected_regex, msg=None):\n        pass\n\n    def assertHasAttr(self, obj, name, msg=None):\n        if not hasattr(obj, name):\n            self.fail(self._formatMessage(msg, \"%s has no attribute %r\" % (_safe_repr(obj), name)))\n\n    def assertNotHasAttr(self, obj, name, msg=None):\n        if hasattr(obj, name):\n            self.fail(self._formatMessage(msg, \"%s has unexpected attribute %r\" % (_safe_repr(obj), name)))\n\n\nclass FunctionTestCase(TestCase):\n    def __init__(self, testFunc, setUp=None, tearDown=None, description=None):\n        TestCase.__init__(self, \"runTest\")\n        self._testFunc = testFunc\n\n    def runTest(self):\n        self._testFunc()\n\n\nclass TestResult:\n    def __init__(self, stream=None, descriptions=None, verbosity=None):\n        self.failures = []\n        self.errors = []\n        self.skipped = []\n        self.expectedFailures = []\n        self.unexpectedSuccesses = []\n        self.successes = []\n        self.testsRun = 0\n        self.shouldStop = False\n\n    def startTest(self, test):\n        self.testsRun += 1\n\n    def stopTest(self, test):\n        pass\n\n    def addSuccess(self, test):\n        self.successes.append(test)\n\n    def addFailure(self, test, err):\n        self.failures.append((test, _describe(err)))\n\n    def addError(self, test, err):\n        self.errors.append((test, _describe(err)))\n\n    def addSkip(self, test, reason):\n        self.skipped.append((test, reason))\n\n    def addExpectedFailure(self, test, err):\n        self.expectedFailures.append((test, _describe(err)))\n\n    def addUnexpectedSuccess(self, test):\n        self.unexpectedSuccesses.append(test)\n\n    def wasSuccessful(self):\n        return not self.failures and not self.errors and not self.unexpectedSuccesses\n\n    def stop(self):\n        self.shouldStop = True\n\n\ndef _describe(err):\n    if isinstance(err, BaseException):\n        return type(err).__name__ + \": \" + str(err)\n    return str(err)\n\n\nclass TestSuite:\n    def __init__(self, tests=()):\n        self._tests = []\n        self.addTests(tests)\n\n    def __iter__(self):\n        return iter(self._tests)\n\n    def countTestCases(self):\n        n = 0\n        for t in self._tests:\n            if isinstance(t, TestSuite):\n                n += t.countTestCases()\n            else:\n                n += 1\n        return n\n\n    def addTest(self, test):\n        self._tests.append(test)\n\n    def addTests(self, tests):\n        for t in tests:\n            self.addTest(t)\n\n    def run(self, result):\n        for t in self._tests:\n            if result.shouldStop:\n                break\n            t.run(result)\n        return result\n\n    def __call__(self, result):\n        return self.run(result)\n\n\ndef _test_names(cls, prefix=\"test\"):\n    names = []\n    seen = set()\n    for klass in cls.__mro__:\n        for name in list(klass.__dict__):\n            if name.startswith(prefix) and name not in seen:\n                seen.add(name)\n                if callable(getattr(cls, name, None)):\n                    names.append(name)\n    return sorted(names)\n\n\nclass TestLoader:\n    testMethodPrefix = \"test\"\n\n    def getTestCaseNames(self, testCaseClass):\n        return _test_names(testCaseClass, self.testMethodPrefix)\n\n    def loadTestsFromTestCase(self, testCaseClass):\n        return TestSuite([testCaseClass(n) for n in self.getTestCaseNames(testCaseClass)])\n\n    def loadTestsFromModule(self, module, pattern=None):\n        tests = []\n        for name in sorted(dir(module)):\n            obj = getattr(module, name)\n            if isinstance(obj, type) and issubclass(obj, TestCase) and obj is not TestCase:\n                tests.append(self.loadTestsFromTestCase(obj))\n        return TestSuite(tests)\n\n\ndefaultTestLoader = TestLoader()\n\n\nclass TextTestRunner:\n    def __init__(self, stream=None, descriptions=True, verbosity=1, **kwargs):\n        self.verbosity = verbosity\n\n    def run(self, test):\n        result = TestResult()\n        test.run(result)\n        for t, err in result.failures:\n            print(\"FAIL:\", t, err)\n        for t, err in result.errors:\n            print(\"ERROR:\", t, err)\n        print(\"Ran %d tests: %d failures, %d errors, %d skipped\" % (result.testsRun, len(result.failures), len(result.errors), len(result.skipped)))\n        return result\n\n\ndef main(module=\"__main__\", exit=True, verbosity=1, **kwargs):\n    mod = sys.modules.get(module) if isinstance(module, str) else module\n    if mod is None:\n        names = globals()\n        raise RuntimeError(\"unittest.main(): module %r not found\" % (module,))\n    suite = defaultTestLoader.loadTestsFromModule(mod)\n    result = TextTestRunner(verbosity=verbosity).run(suite)\n    if exit:\n        sys.exit(0 if result.wasSuccessful() else 1)\n    return result\n";
+    return s9;
+  }
+  if ( name == "warnings" ) {
+    const s10 = "# SPDX-License-Identifier: MIT\n# warnings for the Ranger Python runtime: warnings are collected, not printed,\n# unless an \"error\" filter turns them into exceptions.\n\n_filters = []\n_log = None\n\n\nclass WarningMessage:\n    def __init__(self, message, category, filename=\"\", lineno=0):\n        self.message = message\n        self.category = category\n        self.filename = filename\n        self.lineno = lineno\n\n\ndef warn(message, category=None, stacklevel=1, source=None, skip_file_prefixes=()):\n    if isinstance(message, Warning):\n        category = type(message)\n    if category is None:\n        category = UserWarning\n    for action, cat in _filters:\n        if issubclass(category, cat):\n            if action == \"error\":\n                raise message if isinstance(message, Warning) else category(message)\n            if action == \"ignore\":\n                return\n            break\n    if _log is not None:\n        msg = message if isinstance(message, Warning) else category(message)\n        _log.append(WarningMessage(msg, category))\n\n\ndef warn_explicit(message, category, filename, lineno, *args, **kwargs):\n    warn(message, category)\n\n\ndef simplefilter(action, category=Warning, lineno=0, append=False):\n    entry = (action, category)\n    if append:\n        _filters.append(entry)\n    else:\n        _filters.insert(0, entry)\n\n\ndef filterwarnings(action, message=\"\", category=Warning, module=\"\", lineno=0, append=False):\n    simplefilter(action, category, lineno, append)\n\n\ndef resetwarnings():\n    del _filters[:]\n\n\nclass catch_warnings:\n    def __init__(self, *, record=False, module=None, action=None, category=Warning, lineno=0, append=False):\n        self._record = record\n        self._action = action\n        self._category = category\n\n    def __enter__(self):\n        global _log\n        self._saved = (list(_filters), _log)\n        if self._action is not None:\n            simplefilter(self._action, self._category)\n        if self._record:\n            _log = []\n            return _log\n        return None\n\n    def __exit__(self, *exc):\n        global _log\n        _filters[:] = self._saved[0]\n        _log = self._saved[1]\n        return False\n";
+    return s10;
+  }
+  return none;
+};
+PyStdlib.isPackage = function(name) {
+  if ( name == "unittest" ) {
+    return true;
+  }
+  return false;
+};
 export class PyFrame  {
   constructor() {
     this.func = undefined;
@@ -10092,16 +10525,22 @@ export class PyInterp  {
     this.maxDepth = 200;
     this.steps = 0;
     this.maxSteps = 0;
-    this.maxYield = 1000000;
     this.curLine = 0;
     this.frames = [];
-    this.genStack = [];
+    this.curGen = undefined;
+    this.suspending = false;
+    this.SUSPEND = new PyVal(0);
+    this.ENDED = new PyVal(0);
+    this.compFirst = undefined;
     this.reprDepth = 0;
     this.globals = new PyScope();
     this.bi = undefined;
     this.meth = undefined;
     this.mods = undefined;
     this.argv = [];
+    this.searchPath = [];
+    this.sysModules = new PyVal(7);
+    this.callScope = new PyScope();
     this.fs = filesystem;
     this.TRUE.i = 1;
     this.NOTIMPL.s = "NotImplemented";
@@ -10223,7 +10662,7 @@ export class PyInterp  {
     if ( msg.length > 0 ) {
       args.push(this.mkStr(msg));
     }
-    e.attrs["args"] = this.mkTuple(args);
+    e.putAttr("args", this.mkTuple(args));
     return e;
   };
   raise (name, msg) {
@@ -10232,16 +10671,16 @@ export class PyInterp  {
   };
   raiseVal (e) {
     if ( ( typeof(e.attrs["__line__"] ) != "undefined" && Object.prototype.hasOwnProperty.call(e.attrs, "__line__") ) == false ) {
-      e.attrs["__line__"] = this.mkInt(this.curLine);
-      e.attrs["__trace__"] = this.mkStr(this.traceText());
+      e.putAttr("__line__", this.mkInt(this.curLine));
+      e.putAttr("__trace__", this.mkStr(this.traceText()));
     }
     this.excValue = e;
     throw new Error("python exception");
   };
   markExc (e) {
     if ( ( typeof(e.attrs["__line__"] ) != "undefined" && Object.prototype.hasOwnProperty.call(e.attrs, "__line__") ) == false ) {
-      e.attrs["__line__"] = this.mkInt(this.curLine);
-      e.attrs["__trace__"] = this.mkStr(this.traceText());
+      e.putAttr("__line__", this.mkInt(this.curLine));
+      e.putAttr("__trace__", this.mkStr(this.traceText()));
     }
   };
   traceText () {
@@ -10417,6 +10856,8 @@ export class PyInterp  {
         return "TextIOWrapper";
       case 17 : 
         return v.s;
+      case 23 : 
+        return "generator";
       case 18 : 
         return "slice";
       case 19 : 
@@ -10697,6 +11138,8 @@ export class PyInterp  {
         return ((("<_io.TextIOWrapper name=" + PyFormat.strRepr(v.s)) + " mode=") + PyFormat.strRepr(v.mode)) + " encoding='UTF-8'>";
       case 17 : 
         return ((("<" + v.s) + " object at ") + this.hexId(v)) + ">";
+      case 23 : 
+        return ((("<generator object " + v.s) + " at ") + this.hexId(v)) + ">";
       case 18 : 
         return ("slice(" + this.joinRepr(v.items)) + ")";
     };
@@ -11009,6 +11452,18 @@ export class PyInterp  {
         }
         break;
     };
+    if ( this.isLazy(container) ) {
+      const cit = this.iterOf(container);
+      while (true) {
+        const cv = this.nextOpt(cit);
+        if ( typeof(cv) === "undefined" ) {
+          return false;
+        }
+        if ( this.eq(cv, item) ) {
+          return true;
+        }
+      };
+    }
     const all = this.iterValues(container);
     // Loop start
     for ( const a of all) {
@@ -11136,6 +11591,17 @@ export class PyInterp  {
         return out5;
       case 17 : 
         let out6 = [];
+        if ( v.mode.length > 0 ) {
+          while (true) {
+            const lz = this.lazyNext(v);
+            if ( typeof(lz) === "undefined" ) {
+              break;
+            }
+            out6.push(lz);
+            this.tick();
+          };
+          return out6;
+        }
         let k3 = v.pos;
         const n2 = v.items.length;
         while (k3 < n2) {
@@ -11146,6 +11612,14 @@ export class PyInterp  {
         return out6;
       case 16 : 
         return this.meth.fileLines(v);
+      case 23 : 
+        let out8 = [];
+        while (this.genRun(v, this.NONE, 0)) {
+          const g = v.gen;
+          out8.push(g.out);
+          this.tick();
+        };
+        return out8;
       case 12 : 
         const it3 = this.findMethod(v, "__iter__");
         if ( (typeof(it3) !== "undefined" && it3 != null )  ) {
@@ -11410,7 +11884,7 @@ export class PyInterp  {
         }
         if ( name == "__dict__" ) {
           const d = this.mkDict();
-          const ks = Object.keys(obj.attrs);
+          const ks = obj.attrKeys();
           // Loop start
           for ( const k of ks) {
             if ( (k.startsWith("__") && k.endsWith("__")) && c.isExc ) {
@@ -11476,7 +11950,7 @@ export class PyInterp  {
         }
         if ( name == "__dict__" ) {
           const d2 = this.mkDict();
-          const ks2 = Object.keys(obj.attrs);
+          const ks2 = obj.attrKeys();
           // Loop start
           for ( const k2 of ks2) {
             this.dictSet(
@@ -11504,7 +11978,18 @@ export class PyInterp  {
         const optr1582 = vv;
         return optr1582;
       case 13 : 
-        return ( Object.prototype.hasOwnProperty.call(obj.attrs, name) ? obj.attrs[name] : undefined );
+        const mv_1 = ( Object.prototype.hasOwnProperty.call(obj.attrs, name) ? obj.attrs[name] : undefined );
+        if ( typeof(mv_1) === "undefined" ) {
+          const mga = ( Object.prototype.hasOwnProperty.call(obj.attrs, "__getattr__") ? obj.attrs["__getattr__"] : undefined );
+          if ( ((typeof(mga) !== "undefined" && mga != null ) ) && name != "__getattr__" ) {
+            let kn0 = [];
+            let kv0 = [];
+            const got0 = this.callValue(mga, [this.mkStr(name)], kn0, kv0);
+            const r0 = got0;
+            return r0;
+          }
+        }
+        return mv_1;
       case 22 : 
         const __self = obj.__self;
         const after = obj.cls;
@@ -11580,6 +12065,12 @@ export class PyInterp  {
         if ( name == "__func__" && ((typeof(obj.cls) !== "undefined" && obj.cls != null ) ) ) {
           return obj.cls;
         }
+        if ( (typeof(obj.cls) !== "undefined" && obj.cls != null )  ) {
+          const bf = obj.cls;
+          if ( bf.t == 9 ) {
+            return ( Object.prototype.hasOwnProperty.call(bf.attrs, name) ? bf.attrs[name] : undefined );
+          }
+        }
         return none;
       case 10 : 
         if ( name == "__name__" ) {
@@ -11640,21 +12131,21 @@ export class PyInterp  {
         this.callMethodVal(sa, obj, [this.mkStr(name), val]);
         return;
       }
-      obj.attrs[name] = val;
+      obj.putAttr(name, val);
       return;
     }
     if ( (obj.t == 11 || obj.t == 13) || obj.t == 9 ) {
-      obj.attrs[name] = val;
+      obj.putAttr(name, val);
       return;
     }
     this.raise("AttributeError", ((("'" + this.typeName(obj)) + "' object has no attribute '") + name) + "'");
   };
   setAttrRaw (obj, name, val) {
-    obj.attrs[name] = val;
+    obj.putAttr(name, val);
   };
   delAttr (obj, name) {
     if ( ((obj.t == 12 || obj.t == 11) || obj.t == 13) && ( typeof(obj.attrs[name] ) != "undefined" && Object.prototype.hasOwnProperty.call(obj.attrs, name) ) ) {
-      delete obj.attrs[name];
+      obj.delAttrKey(name);
       return;
     }
     this.raise("AttributeError", name);
@@ -11872,7 +12363,7 @@ export class PyInterp  {
   };
   makeExcArg (name, arg) {
     const e = this.makeExc(this.excClass(name), "");
-    e.attrs["args"] = this.mkTuple([arg]);
+    e.putAttr("args", this.mkTuple([arg]));
     return e;
   };
   indexInt (idx, what) {
@@ -12595,7 +13086,13 @@ export class PyInterp  {
         this.runComp(n, out, sc);
         return out;
       case 32 : 
+        const gcl = n.kids[0];
+        const gsrc = this.eval(gcl.k2, sc);
+        if ( this.isLazy(gsrc) ) {
+          return this.lazyGenexp(n, gsrc, sc);
+        }
         const out2 = this.mkList([]);
+        this.compFirst = gsrc;
         this.runComp(n, out2, sc);
         const g = this.mkIter(out2.items);
         g.s = "generator";
@@ -12623,32 +13120,32 @@ export class PyInterp  {
         this.store(n.s, wv, target);
         return wv;
       case 37 : 
+        if ( typeof(this.curGen) === "undefined" ) {
+          this.raise("SyntaxError", "'yield' outside function");
+        }
+        const g_1 = this.curGen;
+        const ys = g_1.live[(g_1.live.length - 1)];
+        if ( ys.used < ys.res.length ) {
+          const r = ys.res[ys.used];
+          ys.used = ys.used + 1;
+          if ( r.kind == 1 ) {
+            this.raiseVal(r.v);
+          }
+          return r.v;
+        }
         let yv = this.NONE;
         if ( (typeof(n.k1) !== "undefined" && n.k1 != null )  ) {
           yv = this.eval(n.k1, sc);
         }
-        if ( this.genStack.length == 0 ) {
-          this.raise("SyntaxError", "'yield' outside function");
-        }
-        const fr = this.genStack[(this.genStack.length - 1)];
-        fr.items.push(yv);
-        if ( fr.items.length > this.maxYield ) {
-          this.raise("RuntimeError", ("generator produced more than " + ((this.maxYield).toString())) + " values: generators run to completion in this runtime, so an endless generator cannot be consumed lazily");
-        }
+        g_1.out = yv;
         this.tick();
+        this.genSuspend();
         return this.NONE;
       case 38 : 
-        const src2 = this.eval(n.k1, sc);
-        const vals = this.iterValues(src2);
-        if ( this.genStack.length == 0 ) {
+        if ( typeof(this.curGen) === "undefined" ) {
           this.raise("SyntaxError", "'yield' outside function");
         }
-        const fr2 = this.genStack[(this.genStack.length - 1)];
-        // Loop start
-        for ( const yv2 of vals) {
-          fr2.items.push(yv2);
-        }
-        return this.NONE;
+        return this.yieldFrom(n, sc);
       case 25 : 
         this.raise("SyntaxError", "can't use starred expression here");
         break;
@@ -12733,10 +13230,16 @@ export class PyInterp  {
       return;
     }
     let src = this.NONE;
-    if ( ci == 0 && ((typeof(sc.parent) !== "undefined" && sc.parent != null ) ) ) {
-      src = this.eval(cl.k2, sc.parent);
+    if ( ci == 0 && ((typeof(this.compFirst) !== "undefined" && this.compFirst != null ) ) ) {
+      src = this.compFirst;
+      let nf;
+      this.compFirst = nf;
     } else {
-      src = this.eval(cl.k2, sc);
+      if ( ci == 0 && ((typeof(sc.parent) !== "undefined" && sc.parent != null ) ) ) {
+        src = this.eval(cl.k2, sc.parent);
+      } else {
+        src = this.eval(cl.k2, sc);
+      }
     }
     const tg = cl.k1;
     if ( src.t == 15 ) {
@@ -12867,9 +13370,124 @@ export class PyInterp  {
       args.push(this.eval(a, sc));
     }
     const saved = this.curLine;
+    if ( f.t == 10 ) {
+      this.callScope = sc;
+    }
     const r = this.callValue(f, args, kn, kv);
     this.curLine = saved;
     return r;
+  };
+  parseSource (src, mode) {
+    const ps = new PyParser();
+    let tree;
+    try {
+      if ( mode == "eval" ) {
+        tree = ps.parseExpressionText(src.trim(), 1);
+      } else {
+        tree = ps.parseModule(src);
+      }
+    } catch(e) {
+      if ( ps.err.length == 0 ) {
+        ps.err = ( e.toString());
+      }
+    }
+    if ( ps.err.length > 0 ) {
+      const e = this.makeExc(this.excClass("SyntaxError"), ps.err);
+      e.putAttr("msg", this.mkStr(ps.err));
+      e.putAttr("lineno", this.mkInt(ps.errLine));
+      e.putAttr("offset", this.NONE);
+      e.putAttr("text", this.NONE);
+      e.putAttr("filename", this.mkStr("<string>"));
+      this.raiseVal(e);
+    }
+    const t = tree;
+    return t;
+  };
+  codeOf (src, mode) {
+    if ( src.t == 10 && src.mode == "code" ) {
+      return src;
+    }
+    if ( src.t != 4 ) {
+      this.raise("TypeError", mode + "() arg 1 must be a string, bytes or code object");
+    }
+    const c = new PyVal(10);
+    c.s = "<code>";
+    c.mode = "code";
+    c.putAttr("co_source", src);
+    c.putAttr("co_mode", this.mkStr(mode));
+    const tree = this.parseSource(src.s, mode);
+    c.node = tree;
+    return c;
+  };
+  scopeFor (g, l) {
+    let ns = g;
+    if ( ns.t == 0 && l.t == 7 ) {
+      ns = l;
+    }
+    if ( ns.t == 0 ) {
+      return this.callScope;
+    }
+    if ( ns.t != 7 ) {
+      this.raise("TypeError", "globals must be a dict, not " + this.typeName(ns));
+    }
+    const sc = new PyScope();
+    // Loop start
+    for ( let i = 0; i < ns.items.length; i++) {
+      var k = ns.items[i];
+      if ( k.t == 4 ) {
+        sc.vars[k.s] = ns.vals[i];
+      }
+    }
+    if ( l.t == 7 && this.same(l, ns) == false ) {
+      // Loop start
+      for ( let i2 = 0; i2 < l.items.length; i2++) {
+        var k2 = l.items[i2];
+        if ( k2.t == 4 ) {
+          sc.vars[k2.s] = l.vals[i2];
+        }
+      }
+    }
+    return sc;
+  };
+  writeBack (sc, g, l) {
+    let ns = g;
+    if ( l.t == 7 && (ns.t == 0 || this.same(l, ns) == false) ) {
+      ns = l;
+    }
+    if ( ns.t != 7 ) {
+      return;
+    }
+    const ks = Object.keys(sc.vars);
+    // Loop start
+    for ( const k of ks) {
+      this.dictSet(
+        ns,
+        this.mkStr(k),
+        ( Object.prototype.hasOwnProperty.call(sc.vars, k) ? sc.vars[k] : undefined )
+      );
+    }
+  };
+  runCode (fname, src, g, l) {
+    let mode = fname;
+    const code = this.codeOf(src, mode);
+    const cm = ( Object.prototype.hasOwnProperty.call(code.attrs, "co_mode") ? code.attrs["co_mode"] : undefined );
+    if ( (typeof(cm) !== "undefined" && cm != null )  ) {
+      const cmv = cm;
+      mode = cmv.s;
+    }
+    const tree = code.node;
+    const sc = this.scopeFor(g, l);
+    const saved = this.curLine;
+    let result = this.NONE;
+    if ( mode == "eval" ) {
+      result = this.eval(tree, sc);
+    } else {
+      this.hoistDecls(tree.body, sc);
+      this.execBlock(tree.body, sc);
+    }
+    this.curLine = saved;
+    this.writeBack(sc, g, l);
+    return result;
   };
   zeroArgSuper (sc) {
     if ( this.frames.length == 0 ) {
@@ -12975,6 +13593,9 @@ export class PyInterp  {
     let result = this.NONE;
     let failed = false;
     let err = this.NONE;
+    const outerGen = this.curGen;
+    let noGen;
+    this.curGen = noGen;
     if ( node.kind == 22 ) {
       try {
         result = this.eval(node.k1, sc);
@@ -12985,20 +13606,19 @@ export class PyInterp  {
     } else {
       this.hoistDecls(node.body, sc);
       if ( node.i == 1 ) {
-        const gf = new PyGenFrame();
-        this.genStack.push(gf);
-        try {
-          this.execBlock(node.body, sc);
-        } catch(e) {
-          failed = true;
-          err = this.takeException(( e.toString()));
+        const gen = new PyGen();
+        gen.func = f;
+        gen.node = node;
+        gen.scope = sc;
+        gen.name = f.s;
+        gen.line = node.line;
+        if ( args.length > 0 ) {
+          gen.selfv = args[0];
         }
-        this.genStack.pop();
-        if ( failed == false ) {
-          const g = this.mkIter(gf.items);
-          g.s = "generator";
-          result = g;
-        }
+        const g = new PyVal(23);
+        g.gen = gen;
+        g.s = f.s;
+        result = g;
       } else {
         try {
           const sig = this.execBlock(node.body, sc);
@@ -13012,10 +13632,8 @@ export class PyInterp  {
       }
     }
     this.frames.pop();
+    this.curGen = outerGen;
     if ( failed ) {
-      if ( (this.isExcInst(err) && this.excMatches(err, this.excClass("StopIteration"))) && node.i == 1 ) {
-        this.raise("RuntimeError", "generator raised StopIteration");
-      }
       this.reraise(err);
     }
     this.retVal = this.NONE;
@@ -13158,7 +13776,7 @@ export class PyInterp  {
     let obj = new PyVal(12);
     obj.cls = cls;
     if ( cls.isExc ) {
-      obj.attrs["args"] = this.mkTuple(args);
+      obj.putAttr("args", this.mkTuple(args));
     }
     const __REGx1 = this.orNone(nw);
     const __REGx2 = this.orNone(nw);
@@ -13200,6 +13818,9 @@ export class PyInterp  {
     return obj;
   };
   execBlock (body, sc) {
+    if ( (typeof(this.curGen) !== "undefined" && this.curGen != null )  ) {
+      return this.execBlockGen(body, sc);
+    }
     // Loop start
     for ( const st of body) {
       const sig = this.exec(st, sc);
@@ -13237,12 +13858,18 @@ export class PyInterp  {
         }
         return 0;
       case 44 : 
+        if ( (typeof(this.curGen) !== "undefined" && this.curGen != null )  ) {
+          return this.execIfGen(n, sc);
+        }
         const c = this.eval(n.k1, sc);
         if ( this.truthy(c) ) {
           return this.execBlock(n.body, sc);
         }
         return this.execBlock(n.orelse, sc);
       case 45 : 
+        if ( (typeof(this.curGen) !== "undefined" && this.curGen != null )  ) {
+          return this.execWhileGen(n, sc);
+        }
         while (true) {
           const wc = this.eval(n.k1, sc);
           if ( this.truthy(wc) == false ) {
@@ -13259,6 +13886,9 @@ export class PyInterp  {
         };
         break;
       case 46 : 
+        if ( (typeof(this.curGen) !== "undefined" && this.curGen != null )  ) {
+          return this.execForGen(n, sc);
+        }
         return this.execFor(n, sc);
       case 47 : 
         return 1;
@@ -13282,6 +13912,9 @@ export class PyInterp  {
         this.execClass(n, sc);
         return 0;
       case 53 : 
+        if ( (typeof(this.curGen) !== "undefined" && this.curGen != null )  ) {
+          return this.execTryGen(n, sc);
+        }
         return this.execTry(n, sc);
       case 55 : 
         this.execRaise(n, sc);
@@ -13321,10 +13954,948 @@ export class PyInterp  {
         }
         return 0;
       case 62 : 
+        if ( (typeof(this.curGen) !== "undefined" && this.curGen != null )  ) {
+          return this.execWithGen(n, 0, sc);
+        }
         return this.execWith(n, 0, sc);
     };
     this.raise("SyntaxError", "unsupported statement");
     return 0;
+  };
+  genSuspend () {
+    this.suspending = true;
+    this.excValue = this.SUSPEND;
+    throw new Error("generator suspend");
+  };
+  resuspend () {
+    this.excValue = this.SUSPEND;
+    throw new Error("generator suspend");
+  };
+  genResuming (g) {
+    return g.depth < g.live.length;
+  };
+  genEnter (g) {
+    if ( g.depth < g.live.length ) {
+      const s = g.live[g.depth];
+      g.depth = g.depth + 1;
+      return s;
+    }
+    const ns = new PyGenSlot();
+    g.live.push(ns);
+    g.depth = g.depth + 1;
+    return ns;
+  };
+  genLeave (g) {
+    g.live.pop();
+    g.depth = g.live.length;
+  };
+  genTruncate (g, d) {
+    while (g.live.length > d) {
+      g.live.pop();
+    };
+    g.depth = d;
+  };
+  clearRes (s) {
+    let none = [];
+    s.res = none;
+    s.used = 0;
+  };
+  stopIter (v) {
+    const e = this.makeExc(this.excClass("StopIteration"), "");
+    if ( v.t != 0 ) {
+      e.putAttr("args", this.mkTuple([v]));
+    }
+    e.putAttr("value", v);
+    return e;
+  };
+  genRun (gv, sendv, mode) {
+    const g = gv.gen;
+    if ( g.running ) {
+      this.raise("ValueError", "generator already executing");
+    }
+    if ( g.done ) {
+      if ( mode == 1 ) {
+        this.raiseVal(sendv);
+      }
+      g.out = this.NONE;
+      return false;
+    }
+    if ( g.started == false ) {
+      if ( mode == 0 && sendv.t != 0 ) {
+        this.raise("TypeError", "can't send non-None value to a just-started generator");
+      }
+      g.started = true;
+      if ( mode == 1 ) {
+        g.done = true;
+        this.raiseVal(sendv);
+      }
+    } else {
+      const top = g.live[(g.live.length - 1)];
+      const nres = top.res.length;
+      let handed = false;
+      if ( nres > 0 ) {
+        const lr = top.res[(nres - 1)];
+        if ( lr.kind == 2 ) {
+          lr.send = sendv;
+          lr.sendKind = mode;
+          handed = true;
+        }
+      }
+      if ( handed == false ) {
+        const r = new PyGenRes();
+        r.kind = mode;
+        r.v = sendv;
+        top.res.push(r);
+      }
+      // Loop start
+      for ( const sl of g.live) {
+        sl.used = 0;
+        sl.resumed = true;
+      }
+    }
+    g.depth = 0;
+    if ( this.frames.length >= this.maxDepth ) {
+      this.raise("RecursionError", "maximum recursion depth exceeded");
+    }
+    const fr = new PyFrame();
+    fr.func = g.func;
+    fr.__self = g.selfv;
+    fr.name = g.name;
+    fr.line = g.line;
+    fr.callLine = this.curLine;
+    this.frames.push(fr);
+    const keepLine = this.curLine;
+    const outer = this.curGen;
+    this.curGen = g;
+    g.running = true;
+    let sig = 0;
+    let failed = false;
+    let err = this.NONE;
+    const node = g.node;
+    try {
+      sig = this.execBlock(node.body, g.scope);
+    } catch(e) {
+      failed = true;
+      err = this.takeException(( e.toString()));
+    }
+    g.running = false;
+    this.curGen = outer;
+    g.line = fr.line;
+    this.frames.pop();
+    this.curLine = keepLine;
+    if ( failed ) {
+      if ( this.suspending ) {
+        this.suspending = false;
+        return true;
+      }
+      g.done = true;
+      let none = [];
+      g.live = none;
+      if ( this.isExcInst(err) && this.excMatches(err, this.excClass("StopIteration")) ) {
+        const rx = this.makeExc(this.excClass("RuntimeError"), "generator raised StopIteration");
+        rx.putAttr("__cause__", err);
+        rx.putAttr("__context__", err);
+        this.raiseVal(rx);
+      }
+      this.reraise(err);
+    }
+    g.done = true;
+    let none2 = [];
+    g.live = none2;
+    g.out = this.NONE;
+    if ( sig == 3 ) {
+      g.out = this.retVal;
+    }
+    this.retVal = this.NONE;
+    return false;
+  };
+  genStep (gv, sendv, mode) {
+    const g = gv.gen;
+    if ( this.genRun(gv, sendv, mode) ) {
+      return g.out;
+    }
+    this.raiseVal(this.stopIter(g.out));
+    return this.NONE;
+  };
+  genClose (gv) {
+    const g = gv.gen;
+    if ( g.started == false || g.done ) {
+      g.done = true;
+      return;
+    }
+    const exit = this.makeExc(this.excClass("GeneratorExit"), "");
+    let yielded = false;
+    let failed = false;
+    let err = this.NONE;
+    try {
+      yielded = this.genRun(gv, exit, 1);
+    } catch(e) {
+      failed = true;
+      err = this.takeException(( e.toString()));
+    }
+    if ( failed ) {
+      if ( this.excMatches(err, this.excClass("GeneratorExit")) || this.excMatches(err, this.excClass("StopIteration")) ) {
+        return;
+      }
+      this.reraise(err);
+    }
+    if ( yielded ) {
+      this.raise("RuntimeError", "generator ignored GeneratorExit");
+    }
+  };
+  iterOf (v) {
+    if ( v.t == 23 || v.t == 17 ) {
+      return v;
+    }
+    if ( v.t == 12 ) {
+      const im = this.findMethod(v, "__iter__");
+      if ( (typeof(im) !== "undefined" && im != null )  ) {
+        const r = this.callMethodVal(im, v, []);
+        if ( r.t == 23 || r.t == 17 ) {
+          return r;
+        }
+        if ( r.t == 12 ) {
+          if ( typeof(this.findMethod(r, "__next__")) === "undefined" ) {
+            this.raise("TypeError", ("iter() returned non-iterator of type '" + this.typeName(r)) + "'");
+          }
+          return r;
+        }
+        return this.mkIter(this.iterValues(r));
+      }
+    }
+    return this.mkIter(this.iterValues(v));
+  };
+  nextOpt (it) {
+    let none;
+    if ( it.t == 23 ) {
+      if ( this.genRun(it, this.NONE, 0) ) {
+        const g = it.gen;
+        const out = g.out;
+        return out;
+      }
+      return none;
+    }
+    if ( it.t == 17 ) {
+      if ( it.mode.length > 0 ) {
+        return this.lazyNext(it);
+      }
+      if ( it.pos < it.items.length ) {
+        const v = it.items[it.pos];
+        it.pos = it.pos + 1;
+        return v;
+      }
+      return none;
+    }
+    const nx = this.findMethod(it, "__next__");
+    if ( typeof(nx) === "undefined" ) {
+      this.raise("TypeError", ("'" + this.typeName(it)) + "' object is not an iterator");
+    }
+    const got = this.callNext(nx, it);
+    if ( got == this.ENDED ) {
+      return none;
+    }
+    const r = got;
+    return r;
+  };
+  callNext (nx, it) {
+    let got = this.ENDED;
+    try {
+      got = this.callMethodVal(nx, it, []);
+    } catch(e) {
+      const ex = this.takeException(( e.toString()));
+      if ( this.excMatches(ex, this.excClass("StopIteration")) == false ) {
+        this.raiseVal(ex);
+      }
+    }
+    return got;
+  };
+  yieldFrom (n, sc) {
+    const g = this.curGen;
+    const s = g.live[(g.live.length - 1)];
+    let gr = new PyGenRes();
+    if ( s.used < s.res.length ) {
+      gr = s.res[s.used];
+      if ( gr.kind == 0 ) {
+        s.used = s.used + 1;
+        return gr.v;
+      }
+      if ( gr.kind == 1 ) {
+        s.used = s.used + 1;
+        this.raiseVal(gr.v);
+      }
+    } else {
+      const src = this.eval(n.k1, sc);
+      gr.kind = 2;
+      gr.v = this.iterOf(src);
+      gr.send = this.NONE;
+      gr.sendKind = 0;
+      s.res.push(gr);
+    }
+    const sendv = gr.send;
+    const mode = gr.sendKind;
+    gr.send = this.NONE;
+    gr.sendKind = 0;
+    const sub = gr.v;
+    if ( sub.t == 23 ) {
+      const sg = sub.gen;
+      if ( this.genRun(sub, sendv, mode) ) {
+        g.out = sg.out;
+        this.genSuspend();
+      }
+      gr.kind = 0;
+      gr.v = sg.out;
+      s.used = s.used + 1;
+      return gr.v;
+    }
+    if ( mode == 1 ) {
+      gr.kind = 0;
+      s.used = s.used + 1;
+      const th = this.getAttrOpt(sub, "throw");
+      if ( typeof(th) === "undefined" ) {
+        this.raiseVal(sendv);
+      }
+      let kn = [];
+      let kv = [];
+      g.out = this.callValue(th, [sendv], kn, kv);
+      gr.kind = 2;
+      s.used = s.used - 1;
+      this.genSuspend();
+    }
+    if ( sendv.t != 0 && sub.t == 12 ) {
+      const sd = this.getAttrOpt(sub, "send");
+      if ( (typeof(sd) !== "undefined" && sd != null )  ) {
+        let kn2 = [];
+        let kv2 = [];
+        let sent = this.NONE;
+        let stopped = false;
+        try {
+          sent = this.callValue(sd, [sendv], kn2, kv2);
+        } catch(e) {
+          const ex = this.takeException(( e.toString()));
+          if ( this.isExcInst(ex) && this.excMatches(ex, this.excClass("StopIteration")) ) {
+            stopped = true;
+            gr.v = this.orNone(this.getAttrOpt(ex, "value"));
+          } else {
+            this.raiseVal(ex);
+          }
+        }
+        if ( stopped ) {
+          gr.kind = 0;
+          s.used = s.used + 1;
+          return gr.v;
+        }
+        g.out = sent;
+        this.genSuspend();
+      }
+    }
+    const got = this.nextOpt(sub);
+    if ( (typeof(got) !== "undefined" && got != null )  ) {
+      g.out = got;
+      this.genSuspend();
+    }
+    gr.kind = 0;
+    gr.v = this.NONE;
+    s.used = s.used + 1;
+    return this.NONE;
+  };
+  isLazy (v) {
+    if ( v.t == 23 || v.t == 12 ) {
+      return true;
+    }
+    return v.t == 17 && v.mode.length > 0;
+  };
+  mkLazy (mode, name) {
+    const v = new PyVal(17);
+    v.id = this.newId();
+    v.mode = mode;
+    v.s = name;
+    return v;
+  };
+  call1v (f, a) {
+    let kn = [];
+    let kv = [];
+    return this.callValue(f, [a], kn, kv);
+  };
+  lazyNext (it) {
+    let none;
+    const m = it.mode;
+    if ( m == "map" ) {
+      let margs = [];
+      // Loop start
+      for ( const src of it.items) {
+        const v = this.nextOpt(src);
+        if ( typeof(v) === "undefined" ) {
+          return none;
+        }
+        margs.push(v);
+      }
+      let kn = [];
+      let kv = [];
+      const mr = this.callValue(it.cls, margs, kn, kv);
+      return mr;
+    }
+    if ( m == "filter" || m == "filterfalse" ) {
+      while (true) {
+        const fv = this.nextOpt(it.wrapped);
+        if ( typeof(fv) === "undefined" ) {
+          return none;
+        }
+        const x = fv;
+        const f = it.cls;
+        let ok = false;
+        if ( f.t == 0 ) {
+          ok = this.truthy(x);
+        } else {
+          ok = this.truthy(this.call1v(f, x));
+        }
+        if ( ok == (m == "filter") ) {
+          return fv;
+        }
+      };
+    }
+    if ( m == "zip" ) {
+      let tup = [];
+      let k = 0;
+      // Loop start
+      for ( let i2 = 0; i2 < it.items.length; i2++) {
+        var src2 = it.items[i2];
+        const zv = this.nextOpt(src2);
+        if ( typeof(zv) === "undefined" ) {
+          if ( it.i == 1 ) {
+            if ( k > 0 ) {
+              this.raise("ValueError", (("zip() argument " + ((k + 1).toString())) + " is shorter than argument") + this.zipArgs(k));
+            }
+            let j = 1;
+            while (j < it.items.length) {
+              const more = this.nextOpt(it.items[j]);
+              if ( (typeof(more) !== "undefined" && more != null )  ) {
+                this.raise("ValueError", (("zip() argument " + ((j + 1).toString())) + " is longer than argument") + this.zipArgs(j));
+              }
+              j = j + 1;
+            };
+          }
+          return none;
+        }
+        tup.push(zv);
+        k = k + 1;
+      }
+      const zt = this.mkTuple(tup);
+      return zt;
+    }
+    if ( m == "enumerate" ) {
+      const ev = this.nextOpt(it.wrapped);
+      if ( typeof(ev) === "undefined" ) {
+        return none;
+      }
+      const ep = this.pair(this.mkInt(it.i), ev);
+      it.i = it.i + 1;
+      return ep;
+    }
+    if ( m == "count" ) {
+      const cur = it.wrapped;
+      it.wrapped = this.binop("+", it.wrapped, it.cls);
+      return cur;
+    }
+    if ( m == "cycle" ) {
+      if ( it.i == 0 ) {
+        const cv = this.nextOpt(it.wrapped);
+        if ( (typeof(cv) !== "undefined" && cv != null )  ) {
+          it.vals.push(cv);
+          return cv;
+        }
+        it.i = 1;
+        it.pos = 0;
+      }
+      const nv = it.vals.length;
+      if ( nv == 0 ) {
+        return none;
+      }
+      const cy = it.vals[(it.pos % nv)];
+      it.pos = it.pos + 1;
+      return cy;
+    }
+    if ( m == "repeat" ) {
+      if ( it.i == 0 ) {
+        return none;
+      }
+      if ( it.i > 0 ) {
+        it.i = it.i - 1;
+      }
+      const rv = it.wrapped;
+      return rv;
+    }
+    if ( m == "islice" ) {
+      if ( it.i2 >= 0 && it.i >= it.i2 ) {
+        return none;
+      }
+      while (it.pos < it.i) {
+        const skip = this.nextOpt(it.wrapped);
+        if ( typeof(skip) === "undefined" ) {
+          return none;
+        }
+        it.pos = it.pos + 1;
+      };
+      const iv = this.nextOpt(it.wrapped);
+      if ( typeof(iv) === "undefined" ) {
+        return none;
+      }
+      it.pos = it.pos + 1;
+      it.i = it.i + it.i3;
+      return iv;
+    }
+    if ( m == "takewhile" ) {
+      if ( it.i == 1 ) {
+        return none;
+      }
+      const tv = this.nextOpt(it.wrapped);
+      if ( typeof(tv) === "undefined" ) {
+        return none;
+      }
+      if ( this.truthy(this.call1v(it.cls, tv)) ) {
+        return tv;
+      }
+      it.i = 1;
+      return none;
+    }
+    if ( m == "dropwhile" ) {
+      while (true) {
+        const dv = this.nextOpt(it.wrapped);
+        if ( typeof(dv) === "undefined" ) {
+          return none;
+        }
+        if ( it.i == 0 && this.truthy(this.call1v(it.cls, dv)) ) {
+          continue;
+        }
+        it.i = 1;
+        return dv;
+      };
+    }
+    if ( m == "chain" ) {
+      while (true) {
+        if ( (typeof(it.cur) !== "undefined" && it.cur != null )  ) {
+          const chv = this.nextOpt(it.cur);
+          if ( (typeof(chv) !== "undefined" && chv != null )  ) {
+            return chv;
+          }
+          it.cur = none;
+        }
+        const nxt = this.nextOpt(it.wrapped);
+        if ( typeof(nxt) === "undefined" ) {
+          return none;
+        }
+        it.cur = this.iterOf(nxt);
+      };
+    }
+    this.raise("RuntimeError", "internal error: iterator mode " + m);
+    return none;
+  };
+  zipArgs (k) {
+    if ( k == 1 ) {
+      return " 1";
+    }
+    return "s 1-" + ((k).toString());
+  };
+  genexpBody (n) {
+    if ( n.body.length > 0 ) {
+      return n.body;
+    }
+    const y = new PyNode(37, n.line);
+    y.k1 = n.k1;
+    const st = new PyNode(40, n.line);
+    st.k1 = y;
+    let inner = [];
+    inner.push(st);
+    let i = n.kids.length - 1;
+    while (i >= 0) {
+      const cl = n.kids[i];
+      let wrap = [];
+      if ( cl.kind == 35 ) {
+        const ifn = new PyNode(44, cl.line);
+        ifn.k1 = cl.k1;
+        ifn.body = inner;
+        wrap.push(ifn);
+      } else {
+        const fn1 = new PyNode(46, cl.line);
+        fn1.k1 = cl.k1;
+        if ( i == 0 ) {
+          const src = new PyNode(0, cl.line);
+          src.s = ".0";
+          fn1.k2 = src;
+        } else {
+          fn1.k2 = cl.k2;
+        }
+        fn1.body = inner;
+        wrap.push(fn1);
+      }
+      inner = wrap;
+      i = i - 1;
+    };
+    n.body = inner;
+    return inner;
+  };
+  lazyGenexp (n, src, sc) {
+    const cs = new PyScope();
+    cs.parent = sc;
+    cs.globals = this.moduleScope(sc);
+    cs.decl["__comp__"] = 3;
+    cs.vars[".0"] = this.iterOf(src);
+    this.genexpBody(n);
+    const gen = new PyGen();
+    gen.node = n;
+    gen.scope = cs;
+    gen.name = "<genexpr>";
+    gen.line = n.line;
+    const g = new PyVal(23);
+    g.gen = gen;
+    g.s = "<genexpr>";
+    return g;
+  };
+  execBlockGen (body, sc) {
+    const g = this.curGen;
+    let i = 0;
+    const resumed = this.genResuming(g);
+    const s = this.genEnter(g);
+    if ( resumed ) {
+      s.resumed = false;
+      i = s.i;
+    } else {
+      s.i = 0;
+    }
+    const nb = body.length;
+    while (i < nb) {
+      const sig = this.exec(body[i], sc);
+      if ( sig != 0 ) {
+        this.genLeave(g);
+        return sig;
+      }
+      i = i + 1;
+      s.i = i;
+      this.clearRes(s);
+    };
+    this.genLeave(g);
+    return 0;
+  };
+  execIfGen (n, sc) {
+    const g = this.curGen;
+    let br = 0;
+    if ( this.genResuming(g) ) {
+      const rs = this.genEnter(g);
+      rs.resumed = false;
+      br = rs.i;
+    } else {
+      const c = this.eval(n.k1, sc);
+      if ( this.truthy(c) == false ) {
+        br = 1;
+      }
+      const ns = this.genEnter(g);
+      ns.i = br;
+    }
+    let sig = 0;
+    if ( br == 0 ) {
+      sig = this.execBlock(n.body, sc);
+    } else {
+      sig = this.execBlock(n.orelse, sc);
+    }
+    this.genLeave(g);
+    return sig;
+  };
+  execWhileGen (n, sc) {
+    const g = this.curGen;
+    const resumed = this.genResuming(g);
+    const s = this.genEnter(g);
+    if ( resumed ) {
+      s.resumed = false;
+    } else {
+      s.i = 0;
+    }
+    while (true) {
+      if ( s.i == 0 ) {
+        const wc = this.eval(n.k1, sc);
+        this.clearRes(s);
+        if ( this.truthy(wc) ) {
+          s.i = 1;
+        } else {
+          s.i = 2;
+        }
+      }
+      if ( s.i == 2 ) {
+        const os = this.execBlock(n.orelse, sc);
+        this.genLeave(g);
+        return os;
+      }
+      const ws = this.execBlock(n.body, sc);
+      if ( ws == 1 ) {
+        this.genLeave(g);
+        return 0;
+      }
+      if ( ws == 3 ) {
+        this.genLeave(g);
+        return 3;
+      }
+      s.i = 0;
+      this.tick();
+    };
+    return 0;
+  };
+  loopNext (s) {
+    let none;
+    const it = s.v;
+    if ( it.t == 15 ) {
+      if ( s.j < this.rangeLen(it) ) {
+        const x = it.i + s.j * it.i3;
+        s.j = s.j + 1;
+        const rv = this.mkInt(x);
+        return rv;
+      }
+      return none;
+    }
+    if ( it.t == 5 ) {
+      if ( s.j < it.items.length ) {
+        const lv = it.items[s.j];
+        s.j = s.j + 1;
+        return lv;
+      }
+      return none;
+    }
+    return this.nextOpt(it);
+  };
+  execForGen (n, sc) {
+    const g = this.curGen;
+    let resumed = this.genResuming(g);
+    let s = new PyGenSlot();
+    if ( resumed ) {
+      s = this.genEnter(g);
+      s.resumed = false;
+    } else {
+      const src = this.eval(n.k2, sc);
+      let it = src;
+      if ( src.t != 15 && src.t != 5 ) {
+        it = this.iterOf(src);
+      }
+      s = this.genEnter(g);
+      s.v = it;
+      s.j = 0;
+      s.i = 1;
+    }
+    const tg = n.k1;
+    while (true) {
+      if ( s.i == 2 ) {
+        const os = this.execBlock(n.orelse, sc);
+        this.genLeave(g);
+        return os;
+      }
+      if ( resumed ) {
+        resumed = false;
+      } else {
+        const item = this.loopNext(s);
+        if ( typeof(item) === "undefined" ) {
+          s.i = 2;
+          continue;
+        }
+        this.assign(tg, item, sc);
+      }
+      const sig = this.execBlock(n.body, sc);
+      if ( sig == 1 ) {
+        this.genLeave(g);
+        return 0;
+      }
+      if ( sig == 3 ) {
+        this.genLeave(g);
+        return 3;
+      }
+      this.tick();
+    };
+    return 0;
+  };
+  execTryGen (n, sc) {
+    const g = this.curGen;
+    const resumed = this.genResuming(g);
+    const s = this.genEnter(g);
+    if ( resumed ) {
+      s.resumed = false;
+    } else {
+      s.i = 0;
+    }
+    const myDepth = g.depth;
+    if ( s.i == 0 ) {
+      let failed = false;
+      let caught = this.NONE;
+      let sig = 0;
+      try {
+        sig = this.execBlock(n.body, sc);
+      } catch(e) {
+        failed = true;
+        caught = this.takeException(( e.toString()));
+      }
+      if ( failed ) {
+        if ( this.suspending ) {
+          this.resuspend();
+        }
+        this.genTruncate(g, myDepth);
+        s.i = 3;
+        s.w = caught;
+        s.sig = 0;
+        // Loop start
+        for ( let hi = 0; hi < n.handlers.length; hi++) {
+          var h = n.handlers[hi];
+          let matches = false;
+          if ( typeof(h.k1) === "undefined" ) {
+            matches = true;
+          } else {
+            let hfail = false;
+            let herr = this.NONE;
+            try {
+              const hv = this.eval(h.k1, sc);
+              matches = this.excMatches(caught, hv);
+            } catch(e) {
+              hfail = true;
+              herr = this.takeException(( e.toString()));
+            }
+            if ( hfail ) {
+              s.w = herr;
+              break;
+            }
+          }
+          if ( matches ) {
+            let none;
+            s.w = none;
+            s.i = 1;
+            s.j = hi;
+            s.v = caught;
+            if ( h.s.length > 0 ) {
+              this.store(h.s, caught, sc);
+            }
+            break;
+          }
+        }
+      } else {
+        s.sig = sig;
+        if ( sig == 0 && n.orelse.length > 0 ) {
+          s.i = 2;
+        } else {
+          s.i = 3;
+        }
+      }
+      s.keep = this.retVal;
+    }
+    if ( s.i == 1 ) {
+      const h2 = n.handlers[s.j];
+      this.handling.push(s.v);
+      let bfail = false;
+      let berr = this.NONE;
+      let bsig = 0;
+      try {
+        bsig = this.execBlock(h2.body, sc);
+      } catch(e) {
+        bfail = true;
+        berr = this.takeException(( e.toString()));
+      }
+      this.handling.pop();
+      if ( bfail && this.suspending ) {
+        this.resuspend();
+      }
+      if ( h2.s.length > 0 ) {
+        delete sc.vars[h2.s];
+      }
+      s.sig = bsig;
+      if ( bfail ) {
+        this.genTruncate(g, myDepth);
+        if ( (this.isExcInst(berr) && ( typeof(berr.attrs["__context__"] ) != "undefined" && Object.prototype.hasOwnProperty.call(berr.attrs, "__context__") ) == false) && this.same(berr, s.v) == false ) {
+          berr.putAttr("__context__", s.v);
+        }
+        s.w = berr;
+        s.sig = 0;
+      }
+      s.i = 3;
+      s.keep = this.retVal;
+    }
+    if ( s.i == 2 ) {
+      let ofail = false;
+      let oerr = this.NONE;
+      let osig = 0;
+      try {
+        osig = this.execBlock(n.orelse, sc);
+      } catch(e) {
+        ofail = true;
+        oerr = this.takeException(( e.toString()));
+      }
+      if ( ofail && this.suspending ) {
+        this.resuspend();
+      }
+      s.sig = osig;
+      if ( ofail ) {
+        this.genTruncate(g, myDepth);
+        s.w = oerr;
+        s.sig = 0;
+      }
+      s.i = 3;
+      s.keep = this.retVal;
+    }
+    if ( n.final.length > 0 ) {
+      const fsig = this.execBlock(n.final, sc);
+      if ( fsig != 0 ) {
+        this.genLeave(g);
+        return fsig;
+      }
+      this.retVal = s.keep;
+    }
+    this.genLeave(g);
+    if ( (typeof(s.w) !== "undefined" && s.w != null )  ) {
+      this.reraise(s.w);
+    }
+    return s.sig;
+  };
+  execWithGen (n, idx, sc) {
+    if ( idx >= n.kids.length ) {
+      return this.execBlock(n.body, sc);
+    }
+    const g = this.curGen;
+    let ctx = this.NONE;
+    if ( this.genResuming(g) ) {
+      const rs = this.genEnter(g);
+      rs.resumed = false;
+      ctx = rs.v;
+    } else {
+      const item = n.kids[idx];
+      ctx = this.eval(item.k1, sc);
+      const ns = this.genEnter(g);
+      ns.v = ctx;
+      const entered = this.callAttr(ctx, "__enter__", []);
+      if ( (typeof(item.k2) !== "undefined" && item.k2 != null )  ) {
+        this.assign(item.k2, entered, sc);
+      }
+    }
+    const myDepth = g.depth;
+    let sig = 0;
+    let failed = false;
+    let err = this.NONE;
+    try {
+      sig = this.execWithGen(n, (idx + 1), sc);
+    } catch(e) {
+      failed = true;
+      err = this.takeException(( e.toString()));
+    }
+    if ( failed ) {
+      if ( this.suspending ) {
+        this.resuspend();
+      }
+      this.genTruncate(g, myDepth);
+      this.genLeave(g);
+      let cls = this.NONE;
+      if ( (typeof(err.cls) !== "undefined" && err.cls != null )  ) {
+        cls = err.cls;
+      }
+      const keep = this.callAttr(ctx, "__exit__", [cls, err, this.NONE]);
+      if ( this.truthy(keep) == false ) {
+        this.reraise(err);
+      }
+      return 0;
+    }
+    this.genLeave(g);
+    const keepRet = this.retVal;
+    this.callAttr(ctx, "__exit__", [this.NONE, this.NONE, this.NONE]);
+    this.retVal = keepRet;
+    return sig;
   };
   execAug (n, sc) {
     const t = n.k1;
@@ -13412,7 +14983,7 @@ export class PyInterp  {
       };
       return this.execBlock(n.orelse, sc);
     }
-    if ( src.t == 17 ) {
+    if ( src.t == 17 && src.mode.length == 0 ) {
       while (src.pos < src.items.length) {
         const item = src.items[src.pos];
         src.pos = src.pos + 1;
@@ -13422,6 +14993,24 @@ export class PyInterp  {
           return 0;
         }
         if ( sig3 == 3 ) {
+          return 3;
+        }
+      };
+      return this.execBlock(n.orelse, sc);
+    }
+    if ( this.isLazy(src) ) {
+      const it = this.iterOf(src);
+      while (true) {
+        const got = this.nextOpt(it);
+        if ( typeof(got) === "undefined" ) {
+          break;
+        }
+        this.assign(tg, got, sc);
+        const sig5 = this.execBlock(n.body, sc);
+        if ( sig5 == 1 ) {
+          return 0;
+        }
+        if ( sig5 == 3 ) {
           return 3;
         }
       };
@@ -13488,7 +15077,7 @@ export class PyInterp  {
     // Loop start
     for ( const k of ks) {
       const v = ( Object.prototype.hasOwnProperty.call(body.vars, k) ? body.vars[k] : undefined );
-      cls.attrs[k] = v;
+      cls.putAttr(k, v);
       this.setOwner(v, cls);
     }
     const cv = this.applyDecorators(n.decos, cls, sc);
@@ -13570,7 +15159,7 @@ export class PyInterp  {
           }
           if ( bfail ) {
             if ( (this.isExcInst(berr) && ( typeof(berr.attrs["__context__"] ) != "undefined" && Object.prototype.hasOwnProperty.call(berr.attrs, "__context__") ) == false) && this.same(berr, caught) == false ) {
-              berr.attrs["__context__"] = caught;
+              berr.putAttr("__context__", caught);
             }
             pending = berr;
           }
@@ -13623,7 +15212,7 @@ export class PyInterp  {
     }
     if ( (typeof(n.k2) !== "undefined" && n.k2 != null )  ) {
       const cause = this.eval(n.k2, sc);
-      e.attrs["__cause__"] = cause;
+      e.putAttr("__cause__", cause);
     }
     this.raiseVal(e);
   };
@@ -13673,24 +15262,85 @@ export class PyInterp  {
     if ( (typeof(m) !== "undefined" && m != null )  ) {
       return m;
     }
-    const made = this.mods.make(name);
-    if ( typeof(made) === "undefined" ) {
-      const path = name.split(".").join("/") + ".py";
-      const src = this.fs.read(path);
-      if ( typeof(src) === "undefined" ) {
-        this.raise("ModuleNotFoundError", ("No module named '" + name) + "'");
+    const dot = name.lastIndexOf(".");
+    let parent;
+    if ( dot > 0 ) {
+      parent = this.importModule(name.substring(0, dot ));
+      const again = ( Object.prototype.hasOwnProperty.call(this.modules, name) ? this.modules[name] : undefined );
+      if ( (typeof(again) !== "undefined" && again != null )  ) {
+        return again;
       }
-      const mod = this.runModuleSource(name, src);
-      this.modules[name] = mod;
-      return mod;
+    }
+    let made = this.mods.make(name);
+    if ( typeof(made) === "undefined" ) {
+      made = this.importFromFiles(name);
+    }
+    if ( typeof(made) === "undefined" ) {
+      this.raise("ModuleNotFoundError", ("No module named '" + name) + "'");
     }
     const mv = made;
     this.modules[name] = mv;
+    this.dictSet(this.sysModules, this.mkStr(name), mv);
+    if ( (typeof(parent) !== "undefined" && parent != null )  ) {
+      const pv = parent;
+      pv.putAttr(name.substring(dot + 1, name.length ), mv);
+    }
     return mv;
+  };
+  importFromFiles (name) {
+    let none;
+    const rel = name.split(".").join("/");
+    let roots = [];
+    roots.push("");
+    // Loop start
+    for ( const sp of this.searchPath) {
+      roots.push(sp);
+    }
+    // Loop start
+    for ( const root of roots) {
+      let base = rel;
+      if ( root.length > 0 ) {
+        base = (root + "/") + rel;
+      }
+      let cands = [];
+      cands.push(base + ".py");
+      cands.push(base + "/__init__.py");
+      // Loop start
+      for ( const c of cands) {
+        const src = this.fs.read(c);
+        if ( (typeof(src) !== "undefined" && src != null )  ) {
+          const mod = this.runModuleSource(name, src);
+          mod.putAttr("__file__", this.mkStr(this.fs.normalize(c)));
+          if ( c.endsWith("/__init__.py") ) {
+            mod.putAttr("__path__", this.mkList([this.mkStr(this.fs.normalize(base))]));
+          }
+          const got = mod;
+          return got;
+        }
+      }
+    }
+    const lsrc = PyStdlib.source(name);
+    if ( (typeof(lsrc) !== "undefined" && lsrc != null )  ) {
+      const lmod = this.runModuleSource(name, lsrc);
+      lmod.putAttr("__file__", this.mkStr((("<stdlib>/" + rel) + ".py")));
+      if ( PyStdlib.isPackage(name) ) {
+        lmod.putAttr("__path__", this.mkList([]));
+      }
+      const lgot = lmod;
+      return lgot;
+    }
+    return none;
   };
   runModuleSource (name, src) {
     const ps = new PyParser();
-    const tree = ps.parseModule(src);
+    let tree;
+    try {
+      tree = ps.parseModule(src);
+    } catch(e) {
+      if ( ps.err.length == 0 ) {
+        ps.err = ( e.toString());
+      }
+    }
     if ( ps.err.length > 0 ) {
       this.raise("SyntaxError", ((((ps.err + " (") + name) + ".py, line ") + ((ps.errLine).toString())) + ")");
     }
@@ -13698,12 +15348,20 @@ export class PyInterp  {
     mod.s = name;
     this.modules[name] = mod;
     const msc = new PyScope();
+    msc.vars = mod.attrs;
     msc.vars["__name__"] = this.mkStr(name);
-    this.execBlock(tree.body, msc);
-    const ks = Object.keys(msc.vars);
-    // Loop start
-    for ( const k of ks) {
-      mod.attrs[k] = ( Object.prototype.hasOwnProperty.call(msc.vars, k) ? msc.vars[k] : undefined );
+    let failed = false;
+    let caught = this.NONE;
+    const tr = tree;
+    try {
+      this.execBlock(tr.body, msc);
+    } catch(e) {
+      caught = this.takeException(( e.toString()));
+      failed = true;
+    }
+    if ( failed ) {
+      delete this.modules[name];
+      this.reraise(caught);
     }
     return mod;
   };
@@ -13736,7 +15394,7 @@ export class PyInterp  {
     while (i < n.strs.length) {
       const name = n.strs[i];
       if ( name == "*" ) {
-        const ks = Object.keys(mod.attrs);
+        const ks = mod.attrKeys();
         // Loop start
         for ( const k of ks) {
           if ( k.startsWith("_") == false ) {
@@ -13750,11 +15408,21 @@ export class PyInterp  {
       } else {
         const alias = n.names[i];
         let v = ( Object.prototype.hasOwnProperty.call(mod.attrs, name) ? mod.attrs[name] : undefined );
+        if ( (((typeof(v) === "undefined") && ( typeof(mod.attrs["__getattr__"] ) != "undefined" && Object.prototype.hasOwnProperty.call(mod.attrs, "__getattr__") )) && ( typeof(this.modules[((n.s + ".") + name)] ) != "undefined" && Object.prototype.hasOwnProperty.call(this.modules, (n.s + ".") + name) ) == false) && (typeof(this.importFromFiles((n.s + ".") + name)) === "undefined") ) {
+          v = this.getAttrOpt(mod, name);
+        }
         if ( typeof(v) === "undefined" ) {
-          const sub = this.mods.make(((n.s + ".") + name));
+          let sub = ( Object.prototype.hasOwnProperty.call(this.modules, (n.s + ".") + name) ? this.modules[((n.s + ".") + name)] : undefined );
+          if ( typeof(sub) === "undefined" ) {
+            sub = this.mods.make(((n.s + ".") + name));
+          }
+          if ( typeof(sub) === "undefined" ) {
+            sub = this.importFromFiles(((n.s + ".") + name));
+          }
           if ( typeof(sub) === "undefined" ) {
             this.raise("ImportError", ((("cannot import name '" + name) + "' from '") + n.s) + "'");
           }
+          this.modules[(n.s + ".") + name] = sub;
           v = sub;
         }
         if ( alias.length > 0 ) {
@@ -13871,6 +15539,7 @@ export class PyRuntime  {
     this.maxSteps = 0;
     this.echo = false;
     this.argv = [];
+    this.searchPath = [];
     this.fs = new PyFileSystem();
   }
   writeFile (path, text) {
@@ -13902,6 +15571,9 @@ export class PyRuntime  {
     this.fs.mkdirs(path);
     this.fs.cwd = this.fs.normalize(path);
   };
+  addPath (dir) {
+    this.searchPath.push(dir);
+  };
   addArg (a) {
     this.argv.push(a);
   };
@@ -13931,6 +15603,7 @@ export class PyRuntime  {
     ip.maxSteps = this.maxSteps;
     ip.echo = this.echo;
     ip.argv = this.argv;
+    ip.searchPath = this.searchPath;
     let ok = true;
     try {
       ip.runTree(tree);

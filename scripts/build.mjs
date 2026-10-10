@@ -12,10 +12,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { REPO, compile } from "./compiler.mjs";
+import { writeStdlib } from "./stdlib.mjs";
 
 const args = new Set(process.argv.slice(2));
 const dist = path.join(REPO, "dist");
 
+writeStdlib();
 compile(["-es6", "-esm", "src/PyRuntime.rgr", "-d=dist", "-o=pyruntime.mjs"]);
 compile(["-es6", "-nodemodule", "src/PyRuntime.rgr", "-d=dist", "-o=pyruntime.cjs"]);
 console.log("built", path.relative(REPO, path.join(dist, "pyruntime.mjs")), "and pyruntime.cjs");
