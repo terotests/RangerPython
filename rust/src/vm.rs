@@ -211,6 +211,11 @@ pub struct Types {
     pub method: Rc<Class>,
     pub module: Rc<Class>,
     pub iterator: Rc<Class>,
+    pub enumerate: Rc<Class>,
+    pub zip: Rc<Class>,
+    pub map: Rc<Class>,
+    pub filter: Rc<Class>,
+    pub reversed: Rc<Class>,
     pub generator: Rc<Class>,
     pub coroutine: Rc<Class>,
     pub dict_keys: Rc<Class>,
@@ -275,6 +280,10 @@ pub struct Vm {
     pub echo: bool,
     /// folders imports look in after /
     pub search_path: Vec<String>,
+    /// set by a bare `raise`: the traceback gets no new entry
+    pub bare_reraise: bool,
+    /// classes of native objects (traceback, frame...), by name
+    pub classes: HashMap<&'static str, Rc<Class>>,
 }
 
 impl Vm {
@@ -302,16 +311,40 @@ impl Vm {
             last_return: None,
             frames: Vec::with_capacity(64),
             stack_pool: Vec::new(),
+            classes: HashMap::new(),
+            bare_reraise: false,
             echo: false,
             search_path: vec![],
         };
         crate::builtins::install(&mut vm);
+        let fc = vm.t.function.clone();
+        crate::tb::add_getsets(&mut vm, &fc, &["__code__", "__defaults__", "__kwdefaults__", "__annotations__", "__dict__", "__name__", "__qualname__", "__type_params__"], &["__globals__", "__closure__", "__builtins__"]);
         let g = vm.main_globals.clone();
         g.borrow_mut().set_s("__name__", Value::str("__main__"));
         g.borrow_mut().set_s("__file__", Value::str("<script>"));
         g.borrow_mut().set_s("__builtins__", Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() })));
         g.borrow_mut().set_s("__doc__", Value::None);
+        let main = Value::Module(Rc::new(Module { name: ps("__main__"), dict: g.clone() }));
+        vm.modules.borrow_mut().set_s("__main__", main);
+        vm.load_py_builtins();
         vm
+    }
+
+    /// the built-ins written in Python (pylib/_pybuiltins.py)
+    fn load_py_builtins(&mut self) {
+        let g = self.main_globals.clone();
+        let m = match self.import("_pybuiltins", &Value::None, 0, &g) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let names = self.getattr(&m, &ps("__all__")).ok().and_then(|v| self.to_vec(&v).ok()).unwrap_or_default();
+        for n in names {
+            if let Some(s) = n.as_str() {
+                if let Ok(v) = self.getattr(&m, &ps(s)) {
+                    self.builtins.borrow_mut().set_s(s, v);
+                }
+            }
+        }
     }
 
     pub fn write_out(&mut self, s: &str) {
@@ -343,7 +376,7 @@ impl Vm {
     }
 
     pub fn new_exc(&mut self, cls: &Rc<Class>, args: Vec<Value>) -> Value {
-        let inst = Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(Value::tuple(args)) };
+        let inst = Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(Value::tuple(args)), extra: RefCell::new(Dict::new()) };
         Value::Instance(Rc::new(inst))
     }
 
@@ -396,17 +429,6 @@ impl Vm {
             }
         }
         vec![]
-    }
-
-    pub fn tb_push(&mut self, exc: &Value, file: &str, line: u32, func: &str) {
-        if let Value::Instance(i) = exc {
-            let mut d = i.dict.borrow_mut();
-            let entry = Value::tuple(vec![Value::str(file), Value::Int(line as i64), Value::str(func)]);
-            match d.get_str(&self.n.tb).cloned() {
-                Some(Value::List(l)) => l.borrow_mut().push(entry),
-                _ => d.set_str(self.n.tb.clone(), Value::list(vec![entry])),
-            }
-        }
     }
 
     // ------------------------------------------------------------------
@@ -477,6 +499,9 @@ impl Vm {
 
     /// finds a handler in `f` for `e`; Err when the exception leaves the frame
     fn handle_exc(&mut self, f: &mut Frame, e: Exc) -> PyResult<()> {
+        // a re-raise (bare `raise`, the end of a finally or with block)
+        // leaves the traceback as it is
+        let reraised = f.reraise_line.is_some() || std::mem::take(&mut self.bare_reraise);
         let line = match f.reraise_line.take() {
             Some(l) => l,
             None => {
@@ -484,13 +509,31 @@ impl Vm {
                 f.code.lines.get(ip).copied().unwrap_or(0)
             }
         };
+        if !reraised {
+            self.tb_here(&e.value, f, line);
+        }
         // chain onto an exception being handled
         if let Some(h) = self.handled.last().cloned() {
             if !h.is(&e.value) {
                 if let Value::Instance(i) = &e.value {
-                    let has = i.dict.borrow().get_str(&self.n.context).is_some();
+                    let has = i.extra.borrow().get_str(&self.n.context).is_some();
                     if !has {
-                        i.dict.borrow_mut().set_str(self.n.context.clone(), h);
+                        // a cycle through __context__ is cut where it would close
+                        let mut cur = h.clone();
+                        let mut steps = 0;
+                        while let Value::Instance(ci) = &cur {
+                            let next = ci.extra.borrow().get_str(&self.n.context).cloned().unwrap_or(Value::None);
+                            if next.is(&e.value) {
+                                ci.extra.borrow_mut().remove_str(&self.n.context);
+                                break;
+                            }
+                            cur = next;
+                            steps += 1;
+                            if steps > 10000 {
+                                break;
+                            }
+                        }
+                        i.extra.borrow_mut().set_str(self.n.context.clone(), h);
                     }
                 }
             }
@@ -508,9 +551,6 @@ impl Vm {
             f.ip = b.handler as usize;
             return Ok(());
         }
-        let file = f.code.filename.clone();
-        let name = f.code.name.s.clone();
-        self.tb_push(&e.value, &file, line, &name);
         Err(e)
     }
 
@@ -1483,6 +1523,7 @@ impl Vm {
             return match self.handled.last().cloned() {
                 Some(v) => {
                     f.reraise_line = None;
+                    self.bare_reraise = true;
                     Ok(Exc { value: v })
                 }
                 None => Ok(self.err("RuntimeError", "No active exception to reraise")),
@@ -1497,8 +1538,8 @@ impl Vm {
                 other => self.make_raisable(other)?,
             };
             if let Value::Instance(i) = &exc {
-                i.dict.borrow_mut().set_str(self.n.cause.clone(), c);
-                i.dict.borrow_mut().set_str(self.n.suppress.clone(), Value::Bool(true));
+                i.extra.borrow_mut().set_str(self.n.cause.clone(), c);
+                i.extra.borrow_mut().set_str(self.n.suppress.clone(), Value::Bool(true));
             }
         }
         Ok(Exc { value: exc })
@@ -1596,9 +1637,28 @@ impl Vm {
             self.depth -= 1;
             return Err(self.err("RecursionError", "maximum recursion depth exceeded"));
         }
-        let r = (n.f)(self, args, &[]);
+        let r = self.run_native(n, args, &[]);
         self.depth -= 1;
         r
+    }
+
+    /// runs a native; a bug that panics in it becomes a SystemError
+    #[inline]
+    pub fn run_native(&mut self, n: &NativeFn, args: &[Value], kw: crate::builtins::Kw) -> PyResult<Value> {
+        #[cfg(panic = "unwind")]
+        {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (n.f)(self, args, kw))) {
+                Ok(r) => r,
+                Err(p) => {
+                    let msg = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+                    Err(self.err("SystemError", format!("internal error in {}: {}", n.name, msg)))
+                }
+            }
+        }
+        #[cfg(not(panic = "unwind"))]
+        {
+            (n.f)(self, args, kw)
+        }
     }
 
     pub fn call(&mut self, f: &Value, args: &[Value]) -> PyResult<Value> {
@@ -1620,7 +1680,7 @@ impl Vm {
                     self.depth -= 1;
                     return Err(self.err("RecursionError", "maximum recursion depth exceeded"));
                 }
-                let r = (n.f)(self, &args, kw);
+                let r = self.run_native(n, &args, kw);
                 self.depth -= 1;
                 r
             }
@@ -1892,7 +1952,9 @@ impl Vm {
                 if self.exc_is(&e, "StopIteration") {
                     let re = self.err("RuntimeError", "generator raised StopIteration");
                     if let Value::Instance(i) = &re.value {
-                        i.dict.borrow_mut().set_str(self.n.cause.clone(), e.value.clone());
+                        i.extra.borrow_mut().set_str(self.n.cause.clone(), e.value.clone());
+                        i.extra.borrow_mut().set_str(self.n.context.clone(), e.value.clone());
+                        i.extra.borrow_mut().set_str(self.n.suppress.clone(), Value::Bool(true));
                     }
                     return Err(re);
                 }
@@ -2009,7 +2071,7 @@ impl Vm {
             Builtin::BaseException => Value::tuple(vec![]),
             _ => Value::Undef,
         };
-        Value::Instance(Rc::new(Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(base) }))
+        Value::Instance(Rc::new(Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(base), extra: RefCell::new(Dict::new()) }))
     }
 
     /// C3 linearisation
@@ -2112,10 +2174,39 @@ impl Vm {
         // __slots__
         let slots = cls.dict.borrow().get_str(&self.n.slots).cloned();
         if let Some(s) = slots {
-            let names = match &s {
-                Value::Str(x) => vec![Rc::from(x.s.as_str())],
-                other => self.to_vec(other)?.iter().filter_map(|v| v.as_str().map(Rc::from)).collect(),
+            let items = match &s {
+                Value::Str(_) => vec![s.clone()],
+                other => self.to_vec(other)?,
             };
+            let mut names: Vec<Name> = vec![];
+            for it in &items {
+                let n = match it.as_str() {
+                    Some(n) => n.to_string(),
+                    None => {
+                        let tn = self.type_name(it);
+                        return Err(self.type_error(format!("__slots__ items must be strings, not '{}'", tn)));
+                    }
+                };
+                let mut cs = n.chars();
+                let ident = cs.next().map_or(false, |f| f == '_' || f.is_alphabetic()) && cs.all(|c| c == '_' || c.is_alphanumeric());
+                if !ident {
+                    return Err(self.type_error("__slots__ must be identifiers"));
+                }
+                if names.iter().any(|x| **x == *n) && n != "__dict__" && n != "__weakref__" {
+                    return Err(self.type_error(format!("duplicate slot name '{}'", n)));
+                }
+                names.push(Rc::from(n.as_str()));
+                if n == "__dict__" || n == "__weakref__" {
+                    continue;
+                }
+                let m = crate::compile::mangle(name, &n);
+                let key = Rc::new(PyStr::new(m.clone()));
+                if cls.dict.borrow().get_str(&key).is_some() {
+                    return Err(self.value_error(format!("'{}' in __slots__ conflicts with class variable", n)));
+                }
+                let member = crate::tb::new_member(self, key.clone(), &cls);
+                cls.dict.borrow_mut().set_str(key, member);
+            }
             *cls.slots.borrow_mut() = Some(names);
         }
         Ok(cls)
@@ -2378,7 +2469,8 @@ impl Vm {
             self.modules.borrow_mut().remove_str(&PyStr::new(name.to_string()));
             return Err(e);
         }
-        Ok(m)
+        // a module may put something else in sys.modules under its name
+        Ok(self.modules.borrow().get_s(name).unwrap_or(m))
     }
 
     fn find_source(&mut self, name: &str) -> Option<(String, String, bool)> {

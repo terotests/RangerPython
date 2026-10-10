@@ -2228,7 +2228,7 @@ fn collect_pattern<'a>(p: &'a Pattern, caps: &mut Vec<Name>, vals: &mut Vec<&'a 
 }
 
 /// private names (`__x`) inside a class become `_Class__x`
-fn mangle(class: &str, n: &str) -> String {
+pub fn mangle(class: &str, n: &str) -> String {
     if class.is_empty() || !n.starts_with("__") || n.ends_with("__") || n.contains('.') {
         return n.to_string();
     }

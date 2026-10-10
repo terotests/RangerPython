@@ -30,7 +30,7 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
     Ok(Some(match name {
         "sys" => sys_module(vm),
         "math" => math_module(),
-        "time" => time_module(),
+        "_time" => time_module(),
         "os" => os_module(vm)?,
         "os.path" | "posixpath" => os_path_module(),
         "json" => json_module(vm),
@@ -38,6 +38,7 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "builtins" => Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() })),
         "_hashlib" => hashlib_module(),
         "_struct" => struct_module(),
+        "_unicodedata" => unicodedata_module(),
         _ => return Ok(None),
     }))
 }
@@ -250,6 +251,7 @@ fn f_readline(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn f_readlines(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     let mut out = vec![];
     loop {
@@ -280,6 +282,7 @@ fn f_next(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn f_write(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let o = file_of(vm, &a[0])?;
     margs(vm, "write", a, 1, 1)?;
     let text: String = match &a[1] {
@@ -344,6 +347,7 @@ fn f_write(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn f_writelines(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let items = vm.to_vec(&a[1])?;
     for x in items {
         f_write(vm, &[a[0].clone(), x], &[])?;
@@ -352,6 +356,7 @@ fn f_writelines(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn f_close(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     if let ObjKind::File { closed, .. } = &mut *o.kind.borrow_mut() {
         *closed = true;
@@ -364,6 +369,7 @@ fn f_flush(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn f_enter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     if let ObjKind::File { closed: true, .. } = &*o.kind.borrow() {
         return Err(vm.value_error("I/O operation on closed file."));
@@ -377,6 +383,7 @@ fn f_exit(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn f_seek(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let o = file_of(vm, &a[0])?;
     let off = vm.to_index(&a[1])?;
     let whence = match a.get(2) {
@@ -396,6 +403,7 @@ fn f_seek(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn f_tell(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     if let ObjKind::File { pos, .. } = &*o.kind.borrow() {
         return Ok(Value::Int(*pos as i64));
@@ -424,12 +432,14 @@ fn f_truncate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn f_readable(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     let r = matches!(&*o.kind.borrow(), ObjKind::File { mode, .. } if mode.contains('r') || mode.contains('+'));
     Ok(Value::Bool(r))
 }
 
 fn f_writable(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     let r = match &*o.kind.borrow() {
         ObjKind::File { writable, .. } => *writable,
@@ -454,6 +464,7 @@ fn f_fileno(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn f_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     let r = match &*o.kind.borrow() {
         ObjKind::File { path, mode, binary, .. } => {
@@ -496,6 +507,50 @@ pub fn obj_attr(_vm: &mut Vm, _obj: &Value, o: &Rc<NativeObj>, name: &str) -> Py
 
 // -------------------------------------------------------------------------
 // sys
+
+/// sys's struct sequences, made by pylib/_structseq.py once sys exists
+fn sys_structseqs(vm: &mut Vm, d: &Rc<RefCell<Dict>>) {
+    let g = vm.main_globals.clone();
+    let m = match vm.import("_structseq", &Value::None, 0, &g) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    let make = match vm.getattr(&m, &ps("make")) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let f = |x: f64| Value::Float(x);
+    let i = |x: i64| Value::Int(x);
+    let s = |x: &str| Value::str(x);
+    let specs: Vec<(&str, Vec<&str>, Vec<Value>)> = vec![
+        ("version_info", vec!["major", "minor", "micro", "releaselevel", "serial"], vec![i(3), i(13), i(0), s("final"), i(0)]),
+        (
+            "float_info",
+            vec!["max", "max_exp", "max_10_exp", "min", "min_exp", "min_10_exp", "dig", "mant_dig", "epsilon", "radix", "rounds"],
+            vec![f(f64::MAX), i(1024), i(308), f(f64::MIN_POSITIVE), i(-1021), i(-307), i(15), i(53), f(f64::EPSILON), i(2), i(1)],
+        ),
+        ("int_info", vec!["bits_per_digit", "sizeof_digit", "default_max_str_digits", "str_digits_check_threshold"], vec![i(30), i(4), i(4300), i(640)]),
+        (
+            "hash_info",
+            vec!["width", "modulus", "inf", "nan", "imag", "algorithm", "hash_bits", "seed_bits", "cutoff"],
+            vec![i(64), i((1 << 61) - 1), i(314159), i(0), i(1000003), s("siphash13"), i(64), i(128), i(0)],
+        ),
+        ("thread_info", vec!["name", "lock", "version"], vec![s("pthread"), s("mutex+cond"), Value::None]),
+        (
+            "flags",
+            vec!["debug", "inspect", "interactive", "optimize", "dont_write_bytecode", "no_user_site", "no_site", "ignore_environment", "verbose", "bytes_warning", "quiet", "hash_randomization", "isolated", "dev_mode", "utf8_mode", "warn_default_encoding", "safe_path", "int_max_str_digits", "gil", "thread_inherit_context", "context_aware_warnings"],
+            vec![i(0), i(0), i(0), i(0), i(1), i(1), i(0), i(0), i(0), i(0), i(0), i(1), i(0), Value::Bool(false), i(1), i(0), Value::Bool(false), i(4300), i(1), i(0), i(0)],
+        ),
+    ];
+    for (name, fields, values) in specs {
+        let fl = Value::list(fields.iter().map(|x| Value::str(x)).collect());
+        let n = if name == "flags" { Value::Int(18) } else { Value::None };
+        let kw = vec![(ps("module"), Value::str("sys")), (ps("n_sequence"), n)];
+        if let Ok(v) = vm.call_vec(&make, vec![Value::str(name), fl, Value::tuple(values)], &kw) {
+            d.borrow_mut().set_s(name, v);
+        }
+    }
+}
 
 fn sys_module(vm: &mut Vm) -> Value {
     install_file_class(vm);
@@ -544,13 +599,19 @@ fn sys_module(vm: &mut Vm) -> Value {
         let mut imp = Dict::new();
         imp.set_s("name", Value::str("rangerpython"));
         imp.set_s("cache_tag", Value::None);
-        b.set_s("implementation", Value::Module(Rc::new(Module { name: ps("sys.implementation"), dict: Rc::new(RefCell::new(imp)) })));
+        let ns = vm.namespace_class();
+        let inst = Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(imp)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()) };
+        b.set_s("implementation", Value::Instance(Rc::new(inst)));
     }
     put_fns(
         &d,
         &[
+            ("sys.__breakpointhook__", sys_breakpointhook),
             ("sys.exit", sys_exit),
+            ("sys.breakpointhook", sys_breakpointhook),
             ("sys.getrecursionlimit", sys_getrecursionlimit),
+            ("sys.get_int_max_str_digits", sys_get_int_max_str_digits),
+            ("sys.set_int_max_str_digits", sys_set_int_max_str_digits),
             ("sys.setrecursionlimit", sys_setrecursionlimit),
             ("sys.exc_info", sys_exc_info),
             ("sys.exception", sys_exception),
@@ -567,6 +628,7 @@ fn sys_module(vm: &mut Vm) -> Value {
             ("sys.is_finalizing", sys_false),
         ],
     );
+    sys_structseqs(vm, &d);
     m
 }
 
@@ -575,10 +637,26 @@ fn sys_exit(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let v = vm.new_exc(&cls, a.to_vec());
     Err(Exc { value: v })
 }
+fn sys_get_int_max_str_digits(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
+    Ok(Value::Int(crate::format::max_str_digits() as i64))
+}
+fn sys_set_int_max_str_digits(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let v = match crate::builtins::arg_or_kw(a, 0, k, "maxdigits") {
+        Some(v) => v,
+        None => return Err(vm.type_error("set_int_max_str_digits() missing required argument 'maxdigits' (pos 1)")),
+    };
+    let n = vm.to_index(&v)?;
+    if n != 0 && n < 640 {
+        return Err(vm.value_error("maxdigits must be >= 640 or 0 for unlimited"));
+    }
+    crate::format::MAX_STR_DIGITS.store(n as usize, std::sync::atomic::Ordering::Relaxed);
+    Ok(Value::None)
+}
 fn sys_getrecursionlimit(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(vm.max_depth as i64))
 }
 fn sys_setrecursionlimit(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let n = vm.to_index(&a[0])?;
     if n < 1 {
         return Err(vm.value_error("recursion limit must be greater or equal than 1"));
@@ -591,7 +669,8 @@ fn sys_exc_info(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     match vm.handled.last().cloned() {
         Some(e) => {
             let c = vm.class_of(&e);
-            Ok(Value::tuple(vec![Value::Class(c), e, Value::None]))
+            let tb = vm.getattr(&e, &vm.n.tb.clone()).unwrap_or(Value::None);
+            Ok(Value::tuple(vec![Value::Class(c), e, tb]))
         }
         None => Ok(Value::tuple(vec![Value::None, Value::None, Value::None])),
     }
@@ -600,6 +679,7 @@ fn sys_exception(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(vm.handled.last().cloned().unwrap_or(Value::None))
 }
 fn sys_getsizeof(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let n = match &a[0] {
         Value::Str(s) => 49 + s.s.len(),
         Value::List(l) => 56 + 8 * l.borrow().len(),
@@ -727,6 +807,7 @@ fn math_module() -> Value {
             ("math.nextafter", m_nextafter),
             ("math.ulp", m_ulp),
             ("math.cbrt", m_cbrt),
+            ("math.fma", m_fma),
         ],
     );
     m
@@ -847,19 +928,21 @@ fn int_arg(vm: &mut Vm, v: &Value, name: &str) -> PyResult<BigInt> {
 }
 
 fn m_isqrt(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "isqrt", a, 1, 1)?;
     let n = int_arg(vm, &a[0], "isqrt")?;
     if n.neg {
         return Err(vm.value_error("isqrt() argument must be nonnegative"));
     }
     if let Some(i) = n.to_i64() {
-        let mut r = (i as f64).sqrt() as i64;
+        let i = i as u128;
+        let mut r = (i as f64).sqrt() as u128;
         while r * r > i {
             r -= 1;
         }
         while (r + 1) * (r + 1) <= i {
             r += 1;
         }
-        return Ok(Value::Int(r));
+        return Ok(Value::Int(r as i64));
     }
     Ok(Value::from_big(isqrt_big(&n)))
 }
@@ -949,6 +1032,7 @@ fn m_log(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Float(l))
 }
 fn m_log2(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "log2", a, 1, 1)?;
     if let Value::Big(_) = &a[0] {
         let l = log_of(vm, &a[0])?;
         return Ok(Value::Float(l / std::f64::consts::LN_2));
@@ -960,6 +1044,7 @@ fn m_log2(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Float(x.log2()))
 }
 fn m_log10(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "log10", a, 1, 1)?;
     if let Value::Big(_) = &a[0] {
         let l = log_of(vm, &a[0])?;
         return Ok(Value::Float(l / std::f64::consts::LN_10));
@@ -977,6 +1062,24 @@ fn m_log1p(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
     Ok(Value::Float(x.ln_1p()))
 }
+fn m_fma(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "fma", a, 3, 3)?;
+    let x = fl(vm, a, 0, "fma")?;
+    let y = fl(vm, a, 1, "fma")?;
+    let z = fl(vm, a, 2, "fma")?;
+    let r = x.mul_add(y, z);
+    if !r.is_finite() {
+        if r.is_nan() {
+            if !x.is_nan() && !y.is_nan() && !z.is_nan() {
+                return Err(vm.value_error("invalid operation in fma"));
+            }
+        } else if x.is_finite() && y.is_finite() && z.is_finite() {
+            return Err(vm.err("OverflowError", "overflow in fma"));
+        }
+    }
+    Ok(Value::Float(r))
+}
+
 fn m_atan2(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let y = fl(vm, a, 0, "atan2")?;
     let x = fl(vm, a, 1, "atan2")?;
@@ -1297,6 +1400,7 @@ fn m_frexp(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::tuple(vec![Value::Float(m), Value::Int(e as i64)]))
 }
 fn m_ldexp(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = fl(vm, a, 0, "ldexp")?;
     let e = vm.to_index(&a[1])?;
     let r = x * 2f64.powi(e.clamp(-2000, 2000) as i32);
@@ -1444,7 +1548,7 @@ fn m_ulp(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 // time
 
 fn time_module() -> Value {
-    let (d, m) = module("time");
+    let (d, m) = module("_time");
     put_fns(
         &d,
         &[
@@ -1955,6 +2059,7 @@ fn p_isabs(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Bool(p.starts_with('/')))
 }
 fn p_commonprefix(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let items = vm.to_vec(&a[0])?;
     let strs: Vec<String> = items.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
     if strs.is_empty() {
@@ -2137,7 +2242,7 @@ fn json_enc(vm: &mut Vm, v: &Value, o: &JsonOpts, level: usize, out: &mut String
         }
         _ => {
             let b = vm.base_of(v);
-            if !matches!(b, Value::Instance(_)) {
+            if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                 return json_enc(vm, &b, o, level, out, stack);
             }
             if o.default.is_none() {
@@ -2500,6 +2605,7 @@ fn j_loads(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn j_load(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let r = vm.getattr(&a[0], &ps("read"))?;
     let s = vm.call_vec(&r, vec![], &[])?;
     j_loads(vm, &[s], k)
@@ -2655,6 +2761,7 @@ fn r_new(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn r_seed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = rng_of(vm, &a[0])?;
     let s = a.get(1).cloned().unwrap_or(Value::None);
     let key: BigInt = match &s {
@@ -2692,6 +2799,7 @@ fn r_seed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn r_random(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = rng_of(vm, &a[0])?;
     if let ObjKind::Rng(r) = &mut *o.kind.borrow_mut() {
         return Ok(Value::Float(r.random()));
@@ -2700,6 +2808,7 @@ fn r_random(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn r_getrandbits(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let o = rng_of(vm, &a[0])?;
     let k = vm.to_index(&a[1])?;
     if k < 0 {
@@ -2715,6 +2824,7 @@ fn r_getrandbits(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn r_getstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let o = rng_of(vm, &a[0])?;
     if let ObjKind::Rng(r) = &*o.kind.borrow() {
         let mut v: Vec<Value> = r.mt.iter().map(|x| Value::Int(*x as i64)).collect();
@@ -2725,6 +2835,7 @@ fn r_getstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn r_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let o = rng_of(vm, &a[0])?;
     let items = vm.to_vec(&a[1])?;
     if items.len() != 625 {
@@ -2853,11 +2964,13 @@ fn hashlib_module() -> Value {
 }
 
 fn h_sha256(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let b = bytes_of(vm, &a[0])?;
     Ok(Value::Bytes(Rc::new(sha256(&b).to_vec())))
 }
 
 fn h_sha512(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let b = bytes_of(vm, &a[0])?;
     Ok(Value::Bytes(Rc::new(sha512(&b).to_vec())))
 }
@@ -2877,6 +2990,7 @@ fn st_double_bits(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn st_bits_double(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let b = crate::ops::big_of(&a[0]).ok_or_else(|| vm.type_error("expected int"))?;
     let lo = b.mag.first().copied().unwrap_or(0) as u64;
     let hi = b.mag.get(1).copied().unwrap_or(0) as u64;
@@ -2893,6 +3007,7 @@ fn st_float_bits(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn st_bits_float(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let b = vm.to_index(&a[0])? as u32;
     Ok(Value::Float(f32::from_bits(b) as f64))
 }
@@ -2950,6 +3065,7 @@ fn frexp(x: f64) -> (f64, i32) {
 }
 
 fn st_bits_half(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let h = vm.to_index(&a[0])? as u16;
     let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
     let e = ((h >> 10) & 0x1f) as i32;
@@ -2966,4 +3082,58 @@ fn st_bits_half(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         (1.0 + f / 1024.0) * 2f64.powi(e - 15)
     };
     Ok(Value::Float(sign * v))
+}
+
+// -------------------------------------------------------------------------
+// _unicodedata: character names; the rest of unicodedata is Python
+
+fn unicodedata_module() -> Value {
+    let (d, m) = module("_unicodedata");
+    put_fns(&d, &[("_unicodedata.name", ud_name), ("_unicodedata.lookup", ud_lookup)]);
+    m
+}
+
+fn ud_char(vm: &mut Vm, v: &Value, f: &str) -> PyResult<char> {
+    if let Value::Str(s) = v {
+        let mut cs = s.s.chars();
+        if let (Some(c), None) = (cs.next(), cs.next()) {
+            return Ok(c);
+        }
+    }
+    let tn = vm.type_name(v);
+    Err(vm.type_error(format!("{}() argument must be a unicode character, not {}", f, tn)))
+}
+
+fn ud_name(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let c = ud_char(vm, &a[0], "name")?;
+    match crate::unicode_name_of(c) {
+        Some(n) => Ok(Value::str(n)),
+        None => match a.get(1) {
+            Some(d) => Ok(d.clone()),
+            None => Err(vm.value_error("no such name")),
+        },
+    }
+}
+
+fn ud_lookup(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let n = as_pystr(vm, &a[0], "lookup")?;
+    match crate::unicode_name(&n.s) {
+        Some(c) => Ok(Value::string(c.to_string())),
+        None => Err(vm.err("KeyError", format!("undefined character name '{}'", n.s))),
+    }
+}
+
+/// sys.breakpointhook: PYTHONBREAKPOINT names the callable, pdb.set_trace by default
+fn sys_breakpointhook(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let m = vm.import("_breakpoint", &Value::None, 0, &vm.main_globals.clone())?;
+    let h = vm.getattr(&m, &ps("hook"))?;
+    vm.call_vec(&h, a.to_vec(), k)
+}
+
+pub fn bi_breakpoint(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let sys = vm.import("sys", &Value::None, 0, &vm.main_globals.clone())?;
+    match vm.getattr_opt(&sys, &ps("breakpointhook"))? {
+        Some(h) => vm.call_vec(&h, a.to_vec(), k),
+        None => Err(vm.err("RuntimeError", "lost sys.breakpointhook")),
+    }
 }

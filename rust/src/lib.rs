@@ -28,6 +28,7 @@ pub mod stdlib;
 pub mod strmethods;
 pub mod value;
 pub mod vm;
+pub mod tb;
 
 use value::Value;
 
@@ -154,26 +155,7 @@ fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
     res.ok = false;
     let mut lines = vec!["Traceback (most recent call last):".to_string()];
     let tb = vm.getattr(exc, &builtins::ps("__traceback__")).unwrap_or(Value::None);
-    let mut entries: Vec<(String, i64, String)> = vec![];
-    if let Value::List(l) = &tb {
-        for e in l.borrow().iter().rev() {
-            if let Value::Tuple(t) = e {
-                let file = match &t[0] {
-                    Value::Str(s) => s.s.clone(),
-                    _ => String::new(),
-                };
-                let line = match &t[1] {
-                    Value::Int(i) => *i,
-                    _ => 0,
-                };
-                let name = match &t[2] {
-                    Value::Str(s) => s.s.clone(),
-                    _ => String::new(),
-                };
-                entries.push((file, line, name));
-            }
-        }
-    }
+    let mut entries = vm.tb_entries(&tb);
     let mut prev = String::new();
     let mut run = 0;
     for (file, line, name) in &entries {

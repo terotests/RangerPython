@@ -130,6 +130,23 @@ pub struct NativeFn {
     pub f: NativeFnPtr,
     /// data a native closure carries (functools.partial and the like)
     pub data: Value,
+    /// a method of a type binds to its instance; a module function does not
+    pub bind: bool,
+}
+
+impl NativeFn {
+    pub fn new(name: &'static str, f: NativeFnPtr, data: Value) -> NativeFn {
+        NativeFn { name, f, data, bind: true }
+    }
+}
+
+/// a function found on a type binds to the instance it is read from
+pub fn binds(v: &Value) -> bool {
+    match v {
+        Value::Func(_) => true,
+        Value::Native(n) => n.bind,
+        _ => false,
+    }
 }
 
 pub struct Function {
@@ -208,6 +225,9 @@ pub struct Instance {
     pub dict: Rc<RefCell<Dict>>,
     /// the built-in value a subclass of int, str, list, dict... wraps
     pub base: RefCell<Value>,
+    /// values kept outside __dict__: __slots__ members, and an exception's
+    /// __traceback__, __cause__, __context__ and __suppress_context__
+    pub extra: RefCell<Dict>,
 }
 
 pub struct Module {
@@ -227,6 +247,15 @@ pub enum ObjKind {
     Deque(std::collections::VecDeque<Value>, Option<usize>),
     MatchPat(Rc<crate::ast::Pattern>),
     Rng(Box<crate::modules::Random>),
+    /// a __slots__ member: the slot's name and the class that declared it
+    Member(Rc<PyStr>, Rc<Class>),
+    /// an attribute of a built-in type, read through the type's own code:
+    /// function.__code__ (getset) or function.__globals__ (member)
+    GetSet(Rc<PyStr>, Rc<Class>, bool),
+    /// a traceback entry; `next` is the entry of the frame it was raised in
+    Traceback { frame: Value, line: u32, next: Value },
+    /// a frame as tracebacks and sys._getframe see it
+    Frame { code: Rc<crate::code::Code>, line: u32, globals: Rc<RefCell<Dict>>, locals: Value, back: Value },
     Other(Value),
 }
 
@@ -559,18 +588,52 @@ pub fn hash_int(v: i64) -> u64 {
 }
 
 pub fn hash_float(f: f64) -> u64 {
-    if f.fract() == 0.0 && f.abs() < 9.2e18 {
-        return hash_int(f as i64);
-    }
+    // CPython's _Py_HashDouble: the value as a fraction mod 2^61-1, so equal
+    // ints, floats and Fractions hash alike
     if f.is_nan() {
         return 0;
     }
     if f.is_infinite() {
         return if f > 0.0 { 314159 } else { (-314159i64) as u64 };
     }
-    let mut h = FxHasher::default();
-    h.write_u64(f.to_bits());
-    h.finish()
+    let (mut m, mut e) = frexp(f);
+    let mut sign = 1i64;
+    if m < 0.0 {
+        sign = -1;
+        m = -m;
+    }
+    let mut x: u64 = 0;
+    while m != 0.0 {
+        x = ((x << 28) & MODULUS) | (x >> (61 - 28));
+        m *= 268435456.0;
+        e -= 28;
+        let y = m as u64;
+        m -= y as f64;
+        x += y;
+        if x >= MODULUS {
+            x -= MODULUS;
+        }
+    }
+    let e = if e >= 0 { e % 61 } else { 61 - 1 - ((-1 - e) % 61) };
+    let x = ((x << e) & MODULUS) | (x >> (61 - e));
+    let h = (x as i64) * sign;
+    (if h == -1 { -2 } else { h }) as u64
+}
+
+/// mantissa in [0.5, 1) and exponent
+pub fn frexp(f: f64) -> (f64, i32) {
+    if f == 0.0 || !f.is_finite() {
+        return (f, 0);
+    }
+    let bits = f.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    if exp == 0 {
+        // subnormal: scale up first
+        let (m, e) = frexp(f * 2f64.powi(64));
+        return (m, e - 64);
+    }
+    let m = f64::from_bits((bits & !(0x7ffu64 << 52)) | (1022u64 << 52));
+    (m, exp - 1022)
 }
 
 pub fn hash_big(b: &BigInt) -> u64 {

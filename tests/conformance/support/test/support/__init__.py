@@ -66,9 +66,16 @@ class _Missing:
         return False
 
 
+_SUBMODULES = ("import_helper", "os_helper", "script_helper", "threading_helper", "warnings_helper")
+
+
 def __getattr__(name):
     if name.startswith("__"):
         raise AttributeError(name)
+    # `from test.support import os_helper` reads the attribute before it
+    # imports the submodule, so a submodule must not come back as a _Missing
+    if name in _SUBMODULES:
+        return __import__("test.support." + name, fromlist=["_"])
     return _Missing(name)
 
 
@@ -181,8 +188,27 @@ def disable_gc():
     return _NullContext()
 
 
-def adjust_int_max_str_digits(max_digits):
-    return _NullContext()
+class adjust_int_max_str_digits:
+    def __init__(self, max_digits):
+        self.max_digits = max_digits
+
+    def __enter__(self):
+        self.old = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(self.max_digits)
+        return self
+
+    def __exit__(self, *exc):
+        sys.set_int_max_str_digits(self.old)
+        return False
+
+    def __call__(self, func):
+        import functools
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with self:
+                return func(*args, **kwargs)
+        return wrapper
 
 
 def catch_unraisable_exception():
@@ -370,8 +396,13 @@ def check_sizeof(test, o, size):
 
 class CPUStopwatch:
     def __enter__(self):
+        import time
+        self.clock_info = time.get_clock_info("process_time")
+        self.start = time.process_time()
         self.seconds = 0.0
         return self
 
     def __exit__(self, *exc):
+        import time
+        self.seconds = time.process_time() - self.start
         return False

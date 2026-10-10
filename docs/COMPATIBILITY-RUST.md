@@ -8,36 +8,36 @@ score is out of the tests CPython (Python 3.13.16) passes with the same
 driver. Tests that need CPython internals (reference counts, object sizes,
 subprocesses) are skipped by the test.support stand-in and are not counted.
 
-**1922 of 3582 tests pass: 53.7 %**
+**2457 of 3582 tests pass: 68.6 %**
 
 | file | pass | of | score | note |
 |---|---:|---:|---:|---|
 | test_augassign | 7 | 7 | 100.0 % |  |
 | test_baseexception | 9 | 10 | 90.0 % |  |
 | test_binop | 10 | 12 | 83.3 % |  |
-| test_bool | 23 | 31 | 74.2 % |  |
-| test_builtin | 0 | 115 | 0.0 % | does not import: ImportError: cannot import name 'AsyncGeneratorType' from 'types' |
+| test_bool | 25 | 31 | 80.6 % |  |
+| test_builtin | 52 | 115 | 45.2 % |  |
 | test_class | 14 | 33 | 42.4 % |  |
-| test_collections | 49 | 99 | 49.5 % |  |
+| test_collections | 51 | 99 | 51.5 % |  |
 | test_compare | 11 | 16 | 68.8 % |  |
 | test_contains | 3 | 4 | 75.0 % |  |
-| test_copy | 45 | 81 | 55.6 % |  |
+| test_copy | 70 | 81 | 86.4 % |  |
 | test_decorators | 14 | 16 | 87.5 % |  |
-| test_dict | 66 | 111 | 59.5 % |  |
-| test_dictviews | 6 | 16 | 37.5 % |  |
-| test_enumerate | 0 | 92 | 0.0 % | does not import: TypeError: bases must be types |
-| test_exceptions | 28 | 95 | 29.5 % |  |
-| test_float | 0 | 47 | 0.0 % | does not import: ModuleNotFoundError: No module named 'test.support.testcase' |
+| test_dict | 70 | 111 | 63.1 % |  |
+| test_dictviews | 7 | 16 | 43.8 % |  |
+| test_enumerate | 66 | 92 | 71.7 % |  |
+| test_exceptions | 39 | 95 | 41.1 % |  |
+| test_float | 18 | 47 | 38.3 % |  |
 | test_format | 4 | 18 | 22.2 % |  |
-| test_fstring | 0 | 84 | 0.0 % | does not import: ModuleNotFoundError: No module named 'datetime' |
-| test_functools | 0 | 273 | 0.0 % | does not import: TypeError: '_Missing' object is not iterable |
-| test_generators | 23 | 40 | 57.5 % |  |
+| test_fstring | 49 | 84 | 58.3 % |  |
+| test_functools | 219 | 273 | 80.2 % |  |
+| test_generators | 24 | 40 | 60.0 % |  |
 | test_genexps | 0 | 0 | 0.0 % |  |
-| test_grammar | 56 | 78 | 71.8 % |  |
+| test_grammar | 57 | 78 | 73.1 % |  |
 | test_index | 36 | 55 | 65.5 % |  |
 | test_int | 8 | 46 | 17.4 % |  |
 | test_isinstance | 5 | 23 | 21.7 % |  |
-| test_iter | 37 | 57 | 64.9 % |  |
+| test_iter | 24 | 57 | 42.1 % | run stopped: killed after 0 s |
 | test_itertools | 67 | 137 | 48.9 % |  |
 | test_keywordonlyarg | 8 | 11 | 72.7 % |  |
 | test_list | 46 | 63 | 73.0 % |  |
@@ -47,25 +47,25 @@ subprocesses) are skipped by the test.support stand-in and are not counted.
 | test_opcodes | 7 | 8 | 87.5 % |  |
 | test_pow | 6 | 7 | 85.7 % |  |
 | test_property | 14 | 29 | 48.3 % |  |
-| test_raise | 29 | 37 | 78.4 % |  |
-| test_random | 85 | 101 | 84.2 % |  |
-| test_range | 9 | 28 | 32.1 % |  |
+| test_raise | 32 | 37 | 86.5 % |  |
+| test_random | 86 | 101 | 85.1 % |  |
+| test_range | 4 | 28 | 14.3 % | run stopped: killed after 78 s |
 | test_scope | 33 | 41 | 80.5 % |  |
-| test_set | 558 | 623 | 89.6 % |  |
+| test_set | 573 | 623 | 92.0 % |  |
 | test_setcomps | 0 | 1 | 0.0 % |  |
-| test_slice | 3 | 11 | 27.3 % |  |
-| test_sort | 18 | 21 | 85.7 % |  |
+| test_slice | 4 | 11 | 36.4 % |  |
+| test_sort | 19 | 21 | 90.5 % |  |
 | test_statistics | 277 | 370 | 74.9 % |  |
-| test_str | 0 | 128 | 0.0 % | does not import: ModuleNotFoundError: No module named 'unicodedata' |
+| test_str | 58 | 128 | 45.3 % |  |
 | test_string | 36 | 38 | 94.7 % |  |
 | test_string_literals | 6 | 15 | 40.0 % |  |
 | test_super | 20 | 36 | 55.6 % |  |
-| test_tuple | 24 | 36 | 66.7 % |  |
-| test_types | 42 | 118 | 35.6 % |  |
+| test_tuple | 27 | 36 | 75.0 % |  |
+| test_types | 61 | 118 | 51.7 % |  |
 | test_unary | 6 | 6 | 100.0 % |  |
 | test_unpack | 1 | 1 | 100.0 % |  |
 | test_userdict | 22 | 25 | 88.0 % |  |
-| test_with | 49 | 51 | 96.1 % |  |
+| test_with | 50 | 51 | 98.0 % |  |
 
 ## Why tests fail
 
@@ -73,46 +73,46 @@ The most common reasons, by the error a failing test ends with:
 
 | tests | reason |
 |---:|---|
-| 418 | wrong result (AssertionError) |
-| 273 | not run: TypeError: '…' object is not iterable |
-| 259 | not run: ModuleNotFoundError: No module named '…' |
-| 115 | not run: ImportError: cannot import name '…' from '…' |
-| 92 | not run: TypeError: bases must be types |
-| 81 | AttributeError: module '…' has no attribute '…' |
-| 60 | skipped here: CPython implementation detail |
+| 508 | wrong result (AssertionError) |
+| 97 | AttributeError: module '…' has no attribute '…' |
+| 84 | skipped here: CPython implementation detail |
+| 38 | AttributeError: '…' object has no attribute '…' |
 | 33 | not run: killed after 180 s |
-| 32 | AttributeError: '…' object has no attribute '…' |
-| 27 | RecursionError: maximum recursion depth exceeded |
-| 22 | skipped here: test.support.warnings_helper.check_warnings is not available on this runtime |
-| 19 | skipped here: requires _statistics |
-| 14 | TypeError: unsupported operand type(s) for %: '…' and '…' |
-| 11 | OverflowError: Python int too large to convert to C ssize_t |
+| 20 | KeyError: '…' |
+| 19 | not run: killed after 78 s |
+| 17 | ModuleNotFoundError: No module named '…' |
+| 17 | TypeError: unsupported operand type(s) for %: '…' and '…' |
+| 17 | not run: killed after 0 s |
+| 14 | NameError: name '…' is not defined |
+| 11 | OverflowError: cannot fit '…' into an index-sized integer |
+| 11 | NotImplementedError: ast.parse is not available in this runtime |
 | 11 | TypeError: must be real number, not IsCloseTests |
-| 9 | OverflowError: cannot fit '…' into an index-sized integer |
-| 8 | ModuleNotFoundError: No module named '…' |
-| 8 | NameError: name '…' is not defined |
-| 8 | skipped here: object finalization is the host's |
+| 9 | skipped here: object finalization is the host's |
+| 9 | skipped here: no threads |
+| 8 | skipped here: resource not enabled |
+| 8 | skipped here: no subprocesses on this runtime |
 | 8 | TypeError: isinstance() arg N must be a type, a tuple of types, or a union |
-| 7 | TypeError: bases must be types |
-| 7 | KeyError: '…' |
 | 7 | TypeError: issubclass() arg N must be a class |
-| 6 | skipped here: resource not enabled |
 | 6 | skipped here: tuple reuse is specific to CPython |
+| 6 | RecursionError: maximum recursion depth exceeded |
+| 5 | OverflowError: Python int too large to convert to C ssize_t |
 | 5 | AttributeError: '…' object has no attribute '…' and no __dict__ for setting new attributes |
+| 5 | TypeError: cmp_to_key() takes N positional argument but N were given |
 | 5 | TypeError: can'…'newstyle' |
+| 5 | PicklingError: Can'…'generator'…'s not found as builtins.generator |
+| 5 | TypeError: unhashable type: '…' |
 | 4 | AttributeError: type object '…' has no attribute '…' |
-| 4 | TypeError: cannot unpack non-iterable _Missing object |
+| 4 | TypeError: unsupported operand type(s) for *: '…' and '…' |
 | 4 | AttributeError: <module '…' from '…'> does not have the attribute '…' |
-| 4 | TypeError: unhashable type: '…' |
+| 4 | UnboundLocalError: cannot access local variable '…' where it is not associated with a value |
 | 3 | TypeError: '…' object is not callable |
-| 3 | TypeError: unsupported operand type(s) for \|: '…' and '…' |
+| 3 | ValueError: invalid hexadecimal floating-point string |
+| 3 | skipped here: applies only when using short float repr style |
+| 3 | skipped here: Signature information for builtins requires docstrings |
+| 3 | skipped here: no docstrings |
 | 3 | TypeError: '…' object is not an iterator |
 | 3 | ValueError: generator already executing |
-| 3 | skipped here: test.support.threading_helper.requires_working_threading is not available on this runtime |
-| 3 | TypeError: slice expected at least N argument, got N |
 | 3 | TypeError: '…' object is not subscriptable |
-| 2 | TypeError: unsupported operand type(s) for -: '…' and '…' |
-| 2 | TypeError: TestNT.__new__() missing N required positional arguments: '…', '…' and '…' |
 
 Run `node tests/conformance/run.mjs` for the full list in
 tests/conformance/results.json.

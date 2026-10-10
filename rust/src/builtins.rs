@@ -682,6 +682,7 @@ fn type_repr_short(vm: &mut Vm, v: &Value) -> PyResult<String> {
 }
 
 fn alias_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let (origin, args) = alias_parts(&a[0]);
     let mut parts = vec![];
     for x in &args {
@@ -695,16 +696,19 @@ fn alias_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn alias_call(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let (origin, _) = alias_parts(&a[0]);
     vm.call_vec(&origin, a[1..].to_vec(), k)
 }
 
 fn alias_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let (origin, _) = alias_parts(&a[0]);
     generic_alias(vm, &origin, &a[1])
 }
 
 fn alias_eq(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let (o1, a1) = alias_parts(&a[0]);
     if !matches!(a[1], Value::Obj(_)) {
         return Ok(Value::NotImplemented);
@@ -715,16 +719,19 @@ fn alias_eq(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn alias_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let (o, args) = alias_parts(&a[0]);
     let h = vm.hash(&Value::tuple(vec![o, Value::tuple(args)]))?;
     Ok(Value::Int(h as i64 >> 1))
 }
 
 fn alias_or(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     make_union(vm, &a[0], &a[1])
 }
 
 fn alias_ror(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     make_union(vm, &a[1], &a[0])
 }
 
@@ -883,7 +890,7 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
         },
         Value::Native(n) => match name {
             "__name__" | "__qualname__" => Some(Value::str(n.name.rsplit('.').next().unwrap_or(n.name))),
-            "__module__" => Some(Value::str("builtins")),
+            "__module__" => Some(Value::str(native_module_name(n.name))),
             "__self__" => Some(Value::None),
             "__doc__" => Some(Value::None),
             "__text_signature__" => Some(Value::None),
@@ -958,6 +965,9 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
             _ => None,
         },
         Value::Obj(o) => {
+            if let Some(v) = crate::tb::obj_attr(vm, o, name)? {
+                return Ok(Some(v));
+            }
             if let ObjKind::Other(_) = &*o.kind.borrow() {
                 let cn = o.class.name();
                 if cn == "GenericAlias" || cn == "UnionType" {
@@ -982,8 +992,8 @@ pub fn instance_special(vm: &mut Vm, obj: &Value, inst: &Rc<Instance>, name: &st
         let args = vm.exc_args(obj);
         return Ok(match name {
             "args" => Some(Value::tuple(args)),
-            "__traceback__" | "__cause__" | "__context__" => Some(Value::None),
-            "__suppress_context__" => Some(Value::Bool(inst.dict.borrow().get_str(&vm.n.cause).map(|c| !c.is_none()).unwrap_or(false))),
+            "__traceback__" | "__cause__" | "__context__" => Some(crate::tb::exc_extra(vm, inst, name)),
+            "__suppress_context__" => Some(inst.extra.borrow().get_str(&vm.n.suppress).cloned().unwrap_or(Value::Bool(false))),
             "value" if cls.is_subclass(&vm.exc_class("StopIteration")) => Some(args.into_iter().next().unwrap_or(Value::None)),
             "code" if cls.is_subclass(&vm.exc_class("SystemExit")) => Some(match args.len() {
                 0 => Value::None,
@@ -1140,6 +1150,7 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
 ];
 
 fn exc_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let cls = match &a[0] {
         Value::Class(c) => c.clone(),
         _ => return Err(vm.type_error("BaseException.__new__(X): X is not a type object")),
@@ -1159,17 +1170,22 @@ fn exc_init(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn exc_str_native(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     Ok(Value::string(exc_str(vm, &a[0])?))
 }
 
 fn exc_repr_native(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let cls = vm.class_of(&a[0]);
     let args = vm.exc_args(&a[0]);
     let inner = if args.len() == 1 { vm.repr(&args[0])? } else { let r = vm.repr(&Value::tuple(args.clone()))?; r[1..r.len() - 1].trim_end_matches(',').to_string() };
     Ok(Value::string(format!("{}({})", cls.name(), inner)))
 }
 
-fn exc_with_traceback(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn exc_with_traceback(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
+    margs(vm, "with_traceback", a, 1, 1)?;
+    vm.setattr(&a[0], &vm.n.tb.clone(), a[1].clone())?;
     Ok(a[0].clone())
 }
 
@@ -1190,6 +1206,7 @@ fn exc_add_note(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn exc_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let cls = vm.class_of(&a[0]);
     let args = vm.exc_args(&a[0]);
     Ok(Value::tuple(vec![Value::Class(cls), Value::tuple(args)]))
@@ -1201,21 +1218,21 @@ fn exc_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 /// registers a native method on a class; `name` is "type.method"
 pub fn def(c: &Rc<Class>, name: &'static str, f: NativeFnPtr) {
     let short = name.rsplit('.').next().unwrap();
-    c.dict.borrow_mut().set_s(short, Value::Native(Rc::new(NativeFn { name, f, data: Value::None })));
+    c.dict.borrow_mut().set_s(short, Value::Native(Rc::new(NativeFn::new(name, f, Value::None))));
 }
 
 pub fn def_static(c: &Rc<Class>, name: &'static str, f: NativeFnPtr) {
     let short = name.rsplit('.').next().unwrap();
-    c.dict.borrow_mut().set_s(short, Value::StaticMethod(Rc::new(Value::Native(Rc::new(NativeFn { name, f, data: Value::None })))));
+    c.dict.borrow_mut().set_s(short, Value::StaticMethod(Rc::new(Value::Native(Rc::new(NativeFn::new(name, f, Value::None))))));
 }
 
 pub fn def_class(c: &Rc<Class>, name: &'static str, f: NativeFnPtr) {
     let short = name.rsplit('.').next().unwrap();
-    c.dict.borrow_mut().set_s(short, Value::ClassMethod(Rc::new(Value::Native(Rc::new(NativeFn { name, f, data: Value::None })))));
+    c.dict.borrow_mut().set_s(short, Value::ClassMethod(Rc::new(Value::Native(Rc::new(NativeFn::new(name, f, Value::None))))));
 }
 
 pub fn native(name: &'static str, f: NativeFnPtr) -> Value {
-    Value::Native(Rc::new(NativeFn { name, f, data: Value::None }))
+    Value::Native(Rc::new(NativeFn { name, f, data: Value::None, bind: false }))
 }
 
 fn mk(name: &str, base: Option<&Rc<Class>>, b: Builtin) -> Rc<Class> {
@@ -1239,7 +1256,13 @@ pub fn make_types() -> Types {
         *obj.bases.borrow_mut() = vec![object.clone()];
         *obj.mro.borrow_mut() = vec![obj.clone(), object.clone()];
     }
+    let iterator = mk("iterator", o, Builtin::Iterator);
     Types {
+        enumerate: mk("enumerate", Some(&iterator), Builtin::Iterator),
+        zip: mk("zip", Some(&iterator), Builtin::Iterator),
+        map: mk("map", Some(&iterator), Builtin::Iterator),
+        filter: mk("filter", Some(&iterator), Builtin::Iterator),
+        reversed: mk("reversed", Some(&iterator), Builtin::Iterator),
         type_: mk("type", o, Builtin::Type),
         bool_: mk("bool", Some(&int), Builtin::Bool),
         int,
@@ -1260,7 +1283,7 @@ pub fn make_types() -> Types {
         builtin_function: mk("builtin_function_or_method", o, Builtin::BuiltinFunction),
         method: mk("method", o, Builtin::Method),
         module: mk("module", o, Builtin::Module),
-        iterator: mk("iterator", o, Builtin::Iterator),
+        iterator,
         generator: mk("generator", o, Builtin::Generator),
         coroutine: mk("coroutine", o, Builtin::Generator),
         dict_keys: mk("dict_keys", o, Builtin::DictKeys),
@@ -1330,6 +1353,11 @@ pub fn install(vm: &mut Vm) {
         ("staticmethod", &t.staticmethod),
         ("classmethod", &t.classmethod),
         ("super", &t.super_),
+        ("enumerate", &t.enumerate),
+        ("zip", &t.zip),
+        ("map", &t.map),
+        ("filter", &t.filter),
+        ("reversed", &t.reversed),
     ] {
         bd.set_s(n, Value::Class(c.clone()));
     }
@@ -1353,6 +1381,7 @@ fn install_functions(vm: &mut Vm) {
         ("repr", bi_repr),
         ("ascii", bi_ascii),
         ("abs", bi_abs),
+        ("breakpoint", crate::modules::bi_breakpoint),
         ("all", bi_all),
         ("any", bi_any),
         ("bin", bi_bin),
@@ -1367,11 +1396,6 @@ fn install_functions(vm: &mut Vm) {
         ("hasattr", bi_hasattr),
         ("dir", bi_dir),
         ("divmod", bi_divmod),
-        ("enumerate", bi_enumerate),
-        ("zip", bi_zip),
-        ("map", bi_map),
-        ("filter", bi_filter),
-        ("reversed", bi_reversed),
         ("iter", bi_iter),
         ("next", bi_next),
         ("format", bi_format),
@@ -1522,7 +1546,7 @@ fn bi_abs(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
                 return vm.call_vec(&f, vec![], &[]);
             }
             let b = vm.base_of(v);
-            if !matches!(b, Value::Instance(_)) {
+            if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                 return bi_abs(vm, &[b], &[]);
             }
             let tn = vm.type_name(v);
@@ -1780,7 +1804,7 @@ fn bi_divmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::tuple(vec![q, r]))
 }
 
-fn bi_enumerate(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+pub fn bi_enumerate(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let it = match arg_or_kw(a, 0, k, "iterable") {
         Some(v) => v,
         None => return Err(vm.type_error("enumerate() missing required argument 'iterable'")),
@@ -1794,7 +1818,7 @@ fn bi_enumerate(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     Ok(mk_iter(Iter::Enumerate(inner, start)))
 }
 
-fn bi_zip(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+pub fn bi_zip(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let strict = match kwarg(k, "strict") {
         Some(v) => vm.truthy(&v)?,
         None => false,
@@ -1819,7 +1843,7 @@ impl Exc {
     }
 }
 
-fn bi_map(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+pub fn bi_map(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     if a.len() < 2 {
         return Err(vm.type_error("map() must have at least two arguments."));
     }
@@ -1830,13 +1854,13 @@ fn bi_map(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(mk_iter(Iter::Map(a[0].clone(), its)))
 }
 
-fn bi_filter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+pub fn bi_filter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "filter", a, 2, 2)?;
     let it = vm.iter(&a[1])?;
     Ok(mk_iter(Iter::Filter(a[0].clone(), it, false)))
 }
 
-fn bi_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+pub fn bi_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "reversed", a, 1, 1)?;
     let v = &a[0];
     match v {
@@ -1875,7 +1899,7 @@ fn bi_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
                 }
             }
             let b = vm.base_of(v);
-            if !matches!(b, Value::Instance(_) | Value::Obj(_)) {
+            if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_) | Value::Obj(_)) {
                 return bi_reversed(vm, &[b], &[]);
             }
             if let Value::Obj(o) = v {
@@ -2475,6 +2499,7 @@ fn bi_globals(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn bi_vars(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     if a.is_empty() {
         return bi_locals(vm, a, k);
     }
@@ -2664,4 +2689,22 @@ fn bi_anext(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "anext", a, 1, 2)?;
     let f = vm.getattr(&a[0], &ps("__anext__"))?;
     vm.call_vec(&f, vec![], &[])
+}
+
+/// the module a native function belongs to, from its dotted name
+pub fn native_module_name(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((m, _)) if matches!(m, "math" | "sys" | "_time" | "os" | "posixpath" | "json" | "_random" | "_struct" | "_hashlib") => m,
+        _ => "builtins",
+    }
+}
+
+/// natives that read a[n-1] check first that it is there
+pub fn need(vm: &mut Vm, a: &[Value], n: usize) -> PyResult<()> {
+    if a.len() < n {
+        let got = a.len().saturating_sub(1);
+        let want = n - 1;
+        return Err(vm.type_error(format!("expected {} argument{}, got {}", want, if want == 1 { "" } else { "s" }, got)));
+    }
+    Ok(())
 }

@@ -146,16 +146,37 @@ pub fn install(vm: &mut Vm) {
             ("strip", b_strip),
             ("lstrip", b_lstrip),
             ("rstrip", b_rstrip),
-            ("startswith", b_startswith),
-            ("endswith", b_endswith),
-            ("find", b_find),
-            ("index", b_index),
-            ("count", b_count),
-            ("replace", b_replace),
+            ("startswith", bs_startswith),
+            ("endswith", bs_endswith),
+            ("find", bs_find),
+            ("rfind", bs_rfind),
+            ("index", bs_index),
+            ("rindex", bs_rindex),
+            ("count", bs_count),
+            ("replace", bs_replace),
+            ("partition", bs_partition),
+            ("rpartition", bs_rpartition),
+            ("center", bs_center),
+            ("ljust", bs_ljust),
+            ("rjust", bs_rjust),
+            ("zfill", bs_zfill),
+            ("expandtabs", bs_expandtabs),
+            ("removeprefix", bs_removeprefix),
+            ("removesuffix", bs_removesuffix),
+            ("splitlines", bs_splitlines),
+            ("rsplit", bs_rsplit),
             ("upper", b_upper),
             ("lower", b_lower),
+            ("swapcase", b_swapcase),
+            ("capitalize", b_capitalize),
+            ("title", b_title),
             ("isdigit", b_isdigit),
             ("isalpha", b_isalpha),
+            ("isalnum", b_isalnum),
+            ("isascii", b_isascii),
+            ("islower", b_islower),
+            ("isupper", b_isupper),
+            ("istitle", b_istitle),
             ("isspace", b_isspace),
         ];
         for (n, f) in fs {
@@ -215,8 +236,248 @@ fn decode_bytes(vm: &mut Vm, b: &[u8], enc: &str, errors: &str) -> PyResult<Stri
             }
             Ok(out)
         }
-        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" | "l1" | "cp1252" => Ok(b.iter().map(|&c| c as char).collect()),
+        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" | "l1" | "cp1252" | "8859" | "cp819" | "latin" => Ok(b.iter().map(|&c| c as char).collect()),
+        "raw-unicode-escape" | "unicode-escape" => unescape_bytes(vm, b, enc == "raw-unicode-escape", errors),
+        "utf-16" | "utf16" | "utf-16-le" | "utf-16le" | "utf-16-be" | "utf-16be" | "utf-32" | "utf32" | "utf-32-le" | "utf-32le" | "utf-32-be" | "utf-32be" => {
+            let wide = enc.contains("32");
+            let unit = if wide { 4 } else { 2 };
+            let mut big = enc.ends_with("be");
+            let mut b = b;
+            if !enc.contains('l') && !enc.ends_with("be") {
+                // a byte order mark decides, little-endian without one
+                if wide && b.starts_with(&[0xff, 0xfe, 0, 0]) {
+                    b = &b[4..];
+                } else if wide && b.starts_with(&[0, 0, 0xfe, 0xff]) {
+                    b = &b[4..];
+                    big = true;
+                } else if !wide && b.starts_with(&[0xff, 0xfe]) {
+                    b = &b[2..];
+                } else if !wide && b.starts_with(&[0xfe, 0xff]) {
+                    b = &b[2..];
+                    big = true;
+                }
+            }
+            let name = if wide { "utf-32" } else { "utf-16" };
+            let mut units = vec![];
+            for (i, ch) in b.chunks(unit).enumerate() {
+                if ch.len() < unit {
+                    if errors == "ignore" {
+                        break;
+                    }
+                    if errors == "replace" {
+                        units.push(0xfffd);
+                        break;
+                    }
+                    return Err(vm.err("UnicodeDecodeError", format!("'{}-{}' codec can't decode byte 0x{:02x} in position {}: truncated data", name, if big { "be" } else { "le" }, ch[0], i * unit)));
+                }
+                let mut v: u32 = 0;
+                for k in 0..unit {
+                    let byte = if big { ch[k] } else { ch[unit - 1 - k] } as u32;
+                    v = (v << 8) | byte;
+                }
+                units.push(v);
+            }
+            let mut out = String::new();
+            let mut i = 0;
+            while i < units.len() {
+                let u = units[i];
+                let c = if !wide && (0xd800..0xdc00).contains(&u) && i + 1 < units.len() && (0xdc00..0xe000).contains(&units[i + 1]) {
+                    i += 1;
+                    char::from_u32(0x10000 + ((u - 0xd800) << 10) + (units[i] - 0xdc00))
+                } else {
+                    char::from_u32(u)
+                };
+                match c {
+                    Some(c) => out.push(c),
+                    None if errors == "replace" => out.push('\u{fffd}'),
+                    None if errors == "ignore" => {}
+                    None => return Err(vm.err("UnicodeDecodeError", format!("'{}' codec can't decode bytes in position {}-{}: {}", name, i * unit, i * unit + unit - 1, if wide { "code point not in range(0x110000)" } else { "illegal encoding" }))),
+                }
+                i += 1;
+            }
+            Ok(out)
+        }
         _ => Err(vm.err("LookupError", format!("unknown encoding: {}", enc))),
+    }
+}
+
+/// the unicode-escape and raw-unicode-escape decoders
+fn unescape_bytes(vm: &mut Vm, b: &[u8], raw: bool, errors: &str) -> PyResult<String> {
+    let codec = if raw { "rawunicodeescape" } else { "unicodeescape" };
+    let mut out = String::new();
+    let mut i = 0;
+    let bad = |vm: &mut Vm, start: usize, end: usize, msg: &str| vm.err("UnicodeDecodeError", format!("'{}' codec can't decode bytes in position {}-{}: {}", codec, start, end.saturating_sub(1), msg));
+    while i < b.len() {
+        let c = b[i];
+        if c != b'\\' || i + 1 >= b.len() {
+            if c == b'\\' && !raw {
+                if errors == "ignore" {
+                    i += 1;
+                    continue;
+                }
+                if errors == "replace" {
+                    out.push('\u{fffd}');
+                    i += 1;
+                    continue;
+                }
+                return Err(vm.err("UnicodeDecodeError", format!("'{}' codec can't decode byte 0x5c in position {}: \\ at end of string", codec, i)));
+            }
+            out.push(c as char);
+            i += 1;
+            continue;
+        }
+        let e = b[i + 1];
+        let hex = |n: usize, at: usize| -> Option<u32> {
+            if at + n > b.len() {
+                return None;
+            }
+            let s = std::str::from_utf8(&b[at..at + n]).ok()?;
+            if !s.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            u32::from_str_radix(s, 16).ok()
+        };
+        if raw {
+            let n = match e {
+                b'u' => 4,
+                b'U' => 8,
+                _ => {
+                    out.push('\\');
+                    i += 1;
+                    continue;
+                }
+            };
+            match hex(n, i + 2).and_then(char::from_u32) {
+                Some(ch) => {
+                    out.push(ch);
+                    i += 2 + n;
+                }
+                None => {
+                    if errors == "ignore" || errors == "replace" {
+                        if errors == "replace" {
+                            out.push('\u{fffd}');
+                        }
+                        i += 2;
+                        while i < b.len() && (b[i] as char).is_ascii_hexdigit() {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    let msg = if hex(n, i + 2).is_some() { "\\Uxxxxxxxx out of range" } else if n == 4 { "truncated \\uXXXX escape" } else { "truncated \\UXXXXXXXX escape" };
+                    return Err(bad(vm, i, (i + 2 + n).min(b.len()), msg));
+                }
+            }
+            continue;
+        }
+        i += 2;
+        match e {
+            b'\n' => {}
+            b'\\' => out.push('\\'),
+            b'\'' => out.push('\''),
+            b'"' => out.push('"'),
+            b'a' => out.push('\x07'),
+            b'b' => out.push('\x08'),
+            b'f' => out.push('\x0c'),
+            b'n' => out.push('\n'),
+            b'r' => out.push('\r'),
+            b't' => out.push('\t'),
+            b'v' => out.push('\x0b'),
+            b'0'..=b'7' => {
+                let mut v = (e - b'0') as u32;
+                let mut k = 0;
+                while k < 2 && i < b.len() && (b'0'..=b'7').contains(&b[i]) {
+                    v = v * 8 + (b[i] - b'0') as u32;
+                    i += 1;
+                    k += 1;
+                }
+                out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
+            }
+            b'x' | b'u' | b'U' => {
+                let n = match e {
+                    b'x' => 2,
+                    b'u' => 4,
+                    _ => 8,
+                };
+                match hex(n, i).and_then(char::from_u32) {
+                    Some(ch) => {
+                        out.push(ch);
+                        i += n;
+                    }
+                    None => {
+                        if errors == "ignore" || errors == "replace" {
+                            if errors == "replace" {
+                                out.push('\u{fffd}');
+                            }
+                            while i < b.len() && (b[i] as char).is_ascii_hexdigit() {
+                                i += 1;
+                            }
+                            continue;
+                        }
+                        let msg = match (e, hex(n, i).is_some()) {
+                            (b'U', true) => "illegal Unicode character".to_string(),
+                            (b'x', _) => "truncated \\xXX escape".to_string(),
+                            (b'u', _) => "truncated \\uXXXX escape".to_string(),
+                            _ => "truncated \\UXXXXXXXX escape".to_string(),
+                        };
+                        return Err(bad(vm, i - 2, (i + n).min(b.len()), &msg));
+                    }
+                }
+            }
+            b'N' => {
+                let end = if i < b.len() && b[i] == b'{' { b[i..].iter().position(|&x| x == b'}').map(|p| i + p) } else { None };
+                let ch = end.and_then(|end| std::str::from_utf8(&b[i + 1..end]).ok().and_then(|n| crate::unicode_name(n)).map(|c| (c, end)));
+                match ch {
+                    Some((c, end)) => {
+                        out.push(c);
+                        i = end + 1;
+                    }
+                    None => {
+                        if errors == "ignore" || errors == "replace" {
+                            if errors == "replace" {
+                                out.push('\u{fffd}');
+                            }
+                            if let Some(end) = end {
+                                i = end + 1;
+                            }
+                            continue;
+                        }
+                        return Err(bad(vm, i - 2, end.map_or(b.len(), |e| e + 1), "malformed \\N character escape"));
+                    }
+                }
+            }
+            other => {
+                out.push('\\');
+                out.push(other as char);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// \\xhh, \\uhhhh or \\Uhhhhhhhh for one character
+fn escape_char(c: char) -> String {
+    let n = c as u32;
+    if n < 0x100 {
+        format!("\\x{:02x}", n)
+    } else if n < 0x10000 {
+        format!("\\u{:04x}", n)
+    } else {
+        format!("\\U{:08x}", n)
+    }
+}
+
+/// what an error handler puts for a character the codec can't encode
+fn encode_replacement(errors: &str, c: char, ascii_q: bool) -> Option<String> {
+    match errors {
+        "replace" => Some(if ascii_q { "?".into() } else { "?".into() }),
+        "ignore" => Some(String::new()),
+        "backslashreplace" => Some(escape_char(c)),
+        "xmlcharrefreplace" => Some(format!("&#{};", c as u32)),
+        "namereplace" => Some(match crate::unicode_name_of(c) {
+            Some(n) => format!("\\N{{{}}}", n),
+            None => escape_char(c),
+        }),
+        _ => None,
     }
 }
 
@@ -229,18 +490,69 @@ pub fn encode_str(vm: &mut Vm, st: &str, enc: &str, errors: &str) -> PyResult<Ve
             v.extend_from_slice(st.as_bytes());
             Ok(v)
         }
-        "ascii" | "us-ascii" | "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" | "l1" => {
+        "ascii" | "us-ascii" | "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" | "l1" | "8859" | "cp819" | "latin" => {
             let limit = if e.contains("ascii") { 128 } else { 256 };
             let mut out = vec![];
             for (i, c) in st.chars().enumerate() {
                 if (c as u32) < limit {
                     out.push(c as u32 as u8);
-                } else if errors == "replace" {
-                    out.push(b'?');
-                } else if errors == "ignore" {
+                } else if let Some(r) = encode_replacement(errors, c, true) {
+                    out.extend_from_slice(r.as_bytes());
                 } else {
                     let name = if limit == 128 { "ascii" } else { "latin-1" };
                     return Err(vm.err("UnicodeEncodeError", format!("'{}' codec can't encode character {} in position {}: ordinal not in range({})", name, crate::format::str_repr(&c.to_string()).replace('\'', "'"), i, limit)));
+                }
+            }
+            Ok(out)
+        }
+        "raw-unicode-escape" => {
+            let mut out = vec![];
+            for c in st.chars() {
+                if (c as u32) < 0x100 {
+                    out.push(c as u32 as u8);
+                } else {
+                    out.extend_from_slice(escape_char(c).as_bytes());
+                }
+            }
+            Ok(out)
+        }
+        "unicode-escape" => {
+            let mut out = String::new();
+            for c in st.chars() {
+                match c {
+                    '\\' => out.push_str("\\\\"),
+                    '\t' => out.push_str("\\t"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    ' '..='~' => out.push(c),
+                    _ => out.push_str(&escape_char(c)),
+                }
+            }
+            Ok(out.into_bytes())
+        }
+        "utf-16" | "utf16" | "utf-16-le" | "utf-16le" | "utf-16-be" | "utf-16be" | "utf-32" | "utf32" | "utf-32-le" | "utf-32le" | "utf-32-be" | "utf-32be" => {
+            let wide = e.contains("32");
+            let big = e.ends_with("be");
+            let mut out = vec![];
+            if !e.contains('l') && !big {
+                out.extend_from_slice(if wide { &[0xff, 0xfe, 0, 0][..] } else { &[0xff, 0xfe][..] });
+            }
+            let mut push = |u: u32, n: usize| {
+                let bytes: Vec<u8> = (0..n).map(|k| (u >> (8 * k)) as u8).collect();
+                if big {
+                    out.extend(bytes.iter().rev());
+                } else {
+                    out.extend(bytes.iter());
+                }
+            };
+            for c in st.chars() {
+                if wide {
+                    push(c as u32, 4);
+                } else {
+                    let mut buf = [0u16; 2];
+                    for u in c.encode_utf16(&mut buf) {
+                        push(*u as u32, 2);
+                    }
                 }
             }
             Ok(out)
@@ -250,6 +562,7 @@ pub fn encode_str(vm: &mut Vm, st: &str, enc: &str, errors: &str) -> PyResult<Ve
 }
 
 fn str_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let obj = arg_or_kw(a, 1, k, "object");
     let enc = arg_or_kw(a, 2, k, "encoding");
     let errors = arg_or_kw(a, 3, k, "errors");
@@ -278,6 +591,7 @@ fn str_len(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(x.char_len() as i64))
 }
 fn str_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = me(vm, a, "__getitem__")?;
     seq_getitem(vm, &Value::Str(x), &a[1])
 }
@@ -291,6 +605,7 @@ fn str_iter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(mk_iter(Iter::Str(x, 0)))
 }
 fn str_add(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = me(vm, a, "__add__")?;
     match vm.base_of(&a[1]) {
         Value::Str(y) => Ok(s(format!("{}{}", x.s, y.s))),
@@ -298,6 +613,7 @@ fn str_add(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 fn str_mul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = me(vm, a, "__mul__")?;
     match vm.base_of(&a[1]) {
         Value::Int(n) => { let n = vm.repeat_count(x.s.len(), n)?; Ok(s(x.s.repeat(n))) }
@@ -306,6 +622,7 @@ fn str_mul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 fn str_mod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = me(vm, a, "__mod__")?;
     Ok(s(crate::format::percent_format(vm, &Value::Str(x), &a[1])?))
 }
@@ -1028,8 +1345,22 @@ fn char_test(vm: &mut Vm, a: &[Value], m: &str, f: fn(char) -> bool) -> PyResult
     Ok(Value::Bool(!x.s.is_empty() && x.s.chars().all(f)))
 }
 
+/// The zero of each run of ten Unicode decimal digits (category Nd)
+const DECIMAL_ZEROS: [u32; 68] = [0x30, 0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66, 0xce6, 0xd66, 0xde6, 0xe50, 0xed0, 0xf20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946, 0x19d0, 0x1a80, 0x1a90, 0x1b50, 0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0, 0xa9f0, 0xaa50, 0xabf0, 0xff10, 0x104a0, 0x10d30, 0x11066, 0x110f0, 0x11136, 0x111d0, 0x112f0, 0x11450, 0x114d0, 0x11650, 0x116c0, 0x11730, 0x118e0, 0x11950, 0x11c50, 0x11d50, 0x11da0, 0x11f50, 0x16a60, 0x16ac0, 0x16b50, 0x1d7ce, 0x1d7d8, 0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140, 0x1e2f0, 0x1e4f0, 0x1e950, 0x1fbf0];
+
+/// The value of a Unicode decimal digit
+pub fn decimal_value(c: char) -> Option<u32> {
+    let u = c as u32;
+    let i = DECIMAL_ZEROS.partition_point(|&z| z <= u);
+    if i == 0 {
+        return None;
+    }
+    let d = u - DECIMAL_ZEROS[i - 1];
+    (d < 10).then_some(d)
+}
+
 fn is_decimal(c: char) -> bool {
-    c.is_ascii_digit() || (c.is_numeric() && c.to_digit(10).is_some()) || ('\u{660}'..='\u{669}').contains(&c) || ('\u{ff10}'..='\u{ff19}').contains(&c) || ('\u{966}'..='\u{96f}').contains(&c)
+    decimal_value(c).is_some()
 }
 
 fn str_isdigit(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -1228,6 +1559,7 @@ fn bytes_from(vm: &mut Vm, src: Option<&Value>, enc: Option<Value>, errors: Opti
 }
 
 fn bytes_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let src = arg_or_kw(a, 1, k, "source");
     let v = bytes_from(vm, src.as_ref(), arg_or_kw(a, 2, k, "encoding"), arg_or_kw(a, 3, k, "errors"))?;
     let t = vm.t.bytes.clone();
@@ -1235,11 +1567,13 @@ fn bytes_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn bytearray_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let t = vm.t.bytearray.clone();
     Ok(wrap_new(vm, &a[0], &t, Value::ByteArray(Rc::new(RefCell::new(vec![])))))
 }
 
 fn bytearray_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let src = arg_or_kw(a, 1, k, "source");
     let v = bytes_from(vm, src.as_ref(), arg_or_kw(a, 2, k, "encoding"), arg_or_kw(a, 3, k, "errors"))?;
     if let Value::ByteArray(b) = vm.base_of(&a[0]) {
@@ -1252,10 +1586,12 @@ fn b_len(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(bme(vm, a)?.len() as i64))
 }
 fn b_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = vm.base_of(&a[0]);
     seq_getitem(vm, &x, &a[1])
 }
 fn b_contains(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = vm.base_of(&a[0]);
     Ok(Value::Bool(vm.contains(&x, &a[1])?))
 }
@@ -1264,12 +1600,14 @@ fn b_iter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     vm.iter(&x)
 }
 fn b_add(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let mut x = bme(vm, a)?;
     let y = bytes_of(vm, &a[1])?;
     x.extend(y);
     Ok(same_type(&vm.base_of(&a[0]), x))
 }
 fn b_eq(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = bme(vm, a)?;
     match bytes_of(vm, &a[1]) {
         Ok(y) => Ok(Value::Bool(x == y)),
@@ -1277,6 +1615,7 @@ fn b_eq(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 fn b_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let x = vm.base_of(&a[0]);
     Ok(s(vm.repr(&x)?))
 }
@@ -1297,6 +1636,7 @@ fn b_hex(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     Ok(s(parts.join(sep.as_deref().unwrap_or(""))))
 }
 fn b_fromhex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let st = as_pystr(vm, &a[1], "fromhex")?;
     let digits: Vec<char> = st.s.chars().filter(|c| !c.is_whitespace()).collect();
     if digits.len() % 2 != 0 {
@@ -1314,6 +1654,7 @@ fn b_fromhex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(if is_ba { Value::ByteArray(Rc::new(RefCell::new(out))) } else { Value::Bytes(Rc::new(out)) })
 }
 fn b_join(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let sep = bme(vm, a)?;
     let items = vm.to_vec(&a[1])?;
     let mut out = vec![];
@@ -1422,11 +1763,13 @@ fn b_needle(vm: &mut Vm, v: &Value) -> PyResult<Vec<u8>> {
     }
 }
 fn b_find(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = bme(vm, a)?;
     let n = b_needle(vm, &a[1])?;
     Ok(Value::Int(find_sub(&x, &n).map(|p| p as i64).unwrap_or(-1)))
 }
 fn b_index(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = bme(vm, a)?;
     let n = b_needle(vm, &a[1])?;
     match find_sub(&x, &n) {
@@ -1435,6 +1778,7 @@ fn b_index(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 fn b_count(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = bme(vm, a)?;
     let n = b_needle(vm, &a[1])?;
     if n.is_empty() {
@@ -1453,6 +1797,7 @@ fn b_count(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(c))
 }
 fn b_replace(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 3)?;
     let x = bme(vm, a)?;
     let old = bytes_of(vm, &a[1])?;
     let new = bytes_of(vm, &a[2])?;
@@ -1501,22 +1846,26 @@ fn ba_of(vm: &mut Vm, a: &[Value]) -> PyResult<Rc<RefCell<Vec<u8>>>> {
     }
 }
 fn ba_setitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 3)?;
     let x = vm.base_of(&a[0]);
     seq_setitem(vm, &x, &a[1], a[2].clone())?;
     Ok(Value::None)
 }
 fn ba_delitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = vm.base_of(&a[0]);
     seq_delitem(vm, &x, &a[1])?;
     Ok(Value::None)
 }
 fn ba_iadd(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let b = ba_of(vm, a)?;
     let y = bytes_of(vm, &a[1])?;
     b.borrow_mut().extend(y);
     Ok(a[0].clone())
 }
 fn ba_append(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let b = ba_of(vm, a)?;
     let i = vm.to_index(&a[1])?;
     if !(0..256).contains(&i) {
@@ -1526,6 +1875,7 @@ fn ba_append(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::None)
 }
 fn ba_extend(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let b = ba_of(vm, a)?;
     let y = bytes_from(vm, Some(&a[1]), None, None)?;
     b.borrow_mut().extend(y);
@@ -1556,6 +1906,7 @@ fn ba_clear(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::None)
 }
 fn ba_insert(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 3)?;
     let b = ba_of(vm, a)?;
     let n = b.borrow().len() as i64;
     let i = vm.to_index(&a[1])?;
@@ -1573,4 +1924,220 @@ fn ba_copy(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let b = ba_of(vm, a)?;
     let v = b.borrow().clone();
     Ok(Value::ByteArray(Rc::new(RefCell::new(v))))
+}
+
+// -------------------------------------------------------------------------
+// bytes methods done by the str method of the same name over latin-1 text
+
+fn latin1(b: &[u8]) -> String {
+    b.iter().map(|&c| c as char).collect()
+}
+
+fn unlatin1(s: &str) -> Vec<u8> {
+    s.chars().map(|c| c as u32 as u8).collect()
+}
+
+fn via_str(vm: &mut Vm, a: &[Value], k: Kw, name: &str, needle_int: bool) -> PyResult<Value> {
+    let me_v = vm.base_of(&a[0]);
+    let x = bytes_of(vm, &me_v)?;
+    let mut args = vec![Value::string(latin1(&x))];
+    for (i, v) in a[1..].iter().enumerate() {
+        args.push(match v {
+            Value::Bytes(b) => Value::string(latin1(b)),
+            Value::ByteArray(b) => Value::string(latin1(&b.borrow())),
+            Value::Int(n) if i == 0 && needle_int => {
+                if !(0..256).contains(n) {
+                    return Err(vm.value_error("byte must be in range(0, 256)"));
+                }
+                Value::string(latin1(&[*n as u8]))
+            }
+            Value::Tuple(t) if t.iter().all(|e| matches!(e, Value::Bytes(_) | Value::ByteArray(_))) => {
+                let mut items = vec![];
+                for e in t.iter() {
+                    let b = bytes_of(vm, e)?;
+                    items.push(Value::string(latin1(&b)));
+                }
+                Value::tuple(items)
+            }
+            Value::Str(_) if i == 0 || name == "replace" || name.ends_with("just") || name == "center" => {
+                let tn = vm.type_name(v);
+                return Err(vm.type_error(format!("a bytes-like object is required, not '{}'", tn)));
+            }
+            Value::Instance(_) => {
+                let b = vm.base_of(v);
+                match &b {
+                    Value::Bytes(bb) => Value::string(latin1(bb)),
+                    Value::ByteArray(bb) => Value::string(latin1(&bb.borrow())),
+                    _ => v.clone(),
+                }
+            }
+            other => other.clone(),
+        });
+    }
+    let mut kw = vec![];
+    for (n, v) in k {
+        let v = match v {
+            Value::Bytes(b) => Value::string(latin1(b)),
+            Value::ByteArray(b) => Value::string(latin1(&b.borrow())),
+            o => o.clone(),
+        };
+        kw.push((n.clone(), v));
+    }
+    let f = vm.t.str_.dict.borrow().get_s(name).unwrap();
+    let r = vm.call_vec(&f, args, &kw)?;
+    Ok(from_text(&me_v, r))
+}
+
+fn from_text(me: &Value, r: Value) -> Value {
+    match r {
+        Value::Str(s) => same_type(me, unlatin1(&s.s)),
+        Value::List(l) => {
+            let items: Vec<Value> = l.borrow().iter().map(|v| from_text(me, v.clone())).collect();
+            Value::list(items)
+        }
+        Value::Tuple(t) => Value::tuple(t.iter().map(|v| from_text(me, v.clone())).collect()),
+        other => other,
+    }
+}
+
+macro_rules! bytes_via_str {
+    ($( $fname:ident, $name:expr, $needle:expr );* $(;)?) => {
+        $(
+            fn $fname(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+                via_str(vm, a, k, $name, $needle)
+            }
+        )*
+    };
+}
+
+bytes_via_str! {
+    bs_startswith, "startswith", false;
+    bs_endswith, "endswith", false;
+    bs_find, "find", true;
+    bs_rfind, "rfind", true;
+    bs_index, "index", true;
+    bs_rindex, "rindex", true;
+    bs_count, "count", true;
+    bs_replace, "replace", false;
+    bs_partition, "partition", false;
+    bs_rpartition, "rpartition", false;
+    bs_center, "center", false;
+    bs_ljust, "ljust", false;
+    bs_rjust, "rjust", false;
+    bs_zfill, "zfill", false;
+    bs_expandtabs, "expandtabs", false;
+    bs_removeprefix, "removeprefix", false;
+    bs_removesuffix, "removesuffix", false;
+    bs_splitlines, "splitlines", false;
+}
+
+fn bs_rsplit(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let sep = arg_or_kw(a, 1, k, "sep").filter(|v| !v.is_none());
+    if sep.is_some() {
+        return via_str(vm, a, k, "rsplit", false);
+    }
+    // ASCII whitespace only
+    let me_v = vm.base_of(&a[0]);
+    let x = bytes_of(vm, &me_v)?;
+    let max = match arg_or_kw(a, 2, k, "maxsplit") {
+        Some(v) => vm.to_index(&v)?,
+        None => -1,
+    };
+    let ws = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+    let mut out = vec![];
+    let mut end = x.len();
+    let mut n = 0;
+    loop {
+        while end > 0 && ws(x[end - 1]) {
+            end -= 1;
+        }
+        if end == 0 {
+            break;
+        }
+        if max >= 0 && n >= max {
+            out.push(same_type(&me_v, x[..end].to_vec()));
+            break;
+        }
+        let mut start = end;
+        while start > 0 && !ws(x[start - 1]) {
+            start -= 1;
+        }
+        out.push(same_type(&me_v, x[start..end].to_vec()));
+        end = start;
+        n += 1;
+    }
+    out.reverse();
+    Ok(Value::list(out))
+}
+
+fn b_map(vm: &mut Vm, a: &[Value], f: impl Fn(&[u8]) -> Vec<u8>) -> PyResult<Value> {
+    let me_v = vm.base_of(&a[0]);
+    let x = bytes_of(vm, &me_v)?;
+    Ok(same_type(&me_v, f(&x)))
+}
+
+fn b_swapcase(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    b_map(vm, a, |x| x.iter().map(|c| if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }).collect())
+}
+
+fn b_capitalize(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    b_map(vm, a, |x| x.iter().enumerate().map(|(i, c)| if i == 0 { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }).collect())
+}
+
+fn b_title(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    b_map(vm, a, |x| {
+        let mut prev = false;
+        x.iter()
+            .map(|&c| {
+                let r = if prev { c.to_ascii_lowercase() } else { c.to_ascii_uppercase() };
+                prev = c.is_ascii_alphabetic();
+                r
+            })
+            .collect()
+    })
+}
+
+fn b_test(vm: &mut Vm, a: &[Value], f: impl Fn(&[u8]) -> bool) -> PyResult<Value> {
+    let x = bme(vm, a)?;
+    Ok(Value::Bool(f(&x)))
+}
+
+fn b_isalnum(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    b_test(vm, a, |x| !x.is_empty() && x.iter().all(|c| c.is_ascii_alphanumeric()))
+}
+
+fn b_isascii(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    b_test(vm, a, |x| x.is_ascii())
+}
+
+fn b_islower(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    b_test(vm, a, |x| x.iter().any(|c| c.is_ascii_lowercase()) && !x.iter().any(|c| c.is_ascii_uppercase()))
+}
+
+fn b_isupper(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    b_test(vm, a, |x| x.iter().any(|c| c.is_ascii_uppercase()) && !x.iter().any(|c| c.is_ascii_lowercase()))
+}
+
+fn b_istitle(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    b_test(vm, a, |x| {
+        let mut prev = false;
+        let mut any = false;
+        for &c in x {
+            if c.is_ascii_uppercase() {
+                if prev {
+                    return false;
+                }
+                any = true;
+                prev = true;
+            } else if c.is_ascii_lowercase() {
+                if !prev {
+                    return false;
+                }
+                prev = true;
+            } else {
+                prev = false;
+            }
+        }
+        any
+    })
 }

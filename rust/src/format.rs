@@ -350,7 +350,7 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
         Value::Ellipsis => "Ellipsis".into(),
         Value::Bool(b) => if *b { "True" } else { "False" }.into(),
         Value::Int(i) => i.to_string(),
-        Value::Big(b) => b.to_string(),
+        Value::Big(b) => big_decimal(vm, b)?,
         Value::Float(f) => float_repr(*f),
         Value::Complex(c) => complex_repr(c.0, c.1),
         Value::Str(s) => str_repr(&s.s),
@@ -619,6 +619,11 @@ pub fn parse_spec(s: &str) -> Option<Spec> {
     }
     if i > st {
         sp.width = c[st..i].iter().collect::<String>().parse().ok()?;
+        // CPython's widths are Py_ssize_t; past what memory could hold
+        // the answer is an error either way
+        if sp.width > 1 << 40 {
+            return None;
+        }
     }
     if i < c.len() && matches!(c[i], ',' | '_') {
         sp.grouping = Some(c[i]);
@@ -695,6 +700,44 @@ fn sign_str(sp: &Spec, neg: bool) -> &'static str {
     }
 }
 
+/// sys.set_int_max_str_digits: 0 is no limit
+pub static MAX_STR_DIGITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4300);
+
+pub fn max_str_digits() -> usize {
+    MAX_STR_DIGITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A big int in decimal, under the interpreter's digit limit
+pub fn big_decimal(vm: &mut Vm, b: &crate::bigint::BigInt) -> PyResult<String> {
+    let lim = max_str_digits();
+    let err = |vm: &mut Vm| vm.value_error(format!("Exceeds the limit ({}) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit", lim));
+    if lim > 0 {
+        // at least this many decimal digits: fail before the slow conversion
+        let low = ((b.bit_length().saturating_sub(1)) as f64 * std::f64::consts::LOG10_2) as usize;
+        if low > lim {
+            return Err(err(vm));
+        }
+    }
+    let s = b.to_string();
+    if lim > 0 && s.trim_start_matches('-').len() > lim {
+        return Err(err(vm));
+    }
+    Ok(s)
+}
+
+/// int(str) under the digit limit; power-of-two bases are not limited
+pub fn check_str_digits(vm: &mut Vm, s: &str, base: u32) -> PyResult<()> {
+    let lim = max_str_digits();
+    if lim == 0 || base & (base.wrapping_sub(1)) == 0 || s.len() <= lim {
+        return Ok(());
+    }
+    let n = s.chars().filter(|c| c.is_alphanumeric()).count();
+    if n > lim {
+        return Err(vm.value_error(format!("Exceeds the limit ({}) for integer string conversion: value has {} digits; use sys.set_int_max_str_digits() to increase the limit", lim, n)));
+    }
+    Ok(())
+}
+
 fn format_int(vm: &mut Vm, v: &crate::bigint::BigInt, sp: &Spec) -> PyResult<String> {
     let ty = sp.ty.unwrap_or('d');
     if sp.prec.is_some() && matches!(ty, 'd' | 'b' | 'o' | 'x' | 'X' | 'c' | 'n') {
@@ -706,7 +749,7 @@ fn format_int(vm: &mut Vm, v: &crate::bigint::BigInt, sp: &Spec) -> PyResult<Str
     let neg = v.neg;
     let mag = v.abs();
     let (prefix, digits) = match ty {
-        'd' | 'n' => ("", mag.to_radix(10)),
+        'd' | 'n' => ("", big_decimal(vm, &mag)?),
         'b' => ("0b", mag.to_radix(2)),
         'o' => ("0o", mag.to_radix(8)),
         'x' => ("0x", mag.to_radix(16)),
@@ -904,7 +947,11 @@ pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String
                 i += 1;
             }
             if i > st {
-                sp.width = c[st..i].iter().collect::<String>().parse().unwrap_or(0);
+                let w: Option<usize> = c[st..i].iter().collect::<String>().parse().ok();
+                match w {
+                    Some(w) if w <= 1 << 40 => sp.width = w,
+                    _ => return Err(vm.value_error("width too big")),
+                }
             }
         }
         if i < c.len() && c[i] == '.' {
@@ -918,7 +965,12 @@ pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String
                 while i < c.len() && c[i].is_ascii_digit() {
                     i += 1;
                 }
-                sp.prec = Some(c[st..i].iter().collect::<String>().parse().unwrap_or(0));
+                let p: Option<usize> = c[st..i].iter().collect::<String>().parse().ok();
+                match p {
+                    Some(p) if p <= i32::MAX as usize => sp.prec = Some(p),
+                    None if i == st => sp.prec = Some(0),
+                    _ => return Err(vm.value_error("precision too big")),
+                }
             }
         }
         while i < c.len() && matches!(c[i], 'h' | 'l' | 'L') {

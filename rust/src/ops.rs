@@ -139,7 +139,14 @@ impl Vm {
             Value::Class(c) => c.meta.borrow().clone().unwrap_or_else(|| t.type_.clone()),
             Value::Instance(i) => i.class.borrow().clone(),
             Value::Module(_) => t.module.clone(),
-            Value::Iter(_) => t.iterator.clone(),
+            Value::Iter(it) => match &*it.borrow() {
+                Iter::Enumerate(..) => t.enumerate.clone(),
+                Iter::Zip(..) => t.zip.clone(),
+                Iter::Map(..) => t.map.clone(),
+                Iter::Filter(_, _, false) => t.filter.clone(),
+                Iter::ListRev(..) => t.reversed.clone(),
+                _ => t.iterator.clone(),
+            },
             Value::Gen(g) => {
                 if g.borrow().coroutine {
                     t.coroutine.clone()
@@ -199,7 +206,7 @@ impl Vm {
 
     pub fn bind(&mut self, v: Value, obj: &Value, cls: &Rc<Class>) -> Value {
         match v {
-            Value::Func(_) | Value::Native(_) => Value::Method(Rc::new((obj.clone(), v))),
+            ref f if binds(f) => Value::Method(Rc::new((obj.clone(), v))),
             Value::ClassMethod(f) => Value::Method(Rc::new((Value::Class(cls.clone()), (*f).clone()))),
             Value::StaticMethod(f) => (*f).clone(),
             other => other,
@@ -331,6 +338,16 @@ impl Vm {
                         }
                     }
                 }
+                Value::Obj(_) if crate::tb::is_member(t) => {
+                    return match crate::tb::member_read(self, t, obj) {
+                        Ok(v) => Ok(Some(v)),
+                        Err(e) if cls.has_getattr.get() && self.exc_is(&e, "AttributeError") => {
+                            let g = cls.lookup(&self.n.getattr).unwrap();
+                            Ok(Some(self.call_vec(&g, vec![obj.clone(), Value::Str(name.clone())], &[])?))
+                        }
+                        Err(e) => Err(e),
+                    };
+                }
                 _ => {}
             }
         }
@@ -339,7 +356,7 @@ impl Vm {
         }
         if let Some(t) = tattr {
             return Ok(Some(match t {
-                Value::Func(_) | Value::Native(_) => Value::Method(Rc::new((obj.clone(), t))),
+                ref f if binds(f) => Value::Method(Rc::new((obj.clone(), t))),
                 Value::ClassMethod(f) => Value::Method(Rc::new((Value::Class(cls.clone()), (*f).clone()))),
                 Value::StaticMethod(f) => (*f).clone(),
                 Value::Instance(_) | Value::Obj(_) => {
@@ -354,7 +371,7 @@ impl Vm {
         }
         match &*name.s {
             "__class__" => return Ok(Some(Value::Class(cls.clone()))),
-            "__dict__" => return Ok(Some(Value::Dict(inst.dict.clone()))),
+            "__dict__" if has_dict(cls) => return Ok(Some(Value::Dict(inst.dict.clone()))),
             _ => {}
         }
         if let Some(v) = crate::builtins::instance_special(self, obj, inst, &name.s)? {
@@ -374,6 +391,12 @@ impl Vm {
         if let Some(Value::Property(p)) = &mattr {
             let g = p.fget.clone();
             return Ok(Some(self.call_vec(&g, vec![Value::Class(c.clone())], &[])?));
+        }
+        // type's own data descriptors
+        if matches!(&*name.s, "__name__" | "__qualname__" | "__dict__" | "__mro__" | "__bases__") {
+            if let Some(v) = crate::builtins::class_special(self, c, &name.s)? {
+                return Ok(Some(v));
+            }
         }
         if let Some(v) = c.lookup(name) {
             return Ok(Some(match v {
@@ -425,7 +448,7 @@ impl Vm {
             let v = c.dict.borrow().get_str(name).cloned();
             if let Some(v) = v {
                 return Ok(Some(match v {
-                    Value::Func(_) | Value::Native(_) => match obj {
+                    ref f if binds(f) => match obj {
                         Value::Class(_) if class_mode && &*name.s != "__new__" => v,
                         _ => {
                             if &*name.s == "__new__" {
@@ -465,7 +488,7 @@ impl Vm {
                 let cls = inst.class.borrow().clone();
                 if !cls.has_getattribute.get() {
                     if let Some(t) = cls.lookup(name) {
-                        if matches!(t, Value::Func(_) | Value::Native(_)) && inst.dict.borrow().get_str(name).is_none() {
+                        if binds(&t) && inst.dict.borrow().get_str(name).is_none() {
                             return Ok((t, obj));
                         }
                     }
@@ -475,7 +498,7 @@ impl Vm {
             _ => {
                 let cls = self.class_of(&obj);
                 if let Some(t) = cls.lookup(name) {
-                    if matches!(t, Value::Native(_) | Value::Func(_)) {
+                    if binds(&t) {
                         return Ok((t, obj));
                     }
                 }
@@ -566,6 +589,11 @@ impl Vm {
             }
             Value::Method(m) if matches!(m.1, Value::Func(_)) => Err(self.attr_error(format!("'method' object has no attribute '{}'", name.s))),
             _ => {
+                if let Value::Obj(o) = obj {
+                    if crate::tb::obj_setattr(self, o, &name.s, v.clone())? {
+                        return Ok(());
+                    }
+                }
                 let tn = self.type_name(obj);
                 let has = self.class_of(obj).lookup(name).is_some();
                 if has {
@@ -580,6 +608,9 @@ impl Vm {
     pub fn generic_setattr(&mut self, obj: &Value, inst: &Rc<Instance>, cls: &Rc<Class>, name: &Rc<PyStr>, v: Value) -> PyResult<()> {
         if let Some(t) = cls.lookup(name) {
             match &t {
+                Value::Obj(_) if crate::tb::is_member(&t) => {
+                    return crate::tb::member_write(self, &t, obj, Some(v));
+                }
                 Value::Property(p) => {
                     if p.fset.is_none() {
                         return Err(self.attr_error(format!("property '{}' of '{}' object has no setter", name.s, cls.name())));
@@ -611,7 +642,7 @@ impl Vm {
                     }
                 }
                 if !any {
-                    return Err(self.attr_error(format!("'{}' object has no attribute '{}'", cls.name(), name.s)));
+                    return Err(self.attr_error(format!("'{}' object has no attribute '{}' and no __dict__ for setting new attributes", cls.name(), name.s)));
                 }
             }
         }
@@ -629,10 +660,40 @@ impl Vm {
                 return Ok(());
             }
         }
-        if cls.builtin.get() == Builtin::BaseException && &*name.s == "args" {
-            let t = Value::tuple(self.to_vec(&v)?);
-            *inst.base.borrow_mut() = t;
-            return Ok(());
+        if cls.builtin.get() == Builtin::BaseException {
+            match &*name.s {
+                "args" => {
+                    let t = Value::tuple(self.to_vec(&v)?);
+                    *inst.base.borrow_mut() = t;
+                    return Ok(());
+                }
+                "__traceback__" => {
+                    let ok = v.is_none() || matches!(&v, Value::Obj(o) if matches!(&*o.kind.borrow(), ObjKind::Traceback { .. }));
+                    if !ok {
+                        return Err(self.type_error("__traceback__ must be a traceback or None"));
+                    }
+                    inst.extra.borrow_mut().set_str(name.clone(), v);
+                    return Ok(());
+                }
+                "__cause__" | "__context__" => {
+                    let ok = v.is_none() || matches!(&v, Value::Instance(i) if i.class.borrow().is_subclass(&self.t.base_exception));
+                    if !ok {
+                        let what = if &*name.s == "__cause__" { "cause" } else { "context" };
+                        return Err(self.type_error(format!("exception {} must be None or derive from BaseException", what)));
+                    }
+                    if &*name.s == "__cause__" {
+                        inst.extra.borrow_mut().set_str(self.n.suppress.clone(), Value::Bool(true));
+                    }
+                    inst.extra.borrow_mut().set_str(name.clone(), v);
+                    return Ok(());
+                }
+                "__suppress_context__" => {
+                    let b = self.truthy(&v)?;
+                    inst.extra.borrow_mut().set_str(name.clone(), Value::Bool(b));
+                    return Ok(());
+                }
+                _ => {}
+            }
         }
         inst.dict.borrow_mut().set_str(name.clone(), v);
         Ok(())
@@ -680,6 +741,9 @@ impl Vm {
                 }
                 if let Some(t) = cls.lookup(name) {
                     match &t {
+                        Value::Obj(_) if crate::tb::is_member(&t) => {
+                            return crate::tb::member_write(self, &t, obj, None);
+                        }
                         Value::Property(p) => {
                             if p.fdel.is_none() {
                                 return Err(self.attr_error(format!("property '{}' of '{}' object has no deleter", name.s, cls.name())));
@@ -745,7 +809,7 @@ impl Vm {
             }
             Value::Instance(_) => {
                 let b = self.base_of(v);
-                if !matches!(b, Value::Instance(_)) {
+                if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                     return self.to_f64(&b);
                 }
                 match self.lookup_special(v, &self.n.float_.clone()) {
@@ -1281,7 +1345,7 @@ impl Vm {
                     Some(f) if !matches!(f, Value::Method(ref m) if matches!(m.1, Value::Native(_))) => self.call_vec(&f, vec![], &[])?,
                     _ => {
                         let b = self.base_of(a);
-                        if !matches!(b, Value::Instance(_)) {
+                        if matches!(a, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                             return self.unary(op, &b);
                         }
                         let tn = self.type_name(a);
@@ -1406,6 +1470,15 @@ impl Vm {
             Some(f @ Value::Func(_)) | Some(f @ Value::Method(_)) | Some(f @ Value::Instance(_)) => {
                 let f = self.bind(f, obj, &cls);
                 let r = self.call_vec(&f, vec![other.clone()], &[])?;
+                if matches!(r, Value::NotImplemented) {
+                    Ok(None)
+                } else {
+                    Ok(Some(r))
+                }
+            }
+            // natives of classes made in Rust (SimpleNamespace)
+            Some(f @ Value::Native(_)) if matches!(&f, Value::Native(n) if !n.name.starts_with("object.")) && cls.builtin.get() == Builtin::User => {
+                let r = self.call_vec(&f, vec![obj.clone(), other.clone()], &[])?;
                 if matches!(r, Value::NotImplemented) {
                     Ok(None)
                 } else {
@@ -1706,7 +1779,7 @@ impl Vm {
                     return Ok(self.to_index(&r)? != 0);
                 }
                 let b = self.base_of(v);
-                if !matches!(b, Value::Instance(_)) {
+                if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                     return self.truthy(&b);
                 }
                 true
@@ -1747,7 +1820,7 @@ impl Vm {
                             return Err(self.type_error(format!("unhashable type: '{}'", tn)));
                         }
                         let b = self.base_of(v);
-                        if !matches!(b, Value::Instance(_)) {
+                        if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                             return self.hash(&b);
                         }
                         Ok((ptr_id(v) as u64) >> 4)
@@ -1791,7 +1864,7 @@ impl Vm {
                     return Ok(n as usize);
                 }
                 let b = self.base_of(v);
-                if !matches!(b, Value::Instance(_)) {
+                if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                     return self.len(&b);
                 }
                 let tn = self.type_name(v);
@@ -1983,7 +2056,7 @@ impl Vm {
                         if let Value::Native(n) = &m.1 {
                             if n.name.ends_with(".__iter__") && matches!(v, Value::Instance(_)) {
                                 let b = self.base_of(v);
-                                if !matches!(b, Value::Instance(_)) {
+                                if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                                     return self.iter(&b);
                                 }
                             }
@@ -1998,7 +2071,7 @@ impl Vm {
                 }
                 if matches!(v, Value::Instance(_)) {
                     let b = self.base_of(v);
-                    if !matches!(b, Value::Instance(_)) {
+                    if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                         return self.iter(&b);
                     }
                 }
@@ -2410,7 +2483,7 @@ impl Vm {
                     }
                     other => {
                         let b = self.base_of(obj);
-                        if !matches!(b, Value::Instance(_)) {
+                        if matches!(obj, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                             return self.setitem(&b, idx, v);
                         }
                         if let Some(f) = other {
@@ -2447,7 +2520,7 @@ impl Vm {
                     }
                     _ => {
                         let b = self.base_of(obj);
-                        if !matches!(b, Value::Instance(_)) {
+                        if matches!(obj, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                             return self.delitem(&b, idx);
                         }
                         let tn = cls.name();
@@ -2645,7 +2718,7 @@ impl Vm {
                 return self.str_of(v);
             }
             let b = self.base_of(v);
-            if !matches!(b, Value::Instance(_)) {
+            if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                 // a str/int subclass with its own __str__ formats as the base
                 return crate::format::format_spec(self, &b, spec);
             }
@@ -2657,4 +2730,28 @@ impl Vm {
         }
         crate::format::format_spec(self, v, spec)
     }
+}
+
+/// whether instances of `cls` have a __dict__: not when every class in the
+/// MRO up to object declares __slots__ without "__dict__"
+pub fn has_dict(cls: &Rc<Class>) -> bool {
+    for c in cls.mro.borrow().iter() {
+        match &*c.slots.borrow() {
+            Some(s) => {
+                if s.iter().any(|x| &**x == "__dict__") {
+                    return true;
+                }
+            }
+            None => {
+                if c.builtin.get() == Builtin::BaseException {
+                    return true;
+                }
+                let user = matches!(c.dict.borrow().get_s("__module__"), Some(Value::Str(m)) if &*m.s != "builtins");
+                if user {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }

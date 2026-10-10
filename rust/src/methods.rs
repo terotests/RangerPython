@@ -172,11 +172,13 @@ fn d_delitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::None)
 }
 fn d_iadd(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = this(vm, a);
     vm.inplace(BinOp::Add, &x, &a[1])?;
     Ok(a[0].clone())
 }
 fn d_imul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = this(vm, a);
     let r = vm.inplace(BinOp::Mul, &x, &a[1])?;
     if let (Value::List(l), Value::List(r)) = (&x, &r) {
@@ -188,6 +190,7 @@ fn d_imul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(a[0].clone())
 }
 fn d_divmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = this(vm, a);
     let y = vm.base_of(&a[1]);
     let q = vm.binop(BinOp::FloorDiv, &x, &y)?;
@@ -195,6 +198,7 @@ fn d_divmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::tuple(vec![q, r]))
 }
 fn d_rdivmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let x = this(vm, a);
     let y = vm.base_of(&a[1]);
     let q = vm.binop(BinOp::FloorDiv, &y, &x)?;
@@ -296,7 +300,7 @@ pub fn install_types(vm: &mut Vm) {
     def(&o, "object.__setattr__", object_setattr);
     def(&o, "object.__delattr__", object_delattr);
     def(&o, "object.__dir__", object_dir);
-    def(&o, "object.__reduce_ex__", object_reduce);
+    def(&o, "object.__reduce_ex__", object_reduce_ex);
     def(&o, "object.__reduce__", object_reduce);
     def(&o, "object.__sizeof__", object_sizeof);
     def(&o, "object.__getstate__", object_getstate);
@@ -473,6 +477,7 @@ pub fn install_types(vm: &mut Vm) {
     def(&fs, "frozenset.__hash__", d_hash);
     let r = t.range.clone();
     def(&r, "range.__new__", range_new);
+    def(&r, "range.__reduce__", range_reduce);
     def_seq(&r, "range");
     def(&r, "range.__eq__", d_eq);
     def(&r, "range.__ne__", d_ne);
@@ -506,11 +511,19 @@ pub fn install_types(vm: &mut Vm) {
     def(&md, "module.__repr__", d_repr);
     def(&md, "module.__dir__", object_dir);
     let it = t.iterator.clone();
+    def(&t.enumerate.clone(), "enumerate.__new__", enumerate_new);
+    def(&t.zip.clone(), "zip.__new__", zip_new);
+    def(&t.map.clone(), "map.__new__", map_new);
+    def(&t.filter.clone(), "filter.__new__", filter_new);
+    def(&t.reversed.clone(), "reversed.__new__", reversed_new);
     def(&it, "iterator.__iter__", return_self);
     def(&it, "iterator.__next__", iter_next);
     def(&it, "iterator.__length_hint__", iter_length_hint);
-    def(&it, "iterator.__reduce__", object_reduce);
-    def(&it, "iterator.__setstate__", no_op);
+    def(&it, "iterator.__reduce__", iter_reduce);
+    let bf = t.builtin_function.clone();
+    def(&bf, "builtin_function_or_method.__reduce__", native_reduce);
+    def(&bf, "builtin_function_or_method.__reduce_ex__", native_reduce);
+    def(&it, "iterator.__setstate__", iter_setstate);
     for g in [t.generator.clone(), t.coroutine.clone()] {
         let nm = g.name();
         let leak = |x: &str| -> &'static str { Box::leak(format!("{}.{}", nm, x).into_boxed_str()) };
@@ -584,6 +597,7 @@ fn cls_arg(vm: &mut Vm, v: &Value, what: &str) -> PyResult<Rc<Class>> {
 }
 
 fn object_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     if a.is_empty() {
         return Err(vm.type_error("object.__new__(): not enough arguments"));
     }
@@ -602,14 +616,17 @@ fn object_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn object_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     Ok(Value::string(crate::format::object_repr(vm, &a[0])))
 }
 
 fn object_str(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     Ok(Value::string(vm.repr(&a[0])?))
 }
 
 fn object_eq(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "__eq__", a, 1, 1)?;
     Ok(if a[0].is(&a[1]) { Value::Bool(true) } else { Value::NotImplemented })
 }
@@ -633,6 +650,7 @@ fn object_hash(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn object_format(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "__format__", a, 1, 1)?;
     let spec = as_pystr(vm, &a[1], "format spec")?;
     if !spec.s.is_empty() {
@@ -643,6 +661,7 @@ fn object_format(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn object_getattribute(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "__getattribute__", a, 1, 1)?;
     let name = as_pystr(vm, &a[1], "attribute name")?;
     match &a[0] {
@@ -663,6 +682,7 @@ fn object_getattribute(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn object_setattr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 3)?;
     margs(vm, "__setattr__", a, 2, 2)?;
     let name = as_pystr(vm, &a[1], "attribute name")?;
     match &a[0] {
@@ -677,6 +697,7 @@ fn object_setattr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn object_delattr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "__delattr__", a, 1, 1)?;
     let name = as_pystr(vm, &a[1], "attribute name")?;
     if let Value::Instance(inst) = &a[0] {
@@ -696,30 +717,43 @@ fn object_delattr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn object_dir(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let names = dir_of(vm, &a[0])?;
     Ok(Value::list(names.into_iter().map(Value::string).collect()))
 }
 
+fn reduce_helper(vm: &mut Vm, f: &str, args: Vec<Value>) -> PyResult<Value> {
+    let m = vm.import("_reduce", &Value::None, 0, &vm.main_globals.clone())?;
+    let h = vm.getattr(&m, &ps(f))?;
+    vm.call_vec(&h, args, &[])
+}
+
 fn object_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    let cls = vm.class_of(&a[0]);
-    let state = match &a[0] {
-        Value::Instance(i) => Value::dict(i.dict.borrow().copy()),
-        _ => Value::None,
-    };
-    let copyreg = vm.import("copyreg", &Value::None, 0, &vm.main_globals.clone())?;
-    let recon = vm.getattr(&copyreg, &ps("__newobj__"))?;
-    Ok(Value::tuple(vec![recon, Value::tuple(vec![Value::Class(cls)]), state]))
+    crate::builtins::need(vm, a, 1)?;
+    reduce_helper(vm, "common_reduce", vec![a[0].clone(), Value::Int(0)])
+}
+
+fn object_reduce_ex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    if a.len() != 2 {
+        return Err(vm.type_error(format!("object.__reduce_ex__() takes exactly one argument ({} given)", a.len().saturating_sub(1))));
+    }
+    let proto = vm.to_index(&a[1])?;
+    reduce_helper(vm, "reduce_ex", vec![a[0].clone(), Value::Int(proto)])
 }
 
 fn object_sizeof(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(16))
 }
 
-fn object_getstate(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    Ok(match &a[0] {
-        Value::Instance(i) if !i.dict.borrow().is_empty() => Value::dict(i.dict.borrow().copy()),
-        _ => Value::None,
-    })
+fn object_getstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    if let Value::Instance(i) = &a[0] {
+        if i.extra.borrow().is_empty() || i.class.borrow().builtin.get() == Builtin::BaseException {
+            return Ok(if i.dict.borrow().is_empty() { Value::None } else { Value::dict(i.dict.borrow().copy()) });
+        }
+        return reduce_helper(vm, "getstate", vec![a[0].clone()]);
+    }
+    Ok(Value::None)
 }
 
 fn object_init_subclass(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
@@ -775,17 +809,20 @@ fn type_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn type_call(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let c = cls_arg(vm, &a[0], "type.__call__")?;
     vm.type_call(&c, a[1..].to_vec(), k)
 }
 
 fn type_mro(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let c = cls_arg(vm, &a[0], "mro")?;
     let v: Vec<Value> = c.mro.borrow().iter().map(|x| Value::Class(x.clone())).collect();
     Ok(Value::list(v))
 }
 
 fn type_subclasses(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let c = cls_arg(vm, &a[0], "__subclasses__")?;
     // classes are not tracked; scan what the modules hold
     let mut out: Vec<Value> = vec![];
@@ -816,11 +853,13 @@ fn type_subclasses(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn type_instancecheck(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let c = cls_arg(vm, &a[0], "__instancecheck__")?;
     Ok(Value::Bool(vm.isinstance(&a[1], &c)))
 }
 
 fn type_subclasscheck(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let c = cls_arg(vm, &a[0], "__subclasscheck__")?;
     match &a[1] {
         Value::Class(s) => Ok(Value::Bool(s.is_subclass(&c))),
@@ -833,10 +872,12 @@ fn type_prepare(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn type_or(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     make_union(vm, &a[0], &a[1])
 }
 
 fn type_ror(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     make_union(vm, &a[1], &a[0])
 }
 
@@ -872,7 +913,7 @@ pub fn parse_int(s: &str, base: u32) -> Option<BigInt> {
     if body.is_empty() || body.starts_with('_') || body.ends_with('_') || body.contains("__") {
         return None;
     }
-    let clean: String = body.chars().filter(|c| *c != '_').map(|c| if c.is_ascii_digit() || c.is_ascii_alphabetic() { c } else if let Some(d) = c.to_digit(10) { char::from_digit(d, 10).unwrap() } else { c }).collect();
+    let clean: String = body.chars().filter(|c| *c != '_').map(|c| if c.is_ascii_digit() || c.is_ascii_alphabetic() { c } else if let Some(d) = crate::strmethods::decimal_value(c) { char::from_digit(d, 10).unwrap() } else { c }).collect();
     if !clean.chars().all(|c| c.is_digit(base)) {
         return None;
     }
@@ -902,7 +943,7 @@ pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
                 Value::from_big(BigInt::from_f64(t).unwrap())
             }
         }
-        Value::Str(s) => match parse_int(&s.s, 10) {
+        Value::Str(s) => match { crate::format::check_str_digits(vm, &s.s, 10)?; parse_int(&s.s, 10) } {
             Some(b) => Value::from_big(b),
             None => {
                 let r = crate::format::str_repr(&s.s);
@@ -911,38 +952,45 @@ pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
         },
         Value::Bytes(_) | Value::ByteArray(_) => {
             let s = bytes_to_latin1(v);
+            crate::format::check_str_digits(vm, &s, 10)?;
             match parse_int(&s, 10) {
                 Some(b) => Value::from_big(b),
                 None => {
-                    let r = crate::format::bytes_repr(s.as_bytes());
+                    let r = crate::format::bytes_repr(&s.chars().map(|c| c as u8).collect::<Vec<u8>>());
                     return Err(vm.value_error(format!("invalid literal for int() with base 10: {}", r)));
                 }
             }
         }
         _ => {
-            for n in ["__int__", "__index__", "__trunc__"] {
+            let b = vm.base_of(v);
+            if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) && vm.lookup_special(v, &ps("__int__")).is_none_or(|f| matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)))) {
+                return to_int(vm, &b);
+            }
+            for n in ["__int__", "__index__"] {
                 if let Some(f) = vm.lookup_special(v, &ps(n)) {
-                    let is_native = matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)));
-                    if is_native {
-                        let b = vm.base_of(v);
-                        if !matches!(b, Value::Instance(_)) {
-                            return to_int(vm, &b);
-                        }
-                    }
                     let r = vm.call_vec(&f, vec![], &[])?;
-                    return match r {
-                        Value::Int(_) | Value::Big(_) => Ok(r),
-                        Value::Bool(b) => Ok(Value::Int(b as i64)),
-                        _ => {
-                            let tn = vm.type_name(&r);
-                            Err(vm.type_error(format!("{} returned non-int (type {})", n, tn)))
-                        }
-                    };
+                    return exact_int(vm, r, n);
                 }
             }
-            let b = vm.base_of(v);
-            if !matches!(b, Value::Instance(_)) {
-                return to_int(vm, &b);
+            if let Some(f) = vm.lookup_special(v, &ps("__trunc__")) {
+                crate::tb::warn(vm, "DeprecationWarning", "The delegation of int() to __trunc__ is deprecated.")?;
+                let r = vm.call_vec(&f, vec![], &[])?;
+                if matches!(vm.base_of(&r), Value::Int(_) | Value::Big(_) | Value::Bool(_)) {
+                    return exact_int(vm, r, "__trunc__");
+                }
+                if let Some(ix) = vm.lookup_special(&r, &ps("__index__")) {
+                    let r = vm.call_vec(&ix, vec![], &[])?;
+                    return exact_int(vm, r, "__index__");
+                }
+                let tn = vm.type_name(&r);
+                return Err(vm.type_error(format!("__trunc__ returned non-Integral (type {})", tn)));
+            }
+            // the buffer protocol: memoryview, array
+            if let Some(f) = vm.getattr_opt(v, &ps("tobytes")).ok().flatten() {
+                if matches!(vm.type_name(v).as_str(), "memoryview" | "array") {
+                    let by = vm.call_vec(&f, vec![], &[])?;
+                    return to_int(vm, &by);
+                }
             }
             let tn = vm.type_name(v);
             return Err(vm.type_error(format!("int() argument must be a string, a bytes-like object or a real number, not '{}'", tn)));
@@ -950,14 +998,44 @@ pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
     })
 }
 
+/// The int a __int__/__index__ returned, as an exact int
+fn exact_int(vm: &mut Vm, r: Value, n: &str) -> PyResult<Value> {
+    match r {
+        Value::Int(_) | Value::Big(_) => Ok(r),
+        Value::Bool(b) => Ok(Value::Int(b as i64)),
+        _ => {
+            let b = vm.base_of(&r);
+            if matches!(r, Value::Instance(_)) && matches!(b, Value::Int(_) | Value::Big(_) | Value::Bool(_)) {
+                let tn = vm.type_name(&r);
+                crate::tb::warn(vm, "DeprecationWarning", &format!("{} returned non-int (type {}).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.", n, tn))?;
+                return exact_int(vm, b, n);
+            }
+            let tn = vm.type_name(&r);
+            Err(vm.type_error(format!("{} returned non-int (type {})", n, tn)))
+        }
+    }
+}
+
 fn int_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
-    let x = arg_or_kw(a, 1, k, "x");
+    if a.len() > 3 {
+        return Err(vm.type_error(format!("int() takes at most 2 arguments ({} given)", a.len() - 1)));
+    }
+    for (name, _) in k.iter() {
+        if name.s.as_str() != "base" {
+            return Err(vm.type_error(format!("'{}' is an invalid keyword argument for int()", name.s)));
+        }
+    }
+    let x = a.get(1).cloned();
     let base = arg_or_kw(a, 2, k, "base");
     let v = match (x, base) {
         (None, None) => Value::Int(0),
         (Some(x), None) => to_int(vm, &x)?,
         (x, Some(b)) => {
-            let b = vm.to_index(&b)?;
+            let b = match vm.to_index(&b) {
+                Ok(b) => b,
+                Err(e) if vm.exc_is(&e, "OverflowError") => return Err(vm.value_error("int() base must be >= 2 and <= 36, or 0")),
+                Err(e) => return Err(e),
+            };
             if b != 0 && !(2..=36).contains(&b) {
                 return Err(vm.value_error("int() base must be >= 2 and <= 36, or 0"));
             }
@@ -970,10 +1048,17 @@ fn int_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
                 Value::Bytes(_) | Value::ByteArray(_) => bytes_to_latin1(&vm.base_of(&x)),
                 _ => return Err(vm.type_error("int() can't convert non-string with explicit base")),
             };
+            let eff = if b != 0 {
+                b as u32
+            } else {
+                let t = s.trim().trim_start_matches(['+', '-']).to_ascii_lowercase();
+                if t.starts_with("0x") { 16 } else if t.starts_with("0o") { 8 } else if t.starts_with("0b") { 2 } else { 10 }
+            };
+            crate::format::check_str_digits(vm, &s, eff)?;
             match parse_int(&s, b as u32) {
                 Some(v) => Value::from_big(v),
                 None => {
-                    let r = crate::format::str_repr(&s);
+                    let r = if matches!(vm.base_of(&x), Value::Str(_)) { crate::format::str_repr(&s) } else { crate::format::bytes_repr(&s.chars().map(|c| c as u8).collect::<Vec<u8>>()) };
                     return Err(vm.value_error(format!("invalid literal for int() with base {}: {}", b, r)));
                 }
             }
@@ -1046,6 +1131,7 @@ fn int_to_bytes(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn int_from_bytes(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let data = arg_or_kw(a, 1, k, "bytes").unwrap_or(Value::Bytes(Rc::new(vec![])));
     let mut bs = match &data {
         Value::Bytes(_) | Value::ByteArray(_) => bytes_of(vm, &data)?,
@@ -1261,6 +1347,7 @@ fn float_hex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::string(format!("{}0x{}.{}p{}{}", sign, lead, hex, if e >= 0 { "+" } else { "-" }, e.abs())))
 }
 fn float_fromhex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let s = as_pystr(vm, &a[1], "fromhex() argument")?;
     let t = s.s.trim().to_ascii_lowercase();
     let (neg, t) = match t.strip_prefix('-') {
@@ -1287,6 +1374,7 @@ fn float_fromhex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn complex_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let re = arg_or_kw(a, 1, k, "real");
     let im = arg_or_kw(a, 2, k, "imag");
     let parts = |vm: &mut Vm, v: &Value| -> PyResult<(f64, f64)> {
@@ -1367,12 +1455,14 @@ fn list_of(vm: &mut Vm, v: &Value, m: &str) -> PyResult<Rc<RefCell<Vec<Value>>>>
 }
 
 fn list_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let t = vm.t.list.clone();
     let v = Value::list(vec![]);
     Ok(wrap_new(vm, &a[0], &t, v))
 }
 
 fn list_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     if !k.is_empty() {
         return Err(vm.type_error("list() takes no keyword arguments"));
     }
@@ -1399,6 +1489,7 @@ fn list_append(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn list_extend(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "list.extend", a, 1, 1)?;
     let l = list_of(vm, &a[0], "extend")?;
     let items = vm.to_vec(&a[1])?;
@@ -1419,6 +1510,7 @@ fn list_insert(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn list_pop(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     margs(vm, "pop", a, 0, 1)?;
     let l = list_of(vm, &a[0], "pop")?;
     let n = l.borrow().len();
@@ -1441,6 +1533,7 @@ fn list_pop(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn list_remove(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "list.remove", a, 1, 1)?;
     let l = list_of(vm, &a[0], "remove")?;
     let items = l.borrow().clone();
@@ -1500,6 +1593,7 @@ fn seq_index(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn seq_count(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "count", a, 1, 1)?;
     let items = seq_items_of(vm, &a[0])?;
     let mut n = 0;
@@ -1512,24 +1606,28 @@ fn seq_count(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn list_clear(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let l = list_of(vm, &a[0], "clear")?;
     l.borrow_mut().clear();
     Ok(Value::None)
 }
 
 fn list_copy(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let l = list_of(vm, &a[0], "copy")?;
     let v = l.borrow().clone();
     Ok(Value::list(v))
 }
 
 fn list_reverse(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let l = list_of(vm, &a[0], "reverse")?;
     l.borrow_mut().reverse();
     Ok(Value::None)
 }
 
 fn list_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let l = list_of(vm, &a[0], "__reversed__")?;
     let n = l.borrow().len();
     Ok(mk_iter(Iter::ListRev(l, n)))
@@ -1561,6 +1659,7 @@ fn list_sort(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 // tuple
 
 fn tuple_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     if !k.is_empty() {
         return Err(vm.type_error("tuple() takes no keyword arguments"));
     }
@@ -1590,6 +1689,7 @@ fn dict_of(vm: &mut Vm, v: &Value, m: &str) -> PyResult<Rc<RefCell<Dict>>> {
 }
 
 fn dict_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let t = vm.t.dict.clone();
     let v = Value::dict(Dict::new());
     Ok(wrap_new(vm, &a[0], &t, v))
@@ -1665,12 +1765,14 @@ fn dict_update(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn dict_ior(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = dict_of(vm, &a[0], "__ior__")?;
     dict_merge_into(vm, &a[0], &d, a.get(1), &[])?;
     Ok(a[0].clone())
 }
 
 fn dict_keys(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = dict_of(vm, &a[0], "keys")?;
     Ok(Value::DictView(Rc::new((d, 0))))
 }
@@ -1679,6 +1781,7 @@ fn dict_values(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::DictView(Rc::new((d, 1))))
 }
 fn dict_items(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = dict_of(vm, &a[0], "items")?;
     Ok(Value::DictView(Rc::new((d, 2))))
 }
@@ -1703,6 +1806,7 @@ fn dict_setdefault(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn dict_pop(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     margs(vm, "pop", a, 1, 2)?;
     let d = dict_of(vm, &a[0], "pop")?;
     match vm.dict_del(&d, &a[1])? {
@@ -1715,6 +1819,7 @@ fn dict_pop(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn dict_popitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = dict_of(vm, &a[0], "popitem")?;
     let e = d.borrow_mut().pop_last();
     match e {
@@ -1724,12 +1829,14 @@ fn dict_popitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn dict_clear(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = dict_of(vm, &a[0], "clear")?;
     d.borrow_mut().clear();
     Ok(Value::None)
 }
 
 fn dict_copy(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = dict_of(vm, &a[0], "copy")?;
     let c = d.borrow().copy();
     Ok(Value::dict(c))
@@ -1749,12 +1856,14 @@ fn dict_fromkeys(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn dict_reversed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = dict_of(vm, &a[0], "__reversed__")?;
     let keys = d.borrow().keys();
     Ok(mk_iter(Iter::Vec(keys.into_iter().rev().collect::<Vec<_>>().into_iter())))
 }
 
 fn view_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let f = vm.builtins.borrow().get_s("reversed").unwrap();
     vm.call_vec(&f, vec![a[0].clone()], k)
 }
@@ -1777,12 +1886,14 @@ fn set_of(vm: &mut Vm, v: &Value, m: &str) -> PyResult<Rc<RefCell<Dict>>> {
 }
 
 fn set_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let t = vm.t.set.clone();
     let v = set_from(Dict::new());
     Ok(wrap_new(vm, &a[0], &t, v))
 }
 
 fn set_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     if !k.is_empty() {
         return Err(vm.type_error("set() takes no keyword arguments"));
     }
@@ -1825,6 +1936,7 @@ fn same_kind(a: &Value, d: Rc<RefCell<Dict>>) -> Value {
 }
 
 fn set_add(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "set.add", a, 1, 1)?;
     let d = set_of(vm, &a[0], "add")?;
     vm.set_add(&d, a[1].clone())?;
@@ -1832,6 +1944,7 @@ fn set_add(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn set_discard(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "set.discard", a, 1, 1)?;
     let d = set_of(vm, &a[0], "discard")?;
     let key = match &a[1] {
@@ -1843,6 +1956,7 @@ fn set_discard(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn set_remove(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "set.remove", a, 1, 1)?;
     let d = set_of(vm, &a[0], "remove")?;
     let key = match &a[1] {
@@ -1856,6 +1970,7 @@ fn set_remove(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn set_pop(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = set_of(vm, &a[0], "pop")?;
     let first = d.borrow().next_from(0).map(|(i, _)| i);
     match first {
@@ -1868,6 +1983,7 @@ fn set_pop(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn set_clear(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = set_of(vm, &a[0], "clear")?;
     d.borrow_mut().clear();
     Ok(Value::None)
@@ -1919,6 +2035,7 @@ fn in_place(vm: &mut Vm, a: &[Value], op: BinOp) -> PyResult<Value> {
 }
 
 fn set_update(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let d = set_of(vm, &a[0], "update")?;
     for o in &a[1..] {
         let items = vm.to_vec(o)?;
@@ -1943,6 +2060,7 @@ fn check_set_operand(vm: &mut Vm, v: &Value) -> bool {
 }
 
 fn set_ior(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     if !check_set_operand(vm, &a[1]) {
         return Ok(Value::NotImplemented);
     }
@@ -1950,6 +2068,7 @@ fn set_ior(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     Ok(a[0].clone())
 }
 fn set_iand(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     if !check_set_operand(vm, &a[1]) {
         return Ok(Value::NotImplemented);
     }
@@ -1957,6 +2076,7 @@ fn set_iand(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(a[0].clone())
 }
 fn set_isub(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     if !check_set_operand(vm, &a[1]) {
         return Ok(Value::NotImplemented);
     }
@@ -1964,6 +2084,7 @@ fn set_isub(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(a[0].clone())
 }
 fn set_ixor(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     if !check_set_operand(vm, &a[1]) {
         return Ok(Value::NotImplemented);
     }
@@ -1972,6 +2093,7 @@ fn set_ixor(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn set_issubset(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "issubset", a, 1, 1)?;
     let me = set_of(vm, &a[0], "issubset")?;
     let o = to_set(vm, &a[1])?;
@@ -1986,6 +2108,7 @@ fn set_issuperset(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Bool(is_subset(vm, &od, &me)?))
 }
 fn set_isdisjoint(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "isdisjoint", a, 1, 1)?;
     let me = set_of(vm, &a[0], "isdisjoint")?;
     let items = vm.to_vec(&a[1])?;
@@ -2047,6 +2170,7 @@ fn range_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn range_reversed(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let f = vm.builtins.borrow().get_s("reversed").unwrap();
     vm.call_vec(&f, vec![a[0].clone()], k)
 }
@@ -2063,6 +2187,7 @@ fn slice_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn slice_indices_m(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     margs(vm, "indices", a, 1, 1)?;
     let n = vm.to_index(&a[1])?;
     if n < 0 {
@@ -2092,6 +2217,7 @@ fn function_get(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn function_call(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     vm.call_vec(&a[0], a[1..].to_vec(), k)
 }
 
@@ -2110,7 +2236,8 @@ fn module_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn iter_next(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    match vm.next(&a[0])? {
+    let me = vm.base_of(&a[0]);
+    match vm.next(&me)? {
         Some(v) => Ok(v),
         None => {
             let rv = vm.last_return.take().unwrap_or(Value::None);
@@ -2153,6 +2280,7 @@ fn gen_send(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn gen_throw(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     margs(vm, "throw", a, 1, 3)?;
     let g = gen_of(vm, &a[0])?;
     let mut e = a[1].clone();
@@ -2176,6 +2304,7 @@ fn gen_throw(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn gen_close(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let g = gen_of(vm, &a[0])?;
     let started = g.borrow().started;
     if !started || g.borrow().frame.is_none() {
@@ -2210,6 +2339,7 @@ fn make_property(a: &[Value], k: Kw) -> Property {
 }
 
 fn property_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     let p = Value::Property(Rc::new(make_property(a, k)));
     let t = vm.t.property.clone();
     Ok(wrap_new(vm, &a[0], &t, p))
@@ -2243,6 +2373,7 @@ fn property_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn property_set(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 3)?;
     let p = prop_of(vm, &a[0])?;
     if p.fset.is_none() {
         return Err(vm.attr_error("property has no setter"));
@@ -2252,6 +2383,7 @@ fn property_set(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 fn property_delete(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
     let p = prop_of(vm, &a[0])?;
     if p.fdel.is_none() {
         return Err(vm.attr_error("property has no deleter"));
@@ -2300,6 +2432,7 @@ fn staticmethod_get(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 fn staticmethod_call(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
     match &a[0] {
         Value::StaticMethod(f) => vm.call_vec(&f.clone(), a[1..].to_vec(), k),
         _ => Err(vm.type_error("not a staticmethod")),
@@ -2378,4 +2511,176 @@ fn super_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         _ => return Err(vm.type_error("super() takes at most 2 arguments")),
     };
     Ok(Value::Super(Rc::new((start, obj))))
+}
+
+macro_rules! iter_class_new {
+    ($( $fname:ident, $bi:ident, $field:ident );* $(;)?) => {
+        $(
+            fn $fname(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+                let v = crate::builtins::$bi(vm, &a[1..], k)?;
+                let c = vm.t.$field.clone();
+                if !k.is_empty() && matches!(&a[0], Value::Class(x) if !Rc::ptr_eq(x, &c)) && stringify!($field) != "zip" && stringify!($field) != "enumerate" {
+                    return Err(vm.type_error(format!("{}() takes no keyword arguments", stringify!($field))));
+                }
+                Ok(wrap_new(vm, &a[0], &c, v))
+            }
+        )*
+    };
+}
+
+iter_class_new! {
+    enumerate_new, bi_enumerate, enumerate;
+    zip_new, bi_zip, zip;
+    map_new, bi_map, map;
+    filter_new, bi_filter, filter;
+    reversed_new, bi_reversed, reversed;
+}
+
+/// pickling iterators, as CPython's do: a callable, its arguments and the
+/// position to resume from
+fn iter_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let me = vm.base_of(&a[0]);
+    let it = match &me {
+        Value::Iter(it) => it.clone(),
+        _ => return object_reduce(vm, a, &[]),
+    };
+    let iter_fn = vm.builtins.borrow().get_s("iter").unwrap();
+    let own = Value::Class(vm.class_of(&a[0]));
+    let rev = Value::Class(vm.t.reversed.clone());
+    let tn = vm.type_name(&a[0]);
+    let t3 = |f: Value, args: Vec<Value>, state: Option<Value>| match state {
+        Some(s) => Value::tuple(vec![f, Value::tuple(args), s]),
+        None => Value::tuple(vec![f, Value::tuple(args)]),
+    };
+    let empty = |f: Value| Value::tuple(vec![f, Value::tuple(vec![Value::list(vec![])])]);
+    let b = it.borrow();
+    Ok(match &*b {
+        Iter::List(l, i) => {
+            if *i >= l.borrow().len() {
+                empty(iter_fn)
+            } else {
+                t3(iter_fn, vec![Value::List(l.clone())], Some(Value::Int(*i as i64)))
+            }
+        }
+        Iter::ListRev(l, i) => {
+            if *i == 0 || *i > l.borrow().len() {
+                empty(iter_fn)
+            } else {
+                t3(rev, vec![Value::List(l.clone())], Some(Value::Int(*i as i64 - 1)))
+            }
+        }
+        Iter::Tuple(t, i) => {
+            if *i >= t.len() {
+                Value::tuple(vec![iter_fn, Value::tuple(vec![Value::tuple(vec![])])])
+            } else {
+                t3(iter_fn, vec![Value::Tuple(t.clone())], Some(Value::Int(*i as i64)))
+            }
+        }
+        Iter::Str(s, i) => {
+            let n = s.s[..(*i).min(s.s.len())].chars().count();
+            t3(iter_fn, vec![Value::Str(s.clone())], Some(Value::Int(n as i64)))
+        }
+        Iter::Bytes(bs, i) => t3(iter_fn, vec![Value::Bytes(bs.clone())], Some(Value::Int(*i as i64))),
+        Iter::Range(cur, stop, step) => t3(iter_fn, vec![Value::Range(Rc::new((*cur, *stop, *step)))], Some(Value::Int(0))),
+        Iter::Dict(d, pos, kind, _) => {
+            let db = d.borrow();
+            let mut rest = vec![];
+            let mut p = *pos;
+            while let Some((q, e)) = db.next_from(p) {
+                rest.push(match kind {
+                    0 => e.key.clone(),
+                    1 => e.value.clone(),
+                    _ => Value::tuple(vec![e.key.clone(), e.value.clone()]),
+                });
+                p = q + 1;
+            }
+            t3(iter_fn, vec![Value::list(rest)], None)
+        }
+        Iter::Vec(v) => t3(iter_fn, vec![Value::list(v.as_slice().to_vec())], None),
+        Iter::Empty => empty(iter_fn),
+        Iter::Seq(obj, i) => t3(iter_fn, vec![obj.clone()], Some(Value::Int(*i))),
+        Iter::Callable(f, s) => t3(iter_fn, vec![f.clone(), s.clone()], None),
+        Iter::Enumerate(inner, count) => {
+            let (inner, count) = (inner.clone(), count.clone());
+            let c = own;
+            t3(c, vec![inner, count], None)
+        }
+        Iter::Zip(its, strict) => {
+            let (its, strict) = (its.clone(), *strict);
+            let c = own;
+            t3(c, its, if strict { Some(Value::Bool(true)) } else { None })
+        }
+        Iter::Map(f, its) => {
+            let mut args = vec![f.clone()];
+            args.extend(its.iter().cloned());
+            let c = own;
+            t3(c, args, None)
+        }
+        Iter::Filter(f, inner, false) => {
+            let args = vec![f.clone(), inner.clone()];
+            let c = own;
+            t3(c, args, None)
+        }
+        _ => {
+            drop(b);
+            return Err(vm.type_error(format!("cannot pickle '{}' object", tn)));
+        }
+    })
+}
+
+fn iter_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
+    margs(vm, "__setstate__", a, 1, 1)?;
+    let me = vm.base_of(&a[0]);
+    let it = match &me {
+        Value::Iter(it) => it.clone(),
+        _ => return Ok(Value::None),
+    };
+    if let Iter::Zip(_, strict) = &mut *it.borrow_mut() {
+        *strict = vm.truthy(&a[1])?;
+        return Ok(Value::None);
+    }
+    let n = vm.to_index(&a[1])?.max(0);
+    let mut b = it.borrow_mut();
+    match &mut *b {
+        Iter::List(l, i) => *i = (n as usize).min(l.borrow().len()),
+        Iter::ListRev(l, i) => *i = ((n + 1) as usize).min(l.borrow().len()),
+        Iter::Tuple(t, i) => *i = (n as usize).min(t.len()),
+        Iter::Bytes(bs, i) => *i = (n as usize).min(bs.len()),
+        Iter::Str(s, i) => *i = s.s.char_indices().nth(n as usize).map(|(p, _)| p).unwrap_or(s.s.len()),
+        Iter::Seq(_, i) => *i = n,
+        Iter::Range(cur, stop, step) => {
+            let len = crate::builtins::range_len(&Rc::new((*cur, *stop, *step))) as i64;
+            *cur += n.min(len) * *step;
+        }
+        _ => {}
+    }
+    Ok(Value::None)
+}
+
+/// a built-in function pickles as its name
+fn native_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    match &a[0] {
+        Value::Native(n) => Ok(Value::str(n.name.rsplit('.').next().unwrap_or(n.name))),
+        Value::Method(m) => {
+            let getattr = vm.builtins.borrow().get_s("getattr").unwrap();
+            let name = vm.getattr(&a[0], &ps("__name__"))?;
+            Ok(Value::tuple(vec![getattr, Value::tuple(vec![m.0.clone(), name])]))
+        }
+        _ => object_reduce(vm, a, &[]),
+    }
+}
+
+fn range_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let me = vm.base_of(&a[0]);
+    match &me {
+        Value::Range(r) => {
+            let c = Value::Class(vm.t.range.clone());
+            Ok(Value::tuple(vec![c, Value::tuple(vec![Value::Int(r.0), Value::Int(r.1), Value::Int(r.2)])]))
+        }
+        _ => Err(vm.type_error("descriptor '__reduce__' requires a 'range' object")),
+    }
 }
