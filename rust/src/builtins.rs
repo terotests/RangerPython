@@ -685,177 +685,34 @@ pub fn complex_binop(vm: &mut Vm, op: BinOp, a: &Value, b: &Value) -> PyResult<O
 }
 
 // -------------------------------------------------------------------------
-// generic aliases and unions (list[int], int | None)
+// generic aliases and unions (list[int], int | None), which live in
+// pylib/_genericalias.py
 
-pub fn alias_class(vm: &mut Vm, name: &str) -> Rc<Class> {
-    let key = format!("__{}__", name);
-    if let Some(Value::Class(c)) = vm.builtins.borrow().get_s(&key) {
-        return c;
-    }
-    let c = Class::new(name, vec![vm.t.object.clone()], Builtin::Obj);
-    *c.mro.borrow_mut() = vec![c.clone(), vm.t.object.clone()];
-    c.dict.borrow_mut().set_s("__module__", Value::str("types"));
-    let lname: &'static str = if name == "GenericAlias" { "GenericAlias.__repr__" } else { "UnionType.__repr__" };
-    def(&c, lname, alias_repr);
-    if name == "GenericAlias" {
-        def(&c, "GenericAlias.__call__", alias_call);
-        def(&c, "GenericAlias.__getitem__", alias_getitem);
-        def(&c, "GenericAlias.__iter__", alias_iter);
-    }
-    def(&c, "alias.__eq__", alias_eq);
-    def(&c, "alias.__hash__", alias_hash);
-    def(&c, "alias.__or__", alias_or);
-    def(&c, "alias.__ror__", alias_ror);
-    vm.builtins.borrow_mut().set_s(&key, Value::Class(c.clone()));
-    c
+fn alias_helper(vm: &mut Vm, f: &str, args: Vec<Value>) -> PyResult<Value> {
+    let m = vm.import("_genericalias", &Value::None, 0, &vm.main_globals.clone())?;
+    let h = vm.getattr(&m, &Rc::new(PyStr::new(f.to_string())))?;
+    vm.call_vec(&h, args, &[])
 }
 
-fn alias_parts(v: &Value) -> (Value, Vec<Value>) {
-    if let Value::Obj(o) = v {
-        if let ObjKind::Other(Value::Tuple(t)) = &*o.kind.borrow() {
-            let args = match &t[1] {
-                Value::Tuple(a) => a.to_vec(),
-                _ => vec![],
-            };
-            return (t[0].clone(), args);
-        }
-    }
-    (Value::None, vec![])
-}
-
-fn type_repr_short(vm: &mut Vm, v: &Value) -> PyResult<String> {
-    match v {
-        Value::Class(c) => {
-            let m = c.dict.borrow().get_s("__module__");
-            Ok(match m {
-                Some(Value::Str(m)) if &*m.s != "builtins" => format!("{}.{}", m.s, c.qualname.borrow().s),
-                _ => c.name(),
-            })
-        }
-        Value::None => Ok("None".into()),
-        Value::Ellipsis => Ok("...".into()),
-        Value::List(l) => {
-            let items = l.borrow().clone();
-            let mut parts = vec![];
-            for x in &items {
-                parts.push(type_repr_short(vm, x)?);
-            }
-            Ok(format!("[{}]", parts.join(", ")))
-        }
-        _ => vm.repr(v),
-    }
-}
-
-fn alias_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 1)?;
-    let (origin, args) = alias_parts(&a[0]);
-    let mut parts = vec![];
-    for x in &args {
-        // a union spells NoneType as None
-        let none = origin.is_none() && matches!(x, Value::Class(c) if Rc::ptr_eq(c, &vm.t.none));
-        parts.push(if none { "None".into() } else { type_repr_short(vm, x)? });
-    }
-    if origin.is_none() {
-        return Ok(Value::string(parts.join(" | ")));
-    }
-    let o = type_repr_short(vm, &origin)?;
-    let star = if alias_unpacked(&a[0]) { "*" } else { "" };
-    Ok(Value::string(format!("{}{}[{}]", star, o, if args.is_empty() { "()".to_string() } else { parts.join(", ") })))
-}
-
-fn alias_call(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 1)?;
-    let (origin, _) = alias_parts(&a[0]);
-    vm.call_vec(&origin, a[1..].to_vec(), k)
-}
-
-fn alias_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 2)?;
-    let (origin, _) = alias_parts(&a[0]);
-    generic_alias(vm, &origin, &a[1])
-}
-
-fn alias_unpacked(v: &Value) -> bool {
-    if let Value::Obj(o) = v {
-        if let ObjKind::Other(Value::Tuple(t)) = &*o.kind.borrow() {
-            return matches!(t.get(2), Some(Value::Bool(true)));
-        }
-    }
-    false
-}
-
-/// iterating an alias yields its unpacked form, *tuple[int]
-fn alias_iter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 1)?;
-    let (origin, args) = alias_parts(&a[0]);
-    let c = alias_class(vm, "GenericAlias");
-    let kind = ObjKind::Other(Value::tuple(vec![origin, Value::tuple(args), Value::Bool(true)]));
-    let star = Value::Obj(Rc::new(NativeObj { class: c, kind: RefCell::new(kind) }));
-    vm.iter(&Value::tuple(vec![star]))
-}
-
-fn alias_eq(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 2)?;
-    let (o1, a1) = alias_parts(&a[0]);
-    if !matches!(a[1], Value::Obj(_)) {
-        return Ok(Value::NotImplemented);
-    }
-    let (o2, a2) = alias_parts(&a[1]);
-    let r = vm.eq(&o1, &o2)? && vm.eq(&Value::tuple(a1), &Value::tuple(a2))?;
-    Ok(Value::Bool(r))
-}
-
-fn alias_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 1)?;
-    let (o, args) = alias_parts(&a[0]);
-    let h = vm.hash(&Value::tuple(vec![o, Value::tuple(args)]))?;
-    Ok(Value::Int(h as i64 >> 1))
-}
-
-fn alias_or(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 2)?;
-    make_union(vm, &a[0], &a[1])
-}
-
-fn alias_ror(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 2)?;
-    make_union(vm, &a[1], &a[0])
-}
-
+/// origin[idx] as a types.GenericAlias
 pub fn generic_alias(vm: &mut Vm, origin: &Value, idx: &Value) -> PyResult<Value> {
-    let c = alias_class(vm, "GenericAlias");
-    let args = match idx {
-        Value::Tuple(t) => (**t).clone(),
-        other => vec![other.clone()],
-    };
-    Ok(Value::Obj(Rc::new(NativeObj { class: c, kind: RefCell::new(ObjKind::Other(Value::tuple(vec![origin.clone(), Value::tuple(args)]))) })))
+    alias_helper(vm, "_generic_alias", vec![origin.clone(), idx.clone()])
 }
 
-fn is_union(vm: &mut Vm, v: &Value) -> bool {
-    if let Value::Obj(o) = v {
-        return o.class.name() == "UnionType" && { let _ = vm; true };
-    }
-    false
-}
-
+/// a | b on types: a types.UnionType, or NotImplemented
 pub fn make_union(vm: &mut Vm, a: &Value, b: &Value) -> PyResult<Value> {
-    let c = alias_class(vm, "UnionType");
-    let mut args: Vec<Value> = vec![];
-    for x in [a, b] {
-        let parts = if is_union(vm, x) { alias_parts(x).1 } else { vec![if x.is_none() { Value::Class(vm.t.none.clone()) } else { x.clone() }] };
-        for p in parts {
-            let mut dup = false;
-            for q in &args {
-                if q.is(&p) {
-                    dup = true;
-                }
-            }
-            if !dup {
-                args.push(p);
-            }
+    alias_helper(vm, "_union_or", vec![a.clone(), b.clone()])
+}
+
+/// the members of a types.UnionType, which isinstance treats as a tuple
+fn union_args(vm: &mut Vm, v: &Value) -> PyResult<Option<Value>> {
+    if let Value::Instance(i) = v {
+        let c = i.class.borrow().clone();
+        if c.name() == "UnionType" && matches!(c.dict.borrow().get_s("__module__"), Some(Value::Str(m)) if &*m.s == "types") {
+            return Ok(Some(vm.getattr(v, &Rc::new(PyStr::new("__args__".to_string())))?));
         }
     }
-    Ok(Value::Obj(Rc::new(NativeObj { class: c, kind: RefCell::new(ObjKind::Other(Value::tuple(vec![Value::None, Value::tuple(args)]))) })))
+    Ok(None)
 }
 
 // -------------------------------------------------------------------------
@@ -866,7 +723,7 @@ pub fn func_attr(vm: &mut Vm, f: &Rc<Function>, name: &str) -> Option<Value> {
         "__name__" => Value::Str(f.name.borrow().clone()),
         "__qualname__" => Value::Str(f.qualname.borrow().clone()),
         "__module__" => f.globals.borrow().get_s("__name__").unwrap_or(Value::None),
-        "__doc__" => f.code.doc.clone(),
+        "__doc__" => f.code.borrow().doc.clone(),
         "__defaults__" => {
             let d = f.defaults.borrow();
             if d.is_empty() {
@@ -888,7 +745,7 @@ pub fn func_attr(vm: &mut Vm, f: &Rc<Function>, name: &str) -> Option<Value> {
             }
         }
         "__globals__" => Value::Dict(f.globals.clone()),
-        "__code__" => Value::Code(f.code.clone()),
+        "__code__" => Value::Code(f.code.borrow().clone()),
         "__closure__" => {
             if f.closure.is_empty() {
                 Value::None
@@ -942,7 +799,7 @@ fn code_attr(c: &Rc<crate::code::Code>, name: &str) -> Option<Value> {
         "co_freevars" => Value::tuple(c.freevars.iter().map(|n| Value::str(n)).collect()),
         "co_names" => Value::tuple(c.names.iter().map(|n| Value::Str(n.clone())).collect()),
         "co_consts" => Value::tuple(c.consts.iter().filter(|v| !matches!(v, Value::Obj(_))).cloned().collect()),
-        "co_flags" => Value::Int(((c.varargs as i64) << 2) | ((c.varkw as i64) << 3) | ((c.generator as i64) << 5) | ((c.coroutine as i64) << 7)),
+        "co_flags" => Value::Int(((c.varargs as i64) << 2) | ((c.varkw as i64) << 3) | ((c.generator as i64) << 5) | ((c.coroutine as i64) << 7) | ((c.iterable_coroutine as i64) << 8)),
         _ => return None,
     })
 }
@@ -1007,11 +864,21 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
             },
         },
         Value::Gen(g) if matches!(name, "gi_frame" | "cr_frame" | "ag_frame") => {
-            let g = g.borrow();
+            let mut g = g.borrow_mut();
+            let g = &mut *g;
             match &g.frame {
                 Some(f) => {
                     let line = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(f.code.firstline);
-                    Some(vm.frame_obj(f, line))
+                    // one frame object per generator, its line kept current
+                    if let Some(Value::Obj(o)) = &g.frame_obj {
+                        if let ObjKind::Frame { line: l, .. } = &mut *o.kind.borrow_mut() {
+                            *l = line;
+                        }
+                    }
+                    if g.frame_obj.is_none() {
+                        g.frame_obj = Some(vm.frame_obj(f, line));
+                    }
+                    g.frame_obj.clone()
                 }
                 None => Some(Value::None),
             }
@@ -1097,18 +964,6 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
         Value::Obj(o) => {
             if let Some(v) = crate::tb::obj_attr(vm, o, name)? {
                 return Ok(Some(v));
-            }
-            if let ObjKind::Other(_) = &*o.kind.borrow() {
-                let cn = o.class.name();
-                if cn == "GenericAlias" || cn == "UnionType" {
-                    let (origin, args) = alias_parts(obj);
-                    return Ok(match name {
-                        "__origin__" => Some(origin),
-                        "__args__" => Some(Value::tuple(args)),
-                        "__parameters__" => Some(Value::tuple(vec![])),
-                        _ => None,
-                    });
-                }
             }
             crate::modules::obj_attr(vm, obj, o, name)?
         }
@@ -2582,14 +2437,8 @@ pub fn isinstance_of(vm: &mut Vm, v: &Value, spec: &Value) -> PyResult<bool> {
             return real_isinstance(vm, v, spec);
         }
     }
-    if is_union(vm, spec) {
-        let (_, args) = alias_parts(spec);
-        for x in &args {
-            if isinstance_of(vm, v, x)? {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
+    if let Some(args) = union_args(vm, spec)? {
+        return isinstance_of(vm, v, &args);
     }
     if let Value::Tuple(t) = spec {
         vm.enter(" in __instancecheck__")?;
@@ -2605,12 +2454,6 @@ pub fn isinstance_of(vm: &mut Vm, v: &Value, spec: &Value) -> PyResult<bool> {
         }
         vm.depth -= 1;
         return r;
-    }
-    if let Value::Obj(_) = spec {
-        let (origin, _) = alias_parts(spec);
-        if !origin.is_none() {
-            return Err(vm.type_error("isinstance() argument 2 cannot be a parameterized generic"));
-        }
     }
     let name = vm.n.instancecheck.clone();
     match vm.lookup_special_get(spec, &name)? {
@@ -2718,7 +2561,7 @@ pub fn real_issubclass(vm: &mut Vm, c: &Value, spec: &Value) -> PyResult<bool> {
         return Ok(a.is_subclass(b));
     }
     check_class(vm, c, "issubclass() arg 1 must be a class")?;
-    if !is_union(vm, spec) {
+    if union_args(vm, spec)?.is_none() {
         check_class(vm, spec, "issubclass() arg 2 must be a class, a tuple of classes, or a union")?;
     }
     abstract_issubclass(vm, c, spec)
@@ -2742,14 +2585,8 @@ pub fn issubclass_of(vm: &mut Vm, c: &Value, spec: &Value) -> PyResult<bool> {
             return real_issubclass(vm, c, spec);
         }
     }
-    if is_union(vm, spec) {
-        let (_, args) = alias_parts(spec);
-        for x in &args {
-            if issubclass_of(vm, c, x)? {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
+    if let Some(args) = union_args(vm, spec)? {
+        return issubclass_of(vm, c, &args);
     }
     if let Value::Tuple(t) = spec {
         vm.enter(" in __subclasscheck__")?;
@@ -2765,12 +2602,6 @@ pub fn issubclass_of(vm: &mut Vm, c: &Value, spec: &Value) -> PyResult<bool> {
         }
         vm.depth -= 1;
         return r;
-    }
-    if let Value::Obj(_) = spec {
-        let (origin, _) = alias_parts(spec);
-        if !origin.is_none() {
-            return Err(vm.type_error("issubclass() argument 2 cannot be a parameterized generic"));
-        }
     }
     let name = vm.n.subclasscheck.clone();
     match vm.lookup_special_get(spec, &name)? {

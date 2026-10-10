@@ -780,6 +780,7 @@ impl<'a> Compiler<'a> {
             varkw: false,
             generator: s.is_gen,
             coroutine: false,
+            iterable_coroutine: false,
             is_class: u.kind == ScopeKind::Class,
             cell_from_arg: u.cellvars.iter().map(|c| u.var_map.get(c).copied()).collect(),
             varnames: u.varnames,

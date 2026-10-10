@@ -575,9 +575,10 @@ pub fn install_types(vm: &mut Vm) {
     def(&f, "function.__get__", function_get);
     def(&f, "function.__repr__", d_repr);
     def(&f, "function.__call__", function_call);
+    def(&t.code, "code.replace", code_replace);
+    def(&t.code, "code.__replace__", code_replace);
     let m = t.method.clone();
-    def(&m, "method.__new__", method_new);
-    def(&t.code.clone(), "code.replace", code_replace);
+    def_static(&m, "method.__new__", method_new);
     def(&m, "method.__call__", function_call);
     def(&m, "method.__get__", return_self);
     let bf = t.builtin_function.clone();
@@ -734,47 +735,13 @@ fn object_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 /// types.FunctionType(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None)
-/// code.replace(**changes), for the fields that can change without recompiling
-fn code_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
-    let Some(Value::Code(c)) = a.first() else {
-        return Err(vm.type_error("descriptor 'replace' requires a 'code' object"));
-    };
-    if a.len() > 1 {
-        return Err(vm.type_error("replace() takes no positional arguments"));
-    }
-    let mut n = (**c).clone();
-    for (key, v) in k {
-        let s = || v.as_str().map(|s| s.to_string());
-        match (&*key.s, v) {
-            ("co_consts", _) => {
-                // the internal constants co_consts leaves out stay in place
-                let vals = vm.to_vec(v)?;
-                let slots: Vec<&mut Value> = n.consts.iter_mut().filter(|v| !matches!(v, Value::Obj(_))).collect();
-                if slots.len() != vals.len() {
-                    return Err(vm.value_error("co_consts: cannot change the number of constants"));
-                }
-                for (slot, x) in slots.into_iter().zip(vals) {
-                    *slot = x;
-                }
-            }
-            ("co_name", Value::Str(x)) => n.name = x.clone(),
-            ("co_qualname", Value::Str(x)) => n.qualname = x.clone(),
-            ("co_filename", Value::Str(_)) => n.filename = Rc::from(s().unwrap().as_str()),
-            ("co_firstlineno", Value::Int(x)) => n.firstline = *x as u32,
-            ("co_name" | "co_qualname" | "co_filename" | "co_firstlineno", _) => {
-                let tn = vm.type_name(v);
-                return Err(vm.type_error(format!("replace() argument '{}' has the wrong type ({})", key.s, tn)));
-            }
-            _ => return Err(vm.value_error(format!("replace() cannot change '{}' on this runtime", key.s))),
-        }
-    }
-    Ok(Value::Code(Rc::new(n)))
-}
-
 /// types.MethodType(function, instance)
 fn method_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
-    if a.len() != 3 || !k.is_empty() {
-        return Err(vm.type_error(format!("method expected 2 arguments, got {}", a.len().saturating_sub(1) + k.len())));
+    if !k.is_empty() {
+        return Err(vm.type_error("method() takes no keyword arguments"));
+    }
+    if a.len() != 3 {
+        return Err(vm.type_error(format!("method expected 2 arguments, got {}", a.len().saturating_sub(1))));
     }
     if !crate::builtins::is_callable(vm, &a[1]) {
         return Err(vm.type_error("first argument must be callable"));
@@ -982,6 +949,62 @@ fn set_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let r = crate::format::set_repr(vm, &x, &name);
     vm.depth -= 1;
     Ok(Value::string(r?))
+}
+
+/// code.replace(**changes): a copy with some co_* fields changed
+fn code_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    margs(vm, "replace", a, 0, 0)?;
+    let mut c = match &a[0] {
+        Value::Code(c) => (**c).clone(),
+        _ => return Err(vm.type_error("descriptor 'replace' requires a 'code' object")),
+    };
+    for (name, v) in k {
+        let int = |vm: &mut Vm| match v {
+            Value::Int(i) if *i >= 0 => Ok(*i as u32),
+            _ => Err(vm.type_error(format!("replace() argument '{}' must be int", name.s))),
+        };
+        let st = |vm: &mut Vm| match v {
+            Value::Str(s) => Ok(s.clone()),
+            _ => Err(vm.type_error(format!("replace() argument '{}' must be str, not {}", name.s, vm.type_name(v)))),
+        };
+        match &*name.s {
+            "co_name" => c.name = st(vm)?,
+            "co_qualname" => c.qualname = st(vm)?,
+            "co_filename" => c.filename = Rc::from(st(vm)?.s.as_str()),
+            "co_firstlineno" => c.firstline = int(vm)?,
+            "co_flags" => {
+                let f = int(vm)?;
+                c.generator = f & 0x20 != 0;
+                c.coroutine = f & 0x80 != 0;
+                c.iterable_coroutine = f & 0x100 != 0;
+            }
+            "co_consts" => {
+                // the internal constants co_consts leaves out stay in place
+                let vals = vm.to_vec(v)?;
+                let slots: Vec<&mut Value> = c.consts.iter_mut().filter(|v| !matches!(v, Value::Obj(_))).collect();
+                if slots.len() != vals.len() {
+                    return Err(vm.value_error("co_consts: cannot change the number of constants"));
+                }
+                for (slot, x) in slots.into_iter().zip(vals) {
+                    *slot = x;
+                }
+            }
+            "co_names" | "co_varnames" | "co_freevars" | "co_cellvars" | "co_code" | "co_linetable" | "co_exceptiontable"
+            | "co_argcount" | "co_posonlyargcount" | "co_kwonlyargcount" | "co_nlocals" | "co_stacksize" => {
+                // the bytecode is this interpreter's own; only an unchanged value is accepted
+                let cur = crate::builtins::special_attr(vm, &a[0], &name.s)?;
+                let same = match cur {
+                    Some(cur) => vm.eq(&cur, v)?,
+                    None => false,
+                };
+                if !same {
+                    return Err(vm.value_error(format!("code.replace() cannot change {} in this implementation", name.s)));
+                }
+            }
+            _ => return Err(vm.type_error(format!("replace() got an unexpected keyword argument '{}'", name.s))),
+        }
+    }
+    Ok(Value::Code(Rc::new(c)))
 }
 
 fn class_getitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {

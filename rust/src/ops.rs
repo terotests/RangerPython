@@ -209,6 +209,15 @@ impl Vm {
     pub fn lookup_special(&mut self, obj: &Value, name: &Rc<PyStr>) -> Option<Value> {
         let cls = self.class_of(obj);
         let v = cls.lookup(name)?;
+        // a descriptor object (mock's magic methods): its __get__ runs when
+        // the method is called, so a failing __get__ can still raise
+        if let Value::Instance(_) = &v {
+            if let Some(g) = self.class_of(&v).lookup(&self.n.get) {
+                let packed = Value::tuple(vec![g, v, obj.clone(), Value::Class(cls)]);
+                let f = Value::Native(Rc::new(NativeFn::new("descriptor.__call__", descr_call, Value::None)));
+                return Some(Value::Method(Rc::new((packed, f))));
+            }
+        }
         Some(self.bind(v, obj, &cls))
     }
 
@@ -660,6 +669,17 @@ impl Vm {
                     }
                     "__annotations__" => {
                         *f.annotations.borrow_mut() = v;
+                        return Ok(());
+                    }
+                    "__code__" => {
+                        let Value::Code(c) = &v else {
+                            return Err(self.type_error("__code__ must be set to a code object"));
+                        };
+                        let (want, got) = (f.closure.len(), c.freevars.len());
+                        if want != got {
+                            return Err(self.value_error(format!("{}() requires a code object with {} free vars, not {}", f.name.borrow().s, want, got)));
+                        }
+                        *f.code.borrow_mut() = c.clone();
                         return Ok(());
                     }
                     _ => {}
@@ -1446,12 +1466,6 @@ impl Vm {
                 return Ok(v);
             }
         }
-        if op == BinOp::BitOr {
-            // X | Y on types builds a union
-            if matches!(a, Value::Class(_) | Value::None) && matches!(b, Value::Class(_) | Value::None) || matches!(a, Value::Class(_)) || matches!(b, Value::Class(_)) {
-                return crate::builtins::make_union(self, a, b);
-            }
-        }
         Err(self.binop_error(op, a, b))
     }
 
@@ -2113,6 +2127,24 @@ impl Vm {
     }
 
     pub fn hash(&mut self, v: &Value) -> PyResult<u64> {
+        // a class whose metaclass overrides __hash__
+        if let Value::Class(c) = v {
+            if let Some(m) = crate::value::user_meta(c) {
+                match m.lookup(&self.n.hash) {
+                    Some(Value::None) => return Err(self.type_error(format!("unhashable type: '{}'", m.name()))),
+                    Some(f @ Value::Func(_)) => {
+                        let r = self.call_vec(&f, vec![v.clone()], &[])?;
+                        return match r {
+                            Value::Int(i) => Ok(hash_int(i)),
+                            Value::Big(b) => Ok(hash_big(&b)),
+                            Value::Bool(b) => Ok(b as u64),
+                            _ => Err(self.type_error("__hash__ method should return an integer")),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
         if let Some(h) = fast_hash(v) {
             return Ok(h);
         }
@@ -3215,4 +3247,13 @@ pub fn set_view_pair(a: &Value, b: &Value) -> bool {
     let view = |v: &Value| matches!(v, Value::DictView(d) if d.1 != 1);
     let setlike = |v: &Value| matches!(v, Value::Set(_) | Value::FrozenSet(_)) || view(v);
     (view(a) && setlike(b)) || (view(b) && setlike(a))
+}
+
+/// calls the result of desc.__get__(obj, cls), for lookup_special
+fn descr_call(vm: &mut Vm, a: &[Value], k: &[(Rc<PyStr>, Value)]) -> PyResult<Value> {
+    let Some(Value::Tuple(t)) = a.first() else {
+        return Err(vm.type_error("descriptor call without its descriptor"));
+    };
+    let f = vm.call_vec(&t[0], vec![t[1].clone(), t[2].clone(), t[3].clone()], &[])?;
+    vm.call_vec(&f, a[1..].to_vec(), k)
 }

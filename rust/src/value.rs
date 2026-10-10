@@ -160,7 +160,8 @@ pub fn binds(v: &Value) -> bool {
 }
 
 pub struct Function {
-    pub code: Rc<Code>,
+    /// replaceable through __code__
+    pub code: RefCell<Rc<Code>>,
     pub globals: Rc<RefCell<Dict>>,
     pub defaults: RefCell<Vec<Value>>,
     pub kwdefaults: RefCell<Vec<(Name, Value)>>,
@@ -858,6 +859,11 @@ pub fn ptr_id(v: &Value) -> usize {
 }
 
 /// equality for values where no Python method can be involved
+/// the metaclass of c when it is a subclass of type rather than type itself
+pub fn user_meta(c: &Class) -> Option<Rc<Class>> {
+    c.meta.borrow().as_ref().filter(|m| m.mro.borrow().len() > 2).cloned()
+}
+
 pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
     use Value::*;
     Some(match (a, b) {
@@ -890,6 +896,8 @@ pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
         (ByteArray(x), ByteArray(y)) => Rc::ptr_eq(x, y) || *x.borrow() == *y.borrow(),
         (ByteArray(x), Bytes(y)) | (Bytes(y), ByteArray(x)) => **y == *x.borrow(),
         (Instance(x), Instance(y)) if Rc::ptr_eq(x, y) => true,
+        // classes whose metaclass may define __eq__
+        (Class(x), Class(y)) if !Rc::ptr_eq(x, y) && (user_meta(x).is_some() || user_meta(y).is_some()) => return Option::None,
         (Instance(_), _) | (_, Instance(_)) | (Obj(_), _) | (_, Obj(_)) => return Option::None,
         (List(_), List(_)) | (Slice(_), Slice(_)) | (Method(_), Method(_)) | (Dict(_), Dict(_)) | (Set(_), Set(_)) | (FrozenSet(_), FrozenSet(_)) | (Set(_), FrozenSet(_)) | (FrozenSet(_), Set(_)) => return Option::None,
         (DictView(_), _) | (_, DictView(_)) => return Option::None,

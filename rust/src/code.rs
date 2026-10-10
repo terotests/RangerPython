@@ -125,6 +125,8 @@ pub struct Code {
     pub varkw: bool,
     pub generator: bool,
     pub coroutine: bool,
+    /// CO_ITERABLE_COROUTINE: a generator types.coroutine made awaitable
+    pub iterable_coroutine: bool,
     pub is_class: bool,
     pub varnames: Vec<Name>,
     /// cells this code creates, then the free variables it receives

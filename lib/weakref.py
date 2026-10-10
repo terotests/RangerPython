@@ -173,17 +173,188 @@ class WeakMethod(ref):
     __slots__ = ()
 
 
-class WeakValueDictionary(dict):
+class _WeakMapping:
+    # entries whose referent is gone are dropped lazily, on the next access,
+    # since callbacks never run here
+    def __init__(self, other=(), /, **kw):
+        self.data = {}
+        self.update(other, **kw)
+
+    def __len__(self):
+        self._purge()
+        return len(self.data)
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __contains__(self, key):
+        try:
+            self[key]
+        except (KeyError, TypeError):
+            return False
+        return True
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def keys(self):
+        return [k for k, v in self.items()]
+
+    def values(self):
+        return [v for k, v in self.items()]
+
+    def __eq__(self, other):
+        if not isinstance(other, (_WeakMapping, dict)):
+            return NotImplemented
+        return dict(self.items()) == dict(other.items())
+
+    def __ne__(self, other):
+        r = self.__eq__(other)
+        return r if r is NotImplemented else not r
+
+    __hash__ = None
+
+    def update(self, other=(), /, **kw):
+        if hasattr(other, "keys"):
+            for k in other.keys():
+                self[k] = other[k]
+        else:
+            for k, v in other:
+                self[k] = v
+        for k, v in kw.items():
+            self[k] = v
+
+    def setdefault(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+            return default
+
+    def pop(self, key, *args):
+        try:
+            v = self[key]
+        except KeyError:
+            if args:
+                return args[0]
+            raise
+        del self[key]
+        return v
+
+    def popitem(self):
+        for k, v in self.items():
+            del self[k]
+            return k, v
+        raise KeyError("popitem(): dictionary is empty")
+
+    def clear(self):
+        self.data.clear()
+
+    def __copy__(self):
+        return self.copy()
+
+    def __or__(self, other):
+        c = self.copy()
+        c.update(other)
+        return c
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
+
+    def __repr__(self):
+        return "<%s at %#x>" % (type(self).__name__, id(self))
+
+
+class WeakValueDictionary(_WeakMapping):
+    def _purge(self):
+        dead = [k for k, r in self.data.items() if r() is None]
+        for k in dead:
+            del self.data[k]
+
+    def __getitem__(self, key):
+        o = self.data[key]()
+        if o is None:
+            raise KeyError(key)
+        return o
+
+    def __setitem__(self, key, value):
+        self.data[key] = ref(value)
+
+    def __delitem__(self, key):
+        del self.data[key]
+
+    def items(self):
+        out = []
+        for k, r in list(self.data.items()):
+            v = r()
+            if v is not None:
+                out.append((k, v))
+        return out
+
+    def copy(self):
+        new = WeakValueDictionary()
+        for k, v in self.items():
+            new[k] = v
+        return new
+
+    def __deepcopy__(self, memo):
+        from copy import deepcopy
+        new = self.__class__()
+        for k, v in self.items():
+            new[deepcopy(k, memo)] = v
+        return new
+
     def valuerefs(self):
-        return [ref(v) for v in self.values()]
+        self._purge()
+        return list(self.data.values())
 
     def itervaluerefs(self):
         return iter(self.valuerefs())
 
 
-class WeakKeyDictionary(dict):
+class WeakKeyDictionary(_WeakMapping):
+    def _purge(self):
+        dead = [r for r in self.data if r() is None]
+        for r in dead:
+            del self.data[r]
+
+    def __getitem__(self, key):
+        return self.data[ref(key)]
+
+    def __setitem__(self, key, value):
+        self.data[ref(key)] = value
+
+    def __delitem__(self, key):
+        del self.data[ref(key)]
+
+    def items(self):
+        out = []
+        for r, v in list(self.data.items()):
+            k = r()
+            if k is not None:
+                out.append((k, v))
+        return out
+
+    def copy(self):
+        new = WeakKeyDictionary()
+        for k, v in self.items():
+            new[k] = v
+        return new
+
+    def __deepcopy__(self, memo):
+        from copy import deepcopy
+        new = self.__class__()
+        for k, v in self.items():
+            new[k] = deepcopy(v, memo)
+        return new
+
     def keyrefs(self):
-        return [ref(k) for k in self.keys()]
+        self._purge()
+        return list(self.data)
 
 
 class WeakSet(set):

@@ -11,6 +11,14 @@ class AbstractContextManager:
         return None
 
 
+class AbstractAsyncContextManager:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, tb):
+        return None
+
+
 class ContextDecorator:
     def __call__(self, func):
         def inner(*args, **kwds):

@@ -414,6 +414,7 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen, match_args, 
         cls.__doc__ = cls.__name__ + text_sig
     if match_args:
         _set_new_attribute(cls, "__match_args__", tuple(f.name for f in std_init_fields))
+    cls.__replace__ = _replace
     if slots:
         names = tuple(f.name for f in field_list)
         cls.__slots__ = names
@@ -487,6 +488,10 @@ def _astuple_inner(obj, tuple_factory):
 def replace(obj, /, **changes):
     if not _is_dataclass_instance(obj):
         raise TypeError("replace() should be called on dataclass instances")
+    return _replace(obj, **changes)
+
+
+def _replace(obj, /, **changes):
     for f in getattr(obj, _FIELDS).values():
         if f._field_type is _FIELD_CLASSVAR:
             continue

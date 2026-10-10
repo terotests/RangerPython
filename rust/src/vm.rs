@@ -63,6 +63,8 @@ pub struct Generator {
     pub handled: Vec<Value>,
     /// gi_code / cr_code, kept after the frame is gone
     pub code: Rc<Code>,
+    /// gi_frame, made on first access so it keeps its identity
+    pub frame_obj: Option<Value>,
 }
 
 impl Drop for Generator {
@@ -86,6 +88,7 @@ impl Drop for Generator {
             coroutine: false,
             handled: std::mem::take(&mut self.handled),
             code: self.code.clone(),
+            frame_obj: None,
         };
         crate::value::PENDING_DEL.with(|p| p.borrow_mut().push(Value::Gen(Rc::new(RefCell::new(g)))));
         crate::value::HAS_PENDING_DEL.with(|h| h.set(true));
@@ -909,7 +912,7 @@ impl Vm {
                             f.stack.truncate(base);
                             r?
                         }
-                        Value::Func(func) if func.code.simple && func.code.argcount as usize == len - first => {
+                        Value::Func(func) if func.code.borrow().simple && func.code.borrow().argcount as usize == len - first => {
                             let mut args = self.stack_pool.pop().unwrap_or_default();
                             args.extend(f.stack.drain(first..));
                             f.stack.truncate(base);
@@ -1274,7 +1277,17 @@ impl Vm {
                 Op::GetAwaitable => {
                     let v = Self::pop(f);
                     let it = match &v {
-                        Value::Gen(_) => v,
+                        Value::Gen(g) => {
+                            let (coro, iterable, agen) = {
+                                let g = g.borrow();
+                                (g.coroutine, g.code.iterable_coroutine, g.code.coroutine)
+                            };
+                            if !coro && !iterable {
+                                let msg = if agen { "'async_generator' object can't be awaited" } else { "object generator can't be used in 'await' expression" };
+                                return Err(self.type_error(msg));
+                            }
+                            v
+                        }
                         _ => match self.lookup_special(&v, &ps("__await__")) {
                             Some(m) => {
                                 let r = self.call_vec(&m, vec![], &[])?;
@@ -1389,7 +1402,7 @@ impl Vm {
                     let base = f.stack.len() - n - 1;
                     let func = f.stack[base].clone();
                     let r = if let Value::Func(func) = &func {
-                        if func.code.simple && func.code.argcount as usize == n {
+                        if func.code.borrow().simple && func.code.borrow().argcount as usize == n {
                             let mut args = self.stack_pool.pop().unwrap_or_default();
                             args.extend(f.stack.drain(base + 1..));
                             f.stack.pop();
@@ -1848,7 +1861,7 @@ impl Vm {
         let name = code.name.clone();
         let qualname = code.qualname.clone();
         Value::Func(Rc::new(Function {
-            code,
+            code: RefCell::new(code),
             globals,
             defaults: RefCell::new(defaults),
             kwdefaults: RefCell::new(kwdefaults),
@@ -1921,7 +1934,7 @@ impl Vm {
     pub fn call_vec(&mut self, f: &Value, args: Vec<Value>, kw: &[(Rc<PyStr>, Value)]) -> PyResult<Value> {
         match f {
             Value::Func(func) => {
-                if kw.is_empty() && func.code.simple && func.code.argcount as usize == args.len() {
+                if kw.is_empty() && func.code.borrow().simple && func.code.borrow().argcount as usize == args.len() {
                     self.call_simple(func, args)
                 } else {
                     self.call_func(func, args, kw)
@@ -1971,7 +1984,7 @@ impl Vm {
     /// a call with exactly the positional parameters, nothing else to bind
     #[inline]
     pub fn call_simple(&mut self, func: &Rc<Function>, mut args: Vec<Value>) -> PyResult<Value> {
-        let code = func.code.clone();
+        let code = func.code.borrow().clone();
         let n = code.varnames.len();
         args.resize(n, Value::Undef);
         let mut f = Frame { code, ip: 0, stack: args, cells: func.closure.clone(), blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
@@ -1994,7 +2007,7 @@ impl Vm {
     }
 
     pub fn call_func(&mut self, func: &Rc<Function>, args: Vec<Value>, kw: &[(Rc<PyStr>, Value)]) -> PyResult<Value> {
-        let code = func.code.clone();
+        let code = func.code.borrow().clone();
         let locals = self.bind_args(func, &code, args, kw)?;
         let mut cells: Vec<Cellv> = Vec::with_capacity(code.ncells());
         for (i, _) in code.cellvars.iter().enumerate() {
@@ -2007,7 +2020,7 @@ impl Vm {
         cells.extend(func.closure.iter().cloned());
         let f = Frame { code: code.clone(), ip: 0, stack: locals, cells, blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         if code.generator || code.coroutine {
-            let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator, handled: vec![], code: code.clone() };
+            let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator, handled: vec![], code: code.clone(), frame_obj: None };
             return Ok(Value::Gen(Rc::new(RefCell::new(g))));
         }
         let mut f = f;
@@ -2313,11 +2326,16 @@ impl Vm {
         if let Some(meta) = cls.meta.borrow().clone() {
             if !Rc::ptr_eq(&meta, &self.t.type_) {
                 if let Some(c) = meta.lookup(&self.n.call) {
-                    if !matches!(c, Value::Native(_)) {
+                    if matches!(c, Value::Func(_)) {
                         let mut a = Vec::with_capacity(args.len() + 1);
                         a.push(Value::Class(cls.clone()));
                         a.extend(args);
                         return self.call_vec(&c, a, kw);
+                    }
+                    if !matches!(c, Value::Native(_)) {
+                        // a non-function __call__ (TypedDict's `__call__ = dict`) is not bound
+                        let f = self.bind(c, &Value::Class(cls.clone()), &meta);
+                        return self.call_vec(&f, args, kw);
                     }
                 }
             }
@@ -2687,7 +2705,7 @@ impl Vm {
         // run the body
         let cell = match &body {
             Value::Func(f) => {
-                let code = f.code.clone();
+                let code = f.code.borrow().clone();
                 let n = code.varnames.len();
                 let mut stack = Vec::with_capacity(16 + n);
                 stack.resize(n, Value::Undef);
@@ -2878,15 +2896,16 @@ impl Vm {
         let path = name.replace('.', "/");
         let mut dirs = vec![String::new()];
         dirs.extend(self.search_path.iter().map(|d| d.trim_end_matches('/').to_string()));
-        // then what a program added to sys.path
-        let sys_path = self.modules.borrow().get_s("sys").and_then(|m| match m {
-            Value::Module(m) => m.dict.borrow().get_s("path"),
+        // then the directories a program put on sys.path
+        let sys_path = match self.modules.borrow().get_s("sys") {
+            Some(Value::Module(m)) => m.dict.borrow().get_s("path"),
             _ => None,
-        });
+        };
         if let Some(Value::List(l)) = sys_path {
             for v in l.borrow().iter() {
-                if let Some(d) = v.as_str().map(|d| d.trim_end_matches('/').to_string()) {
-                    if !d.is_empty() && !dirs.contains(&d) {
+                if let Value::Str(s) = v {
+                    let d = s.s.trim_end_matches('/').to_string();
+                    if !dirs.contains(&d) {
                         dirs.push(d);
                     }
                 }
