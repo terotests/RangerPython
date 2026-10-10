@@ -759,6 +759,8 @@ pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
             true
         }
         (Bytes(x), Bytes(y)) => x == y,
+        (ByteArray(x), ByteArray(y)) => Rc::ptr_eq(x, y) || *x.borrow() == *y.borrow(),
+        (ByteArray(x), Bytes(y)) | (Bytes(y), ByteArray(x)) => **y == *x.borrow(),
         (Instance(x), Instance(y)) if Rc::ptr_eq(x, y) => true,
         (Instance(_), _) | (_, Instance(_)) => return Option::None,
         (List(_), List(_)) | (Dict(_), Dict(_)) | (Set(_), Set(_)) | (FrozenSet(_), FrozenSet(_)) | (Set(_), FrozenSet(_)) | (FrozenSet(_), Set(_)) => return Option::None,

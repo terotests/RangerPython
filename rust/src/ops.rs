@@ -1126,8 +1126,15 @@ impl Vm {
             }
             (Bytes(_), _) if op == BinOp::Mod => {
                 let s = crate::builtins::bytes_to_latin1(a);
-                let r = crate::format::percent_format(self, &Value::string(s), b)?;
+                let r = crate::format::bytes_percent_format(self, &Value::string(s), b)?;
                 Value::Bytes(Rc::new(r.chars().map(|c| c as u32 as u8).collect()))
+            }
+            (ByteArray(x), _) if op == BinOp::Mod => {
+                let bs = Value::Bytes(Rc::new(x.borrow().clone()));
+                match self.builtin_binop(op, &bs, b)? {
+                    Some(Value::Bytes(r)) => Value::ByteArray(Rc::new(RefCell::new((*r).clone()))),
+                    _ => return Ok(Option::None),
+                }
             }
             (List(x), List(y)) if op == BinOp::Add => {
                 let mut v = x.borrow().clone();

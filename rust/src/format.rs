@@ -818,8 +818,15 @@ fn format_float(vm: &mut Vm, x: f64, sp: &Spec) -> PyResult<String> {
 pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
     let sp = match parse_spec(spec) {
         Some(s) => s,
-        None => return Err(vm.value_error("Invalid format specifier")),
+        None => {
+            let tn = vm.type_name(v);
+            return Err(vm.value_error(format!("Invalid format specifier '{}' for object of type '{}'", spec, tn)));
+        }
     };
+    if let (Some(g), Some(t @ (',' | '_'))) = (sp.grouping, sp.ty) {
+        let msg = if g == t { format!("Cannot specify '{}' with '{}'.", g, t) } else { "Cannot specify both ',' and '_'.".to_string() };
+        return Err(vm.value_error(msg));
+    }
     match v {
         Value::Bool(b) if sp.ty.is_none() => Ok(pad(&sp, "", if *b { "True" } else { "False" }, false, true)),
         Value::Int(_) | Value::Big(_) | Value::Bool(_) => {
@@ -882,6 +889,38 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
 // printf-style
 
 pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String> {
+    percent_format_mode(vm, fmt, args, false)
+}
+
+/// `bytes % args`: the format and the result are latin-1 text standing for bytes
+pub fn bytes_percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String> {
+    percent_format_mode(vm, fmt, args, true)
+}
+
+/// the bytes `%s`/`%b` inserts for `v`, as latin-1 text
+fn bytes_operand(vm: &mut Vm, v: &Value, conv: char) -> PyResult<String> {
+    let b = match v {
+        Value::Bytes(b) => Some((**b).clone()),
+        Value::ByteArray(b) => Some(b.borrow().clone()),
+        Value::Str(_) => None,
+        other => match vm.lookup_special(other, &crate::builtins::ps("__bytes__")) {
+            Some(f) => match vm.call_vec(&f, vec![], &[])? {
+                Value::Bytes(b) => Some((*b).clone()),
+                _ => return Err(vm.type_error("__bytes__ returned non-bytes")),
+            },
+            None => crate::builtins::bytes_of(vm, other).ok(),
+        },
+    };
+    match b {
+        Some(b) => Ok(b.iter().map(|&x| x as char).collect()),
+        None => {
+            let tn = vm.type_name(v);
+            Err(vm.type_error(format!("%{} requires a bytes-like object, or an object that implements __bytes__, not '{}'", conv, tn)))
+        }
+    }
+}
+
+fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> PyResult<String> {
     let f = match fmt {
         Value::Str(s) => s.s.clone(),
         _ => vm.str_of(fmt)?,
@@ -1016,6 +1055,31 @@ pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String
             None => next_arg(vm)?,
         };
         let piece = match conv {
+            's' | 'b' | 'r' | 'a' if bytes => {
+                let s = match conv {
+                    's' | 'b' => bytes_operand(vm, &arg, conv)?,
+                    _ => ascii_escape(&vm.repr(&arg)?),
+                };
+                let s: String = match sp.prec {
+                    Some(p) => s.chars().take(p).collect(),
+                    None => s,
+                };
+                sp.zero = false;
+                pad(&sp, "", &s, false, false)
+            }
+            'c' if bytes => {
+                let ch = match &arg {
+                    Value::Bytes(b) if b.len() == 1 => (b[0] as char).to_string(),
+                    Value::ByteArray(b) if b.borrow().len() == 1 => (b.borrow()[0] as char).to_string(),
+                    Value::Int(n) => match u8::try_from(*n) {
+                        Ok(x) => (x as char).to_string(),
+                        Err(_) => return Err(vm.err("OverflowError", "%c arg not in range(256)")),
+                    },
+                    Value::Big(_) => return Err(vm.err("OverflowError", "%c arg not in range(256)")),
+                    _ => return Err(vm.type_error("%c requires an integer in range(256) or a single byte")),
+                };
+                pad(&sp, "", &ch, false, false)
+            }
             's' | 'r' | 'a' => {
                 let s = match conv {
                     's' => vm.str_of(&arg)?,
