@@ -8,63 +8,63 @@ score is out of the tests CPython (Python 3.13.16) passes with the same
 driver. Tests that need CPython internals (reference counts, object sizes,
 subprocesses) are skipped by the test.support stand-in and are not counted.
 
-**2457 of 3582 tests pass: 68.6 %**
+**3226 of 3582 tests pass: 90.1 %**
 
 | file | pass | of | score | note |
 |---|---:|---:|---:|---|
 | test_augassign | 7 | 7 | 100.0 % |  |
-| test_baseexception | 9 | 10 | 90.0 % |  |
-| test_binop | 10 | 12 | 83.3 % |  |
-| test_bool | 25 | 31 | 80.6 % |  |
-| test_builtin | 52 | 115 | 45.2 % |  |
-| test_class | 14 | 33 | 42.4 % |  |
-| test_collections | 51 | 99 | 51.5 % |  |
-| test_compare | 11 | 16 | 68.8 % |  |
-| test_contains | 3 | 4 | 75.0 % |  |
-| test_copy | 70 | 81 | 86.4 % |  |
-| test_decorators | 14 | 16 | 87.5 % |  |
-| test_dict | 70 | 111 | 63.1 % |  |
-| test_dictviews | 7 | 16 | 43.8 % |  |
-| test_enumerate | 66 | 92 | 71.7 % |  |
-| test_exceptions | 39 | 95 | 41.1 % |  |
-| test_float | 18 | 47 | 38.3 % |  |
-| test_format | 4 | 18 | 22.2 % |  |
-| test_fstring | 49 | 84 | 58.3 % |  |
-| test_functools | 219 | 273 | 80.2 % |  |
-| test_generators | 24 | 40 | 60.0 % |  |
+| test_baseexception | 10 | 10 | 100.0 % |  |
+| test_binop | 12 | 12 | 100.0 % |  |
+| test_bool | 31 | 31 | 100.0 % |  |
+| test_builtin | 87 | 115 | 75.7 % |  |
+| test_class | 25 | 33 | 75.8 % |  |
+| test_collections | 89 | 99 | 89.9 % |  |
+| test_compare | 16 | 16 | 100.0 % |  |
+| test_contains | 4 | 4 | 100.0 % |  |
+| test_copy | 74 | 81 | 91.4 % |  |
+| test_decorators | 16 | 16 | 100.0 % |  |
+| test_dict | 96 | 111 | 86.5 % |  |
+| test_dictviews | 16 | 16 | 100.0 % |  |
+| test_enumerate | 78 | 92 | 84.8 % |  |
+| test_exceptions | 81 | 95 | 85.3 % |  |
+| test_float | 42 | 47 | 89.4 % |  |
+| test_format | 14 | 18 | 77.8 % |  |
+| test_fstring | 44 | 84 | 52.4 % |  |
+| test_functools | 241 | 273 | 88.3 % |  |
+| test_generators | 35 | 40 | 87.5 % |  |
 | test_genexps | 0 | 0 | 0.0 % |  |
-| test_grammar | 57 | 78 | 73.1 % |  |
-| test_index | 36 | 55 | 65.5 % |  |
-| test_int | 8 | 46 | 17.4 % |  |
-| test_isinstance | 5 | 23 | 21.7 % |  |
-| test_iter | 24 | 57 | 42.1 % | run stopped: killed after 0 s |
-| test_itertools | 67 | 137 | 48.9 % |  |
-| test_keywordonlyarg | 8 | 11 | 72.7 % |  |
-| test_list | 46 | 63 | 73.0 % |  |
+| test_grammar | 67 | 78 | 85.9 % |  |
+| test_index | 55 | 55 | 100.0 % |  |
+| test_int | 40 | 46 | 87.0 % |  |
+| test_isinstance | 19 | 23 | 82.6 % |  |
+| test_iter | 53 | 57 | 93.0 % |  |
+| test_itertools | 115 | 137 | 83.9 % |  |
+| test_keywordonlyarg | 10 | 11 | 90.9 % |  |
+| test_list | 61 | 63 | 96.8 % |  |
 | test_listcomps | 53 | 57 | 93.0 % |  |
-| test_long | 26 | 42 | 61.9 % |  |
-| test_math | 23 | 82 | 28.0 % | run stopped: killed after 180 s |
+| test_long | 32 | 42 | 76.2 % |  |
+| test_math | 76 | 82 | 92.7 % |  |
 | test_opcodes | 7 | 8 | 87.5 % |  |
 | test_pow | 6 | 7 | 85.7 % |  |
-| test_property | 14 | 29 | 48.3 % |  |
-| test_raise | 32 | 37 | 86.5 % |  |
-| test_random | 86 | 101 | 85.1 % |  |
-| test_range | 4 | 28 | 14.3 % | run stopped: killed after 78 s |
-| test_scope | 33 | 41 | 80.5 % |  |
-| test_set | 573 | 623 | 92.0 % |  |
+| test_property | 28 | 29 | 96.6 % |  |
+| test_raise | 36 | 37 | 97.3 % |  |
+| test_random | 91 | 101 | 90.1 % |  |
+| test_range | 28 | 28 | 100.0 % |  |
+| test_scope | 38 | 41 | 92.7 % |  |
+| test_set | 613 | 623 | 98.4 % |  |
 | test_setcomps | 0 | 1 | 0.0 % |  |
-| test_slice | 4 | 11 | 36.4 % |  |
-| test_sort | 19 | 21 | 90.5 % |  |
-| test_statistics | 277 | 370 | 74.9 % |  |
-| test_str | 58 | 128 | 45.3 % |  |
-| test_string | 36 | 38 | 94.7 % |  |
+| test_slice | 10 | 11 | 90.9 % |  |
+| test_sort | 20 | 21 | 95.2 % |  |
+| test_statistics | 364 | 370 | 98.4 % |  |
+| test_str | 110 | 128 | 85.9 % |  |
+| test_string | 37 | 38 | 97.4 % |  |
 | test_string_literals | 6 | 15 | 40.0 % |  |
-| test_super | 20 | 36 | 55.6 % |  |
-| test_tuple | 27 | 36 | 75.0 % |  |
-| test_types | 61 | 118 | 51.7 % |  |
+| test_super | 34 | 36 | 94.4 % |  |
+| test_tuple | 31 | 36 | 86.1 % |  |
+| test_types | 86 | 118 | 72.9 % |  |
 | test_unary | 6 | 6 | 100.0 % |  |
 | test_unpack | 1 | 1 | 100.0 % |  |
-| test_userdict | 22 | 25 | 88.0 % |  |
+| test_userdict | 25 | 25 | 100.0 % |  |
 | test_with | 50 | 51 | 98.0 % |  |
 
 ## Why tests fail
@@ -73,46 +73,46 @@ The most common reasons, by the error a failing test ends with:
 
 | tests | reason |
 |---:|---|
-| 508 | wrong result (AssertionError) |
-| 97 | AttributeError: module '…' has no attribute '…' |
-| 84 | skipped here: CPython implementation detail |
-| 38 | AttributeError: '…' object has no attribute '…' |
-| 33 | not run: killed after 180 s |
-| 20 | KeyError: '…' |
-| 19 | not run: killed after 78 s |
-| 17 | ModuleNotFoundError: No module named '…' |
-| 17 | TypeError: unsupported operand type(s) for %: '…' and '…' |
-| 17 | not run: killed after 0 s |
-| 14 | NameError: name '…' is not defined |
-| 11 | OverflowError: cannot fit '…' into an index-sized integer |
+| 127 | wrong result (AssertionError) |
+| 87 | skipped here: CPython implementation detail |
+| 11 | AttributeError: '…' object has no attribute '…' |
 | 11 | NotImplementedError: ast.parse is not available in this runtime |
-| 11 | TypeError: must be real number, not IsCloseTests |
+| 9 | skipped here: resource not enabled |
 | 9 | skipped here: object finalization is the host's |
 | 9 | skipped here: no threads |
-| 8 | skipped here: resource not enabled |
 | 8 | skipped here: no subprocesses on this runtime |
-| 8 | TypeError: isinstance() arg N must be a type, a tuple of types, or a union |
-| 7 | TypeError: issubclass() arg N must be a class |
+| 7 | AttributeError: module '…' has no attribute '…' |
+| 7 | ModuleNotFoundError: No module named '…' |
 | 6 | skipped here: tuple reuse is specific to CPython |
-| 6 | RecursionError: maximum recursion depth exceeded |
-| 5 | OverflowError: Python int too large to convert to C ssize_t |
-| 5 | AttributeError: '…' object has no attribute '…' and no __dict__ for setting new attributes |
-| 5 | TypeError: cmp_to_key() takes N positional argument but N were given |
-| 5 | TypeError: can'…'newstyle' |
-| 5 | PicklingError: Can'…'generator'…'s not found as builtins.generator |
-| 5 | TypeError: unhashable type: '…' |
-| 4 | AttributeError: type object '…' has no attribute '…' |
-| 4 | TypeError: unsupported operand type(s) for *: '…' and '…' |
-| 4 | AttributeError: <module '…' from '…'> does not have the attribute '…' |
-| 4 | UnboundLocalError: cannot access local variable '…' where it is not associated with a value |
-| 3 | TypeError: '…' object is not callable |
-| 3 | ValueError: invalid hexadecimal floating-point string |
+| 4 | TypeError: unsupported operand type(s) for -: '…' and '…' |
 | 3 | skipped here: applies only when using short float repr style |
 | 3 | skipped here: Signature information for builtins requires docstrings |
 | 3 | skipped here: no docstrings |
-| 3 | TypeError: '…' object is not an iterator |
-| 3 | ValueError: generator already executing |
-| 3 | TypeError: '…' object is not subscriptable |
+| 3 | TypeError: isinstance() arg N must be a type, a tuple of types, or a union |
+| 2 | TypeError: method() takes no arguments |
+| 2 | skipped here: test.support.catch_unraisable_exception is not available on this runtime |
+| 2 | TypeError: unsupported operand type(s) for *: '…' and '…' |
+| 2 | skipped here: test.support.skip_on_s390x is not available on this runtime |
+| 2 | KeyError: '…' |
+| 2 | AttributeError: <module '…' from '…'> does not have the attribute '…' |
+| 2 | LookupError: unknown encoding: utf-N |
+| 2 | TypeError: '…' object is not subscriptable |
+| 1 |  mode=single |
+| 1 | TypeError: code object passed to exec() may not contain free variables |
+| 1 | EOFError: EOF when reading a line |
+| 1 | FileNotFoundError: [Errno N] No such file or directory: '…' |
+| 1 | skipped here: no subprocesses |
+| 1 | skipped here: the pty and signal modules must be available |
+| 1 | skipped here: No module named '…' |
+| 1 | skipped here: check__all__ needs module introspection |
+| 1 | KeyError: <test.test_copy.TestCopy.test_deepcopy_weakkeydict.<locals>.C object at 0x7f403c332ff0> |
+| 1 | TypeError: replace() does not support C objects |
+| 1 | skipped here: requires _testcapi |
+| 1 | skipped here: requires __getformat__ |
+| 1 | skipped here: needs _testcapi |
+| 1 | NotImplementedError: dis: this runtime'…'s |
+| 1 | TypeError: Invalid annotation for '…'. '…' is not a class. |
+| 1 | TypeError: Invalid annotation for '…'. int \| float is not a class. |
 
 Run `node tests/conformance/run.mjs` for the full list in
 tests/conformance/results.json.
