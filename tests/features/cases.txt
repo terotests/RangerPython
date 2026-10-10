@@ -1,0 +1,662 @@
+# Feature cases: each "### category | feature" header starts a snippet. The
+# snippet's printed output is compared with CPython's (expected.json).
+
+### Syntax | arithmetic and precedence
+print(2 + 3 * 4 ** 2 // 5 % 7 - -1, 7 / 2, 7 // -2, -7 % 3, 2 ** -1)
+### Syntax | chained comparisons
+x = 5
+print(1 < x <= 5 < 10, 1 < x > 6, 3 == 3.0 != 4)
+### Syntax | walrus operator
+data = [1, 5, 9]
+if (n := len(data)) > 2:
+    print("long", n)
+print([y for x in data if (y := x * 2) > 4])
+### Syntax | conditional expression and lambda
+f = lambda a, b=2, *c, **d: (a, b, c, d)
+print(f(1), f(1, 3, 4, k=5), "even" if 4 % 2 == 0 else "odd")
+### Syntax | star unpacking
+a, *b, c = range(6)
+first, (x, y) = 1, (2, 3)
+print(a, b, c, first, x, y, [*b, *"hi"], {**{"a": 1}, "b": 2})
+### Syntax | match statement
+def m(v):
+    match v:
+        case 0 | 1:
+            return "small"
+        case [x, y, *rest]:
+            return f"seq {x} {y} {rest}"
+        case {"k": k, **others}:
+            return f"map {k} {others}"
+        case str() as s if len(s) > 2:
+            return "str " + s
+        case (a, b):
+            return "pair"
+        case _:
+            return "other"
+print([m(0), m([1, 2, 3, 4]), m({"k": 1, "z": 2}), m("abc"), m((1, 2)), m(3.5)])
+### Syntax | match class patterns
+from dataclasses import dataclass
+@dataclass
+class P:
+    x: int
+    y: int
+def where(p):
+    match p:
+        case P(x=0, y=0):
+            return "origin"
+        case P(x=0, y=y):
+            return f"y={y}"
+        case P(x, y):
+            return f"{x},{y}"
+print(where(P(0, 0)), where(P(0, 3)), where(P(1, 2)))
+### Syntax | f-strings
+v, w = 3.14159, "hi"
+print(f"{v:.2f} {w!r:>6} {v=} {'nested ' + w} {10:#x} {1234567:,} {f'{w}'}")
+### Syntax | f-string nested quotes (PEP 701)
+items = ["a", "b"]
+print(f"{", ".join(items)} {f"{items[0]}"}")
+### Syntax | global and nonlocal
+g = 0
+def outer():
+    c = 0
+    def inc():
+        nonlocal c
+        global g
+        c += 1
+        g += 10
+    inc(); inc()
+    return c
+print(outer(), g)
+### Syntax | decorators with arguments
+def tag(name):
+    def deco(fn):
+        def wrapper(*a):
+            return f"<{name}>{fn(*a)}</{name}>"
+        return wrapper
+    return deco
+@tag("b")
+@tag("i")
+def hello(x):
+    return "hi " + x
+print(hello("you"))
+### Syntax | keyword-only and positional-only parameters
+def f(a, b, /, c, *, d=4):
+    return a + b + c + d
+print(f(1, 2, 3), f(1, 2, c=3, d=0))
+try:
+    f(a=1, b=2, c=3)
+except TypeError as e:
+    print("TypeError")
+### Syntax | type hints and annotations
+def f(x: int, y: "str" = "a") -> list[int]:
+    return [x]
+z: dict[str, int] = {}
+print(f.__annotations__, __annotations__)
+### Syntax | type statement and generic syntax (PEP 695)
+type Pair[T] = tuple[T, T]
+def first[T](xs: list[T]) -> T:
+    return xs[0]
+print(Pair.__name__, first([3, 4]), first.__type_params__)
+### Syntax | assert
+try:
+    assert 1 == 2, "nope"
+except AssertionError as e:
+    print("assert", e)
+### Syntax | del and slices assignment
+a = list(range(10))
+del a[1:3]
+a[::2] = [0] * 4
+del a[-1]
+print(a)
+### Syntax | while/else and for/else
+for i in range(3):
+    if i == 5:
+        break
+else:
+    print("no break")
+n = 0
+while n < 3:
+    n += 1
+else:
+    print("while done", n)
+### Syntax | augmented assignment operators
+x = 10
+x += 1; x -= 2; x *= 3; x //= 2; x %= 7; x **= 2; x <<= 1; x >>= 1; x |= 8; x &= 12; x ^= 1
+print(x)
+### Syntax | number literals
+print(0x1F, 0o17, 0b101, 1_000_000, 1e3, .5, 3j, 0xff_ff)
+### Syntax | string literals and escapes
+print("tab\tnew\\n", r"raw\n", """tri
+ple""", 'it''s', "é\N{BULLET}\x41")
+### Syntax | async def and await
+import asyncio
+async def work(x):
+    await asyncio.sleep(0)
+    return x * 2
+async def main():
+    return await asyncio.gather(work(1), work(2))
+print(asyncio.run(main()))
+
+### Data types | int operations
+print(17 // 5, 17 % 5, divmod(-17, 5), abs(-3), int("ff", 16), int("  42 "), (255).bit_length(), int(3.9), round(2.5), round(3.5))
+### Data types | big integers
+print(2 ** 100, 10 ** 20 + 1, (2 ** 64) // 3, -(2 ** 70) % 1000)
+### Data types | float formatting
+print(0.1 + 0.2, 1 / 3, 1e16, 1e-7, float("inf"), -0.0, 2.5e-5, 123456789.0, 1.0)
+### Data types | complex numbers
+z = (1 + 2j) * (3 - 1j)
+print(z, abs(3 + 4j), z.real, z.conjugate(), complex("1-2j"), (1j) ** 2)
+### Data types | str methods
+s = "  Hello, World  "
+print(s.strip().lower(), s.split(","), "-".join(["a", "b"]), s.find("o"), s.replace("l", "L", 2), "abc".center(9, "*"), "x".zfill(3), "Ab".swapcase(), "a b c".title(), "ab12".isalnum())
+### Data types | str formatting with % and format
+print("%5.2f|%-4d|%s|%r|%x|%05d" % (3.14159, 42, "s", "r", 255, 7), "{:>8}|{:^7}|{:08.3f}".format("r", "c", 2.5), format(1234.5, ",.1f"))
+### Data types | bytes
+b = b"abc" + bytes([100])
+print(b, b[0], list(b), b.decode(), "é".encode("utf-8"), bytearray(b"xy"), b.hex())
+### Data types | list methods
+a = [3, 1, 2]
+a.append(5); a.extend([0]); a.insert(1, 9); a.remove(2); a.sort(); p = a.pop()
+print(a, p, a.index(3), a.count(1), a[::-1], sorted([3, 1, 2], reverse=True), [1, 2] * 2)
+### Data types | tuple and namedtuple
+from collections import namedtuple
+Pt = namedtuple("Pt", "x y")
+p = Pt(1, y=2)
+print(p, p.x + p.y, p._asdict(), p._replace(x=5), (1, 2) + (3,), (1,) * 3)
+### Data types | dict methods and ordering
+d = {"b": 1, "a": 2}
+d["c"] = 3
+d.update(a=5)
+print(d, list(d), d.get("z", 0), d.setdefault("e", 9), d.pop("b"), sorted(d.items()), {k: v for k, v in d.items() if v > 3}, d | {"z": 0})
+### Data types | set operations
+s, t = {1, 2, 3}, {2, 3, 4}
+print(s | t, s & t, s - t, s ^ t, s <= {1, 2, 3, 4}, frozenset([1, 1, 2]), {x % 3 for x in range(10)})
+### Data types | range and slicing
+r = range(10, 0, -3)
+print(list(r), r[1], len(r), 4 in r, r[::2], "abcdef"[1:5:2], list(range(5))[-2:])
+### Data types | bool and None semantics
+print(bool([]), bool("0"), None is None, True + True, [] or "x", 0 and 1, not None)
+
+### Builtins | len, min, max, sum with keys
+words = ["pear", "fig", "banana"]
+print(len(words), min(words, key=len), max(words), sum([1, 2, 3], 10), max([], default=0))
+### Builtins | enumerate, zip, map, filter
+print(list(enumerate("ab", 1)), list(zip("ab", [1, 2], strict=True)), list(map(str.upper, "ab")), list(filter(None, [0, 1, 2])))
+### Builtins | sorted with key and reverse
+people = [("ann", 30), ("bob", 25), ("cy", 30)]
+print(sorted(people, key=lambda p: (-p[1], p[0])))
+### Builtins | any, all, reversed, iter, next
+it = iter([1, 2, 3])
+print(any(x > 2 for x in [1, 3]), all([]), list(reversed("abc")), next(it), next(it), next(iter([]), "end"))
+### Builtins | isinstance, issubclass, type, callable
+print(isinstance(3, (str, int)), issubclass(bool, int), type("x").__name__, callable(len), isinstance(True, int))
+### Builtins | getattr, setattr, hasattr, vars, dir
+class C:
+    a = 1
+c = C()
+setattr(c, "b", 2)
+print(getattr(c, "a"), getattr(c, "z", "no"), hasattr(c, "b"), vars(c), "a" in dir(c))
+### Builtins | chr, ord, hex, bin, oct, divmod, pow
+print(chr(65), ord("é"), hex(255), bin(5), oct(8), divmod(7, 2), pow(2, 10, 1000), pow(2, -1))
+### Builtins | eval and exec
+ns = {}
+exec("def sq(x):\n    return x * x", ns)
+print(eval("1 + 2 * 3"), ns["sq"](7), eval("a + b", {"a": 1, "b": 2}))
+### Builtins | print options
+print("a", "b", sep="-", end="!\n")
+print(*[1, 2, 3], sep=", ")
+### Builtins | hash and id
+print(hash(1) == hash(1.0), hash("a") == hash("a"), id(1) == id(1), hash((1, 2)) == hash((1, 2)))
+### Builtins | round and abs on floats
+print(round(2.675, 2), round(-0.5), round(1234.5678, -2), abs(-2.5), round(7))
+### Builtins | open, read and write files
+with open("notes.txt", "w") as f:
+    f.write("one\ntwo\n")
+with open("notes.txt") as f:
+    print(f.read().splitlines())
+with open("notes.txt", "a") as f:
+    print("three", file=f)
+print(open("notes.txt").readlines())
+
+### Functions | default argument evaluated once
+def f(x, acc=[]):
+    acc.append(x)
+    return acc
+f(1)
+print(f(2))
+### Functions | closures and late binding
+fs = [lambda: i for i in range(3)]
+gs = [lambda i=i: i for i in range(3)]
+print([h() for h in fs], [h() for h in gs])
+### Functions | recursion
+def fib(n):
+    return n if n < 2 else fib(n - 1) + fib(n - 2)
+print(fib(20))
+### Functions | *args and **kwargs forwarding
+def inner(*a, **k):
+    return a, sorted(k.items())
+def outer(*a, **k):
+    return inner(*a, 0, **k, z=1)
+print(outer(1, 2, y=3))
+### Functions | function attributes
+def f(a, b=1):
+    "doc"
+    pass
+f.custom = 5
+print(f.__name__, f.__doc__, f.__defaults__, f.custom, f.__qualname__)
+### Functions | functools
+import functools
+@functools.lru_cache(maxsize=None)
+def fact(n):
+    return 1 if n < 2 else n * fact(n - 1)
+add3 = functools.partial(lambda a, b, c: a + b + c, 1, 2)
+print(fact(10), add3(3), functools.reduce(lambda a, b: a * b, [1, 2, 3, 4]), functools.cmp_to_key(lambda a, b: a - b)(1) < functools.cmp_to_key(lambda a, b: a - b)(2))
+### Functions | functools.wraps and singledispatch
+import functools
+def deco(fn):
+    @functools.wraps(fn)
+    def w(*a):
+        return fn(*a)
+    return w
+@deco
+def named():
+    "the doc"
+@functools.singledispatch
+def show(x):
+    return "obj"
+@show.register
+def _(x: int):
+    return "int"
+print(named.__name__, named.__doc__, show(1), show("s"))
+
+### Classes | inheritance and super
+class A:
+    def __init__(self, x):
+        self.x = x
+    def who(self):
+        return "A"
+class B(A):
+    def __init__(self, x, y):
+        super().__init__(x)
+        self.y = y
+    def who(self):
+        return "B>" + super().who()
+b = B(1, 2)
+print(b.x, b.y, b.who(), B.__mro__[1].__name__)
+### Classes | multiple inheritance MRO
+class A: pass
+class B(A): pass
+class C(A): pass
+class D(B, C): pass
+print([k.__name__ for k in D.__mro__])
+### Classes | properties
+class T:
+    def __init__(self):
+        self._c = 0
+    @property
+    def c(self):
+        return self._c
+    @c.setter
+    def c(self, v):
+        self._c = max(0, v)
+t = T()
+t.c = -5
+t2 = T(); t2.c = 7
+print(t.c, t2.c)
+### Classes | classmethod and staticmethod
+class K:
+    n = 0
+    @classmethod
+    def make(cls):
+        cls.n += 1
+        return cls()
+    @staticmethod
+    def add(a, b):
+        return a + b
+K.make(); K.make()
+print(K.n, K.add(2, 3), K().add(1, 1))
+### Classes | operator overloading
+class V:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+    def __add__(self, o):
+        return V(self.x + o.x, self.y + o.y)
+    def __mul__(self, k):
+        return V(self.x * k, self.y * k)
+    __rmul__ = __mul__
+    def __eq__(self, o):
+        return (self.x, self.y) == (o.x, o.y)
+    def __repr__(self):
+        return f"V({self.x}, {self.y})"
+    def __len__(self):
+        return 2
+    def __getitem__(self, i):
+        return (self.x, self.y)[i]
+print(V(1, 2) + V(3, 4), 2 * V(1, 1), V(1, 2) == V(1, 2), len(V(0, 0)), list(V(5, 6)))
+### Classes | __slots__ and __dict__
+class S:
+    __slots__ = ("a",)
+class D:
+    pass
+d = D()
+d.z = 1
+s = S()
+s.a = 1
+try:
+    s.b = 2
+    print("no error")
+except AttributeError:
+    print("AttributeError")
+print(d.__dict__)
+### Classes | dataclasses
+from dataclasses import dataclass, field
+@dataclass(order=True)
+class Item:
+    name: str
+    qty: int = 0
+    tags: list = field(default_factory=list)
+a, b = Item("a", 2), Item("b")
+print(a, a < b, a == Item("a", 2), b.tags)
+### Classes | descriptors
+class Upper:
+    def __set_name__(self, owner, name):
+        self.name = "_" + name
+    def __get__(self, obj, typ=None):
+        return getattr(obj, self.name).upper()
+    def __set__(self, obj, v):
+        setattr(obj, self.name, v)
+class R:
+    s = Upper()
+r = R()
+r.s = "abc"
+print(r.s)
+### Classes | metaclasses
+class Registry(type):
+    classes = []
+    def __new__(mcls, name, bases, ns):
+        cls = super().__new__(mcls, name, bases, ns)
+        mcls.classes.append(name)
+        return cls
+class Base(metaclass=Registry): pass
+class Child(Base): pass
+print(Registry.classes, type(Child).__name__)
+### Classes | abstract base classes
+from abc import ABC, abstractmethod
+class Shape(ABC):
+    @abstractmethod
+    def area(self): ...
+class Sq(Shape):
+    def area(self):
+        return 4
+try:
+    Shape()
+except TypeError:
+    print("abstract")
+print(Sq().area(), isinstance(Sq(), Shape))
+### Classes | subclassing built-in types
+class MyList(list):
+    def total(self):
+        return sum(self)
+class MyDict(dict):
+    def __missing__(self, k):
+        return k * 2
+m = MyList([1, 2, 3])
+m.append(4)
+print(m.total(), len(m), MyDict(a=1)["zz"], isinstance(m, list))
+### Classes | __init_subclass__ and __class_getitem__
+class Plugin:
+    names = []
+    def __init_subclass__(cls, key="", **kw):
+        super().__init_subclass__(**kw)
+        Plugin.names.append(key or cls.__name__)
+class A(Plugin, key="alpha"): pass
+class B(Plugin): pass
+print(Plugin.names, list[int], dict[str, list[int]])
+### Classes | enum
+from enum import Enum, auto
+class Color(Enum):
+    RED = 1
+    GREEN = auto()
+print(Color.RED, Color(2), Color["GREEN"].value, [c.name for c in Color])
+### Classes | __repr__, __str__ and __format__
+class M:
+    def __repr__(self):
+        return "M()"
+    def __str__(self):
+        return "m"
+    def __format__(self, spec):
+        return "fmt:" + spec
+print(M(), repr(M()), [M()], f"{M():xy}", str(M()))
+### Classes | context manager protocol
+class Ctx:
+    def __enter__(self):
+        print("enter")
+        return self
+    def __exit__(self, t, v, tb):
+        print("exit", t.__name__ if t else None)
+        return True
+with Ctx():
+    raise ValueError()
+print("after")
+### Classes | iterator protocol
+class Count:
+    def __init__(self, n):
+        self.i, self.n = 0, n
+    def __iter__(self):
+        return self
+    def __next__(self):
+        if self.i >= self.n:
+            raise StopIteration
+        self.i += 1
+        return self.i
+print(list(Count(3)), sum(Count(4)))
+
+### Generators | generator functions
+def gen(n):
+    for i in range(n):
+        yield i * i
+print(list(gen(4)), sum(gen(5)))
+### Generators | send, throw and close
+def acc():
+    total = 0
+    while True:
+        try:
+            x = yield total
+        except ValueError:
+            total = -1
+            continue
+        total += x
+g = acc()
+next(g)
+print(g.send(5), g.send(2), g.throw(ValueError), g.send(1))
+g.close()
+### Generators | yield from and return value
+def inner():
+    yield 1
+    return "done"
+def outer():
+    r = yield from inner()
+    yield r
+print(list(outer()))
+### Generators | lazy infinite generators
+import itertools
+def nat():
+    n = 0
+    while True:
+        yield n
+        n += 1
+print(list(itertools.islice(nat(), 5)), next(x for x in nat() if x > 10))
+### Generators | generator expressions
+print(sum(x * x for x in range(10)), list(x for x in "abc" if x != "b"), max((len(w), w) for w in ["a", "bbb", "cc"]))
+### Generators | comprehensions (list, dict, set, nested)
+print([x * y for x in range(3) for y in range(3) if x != y], {x: x ** 2 for x in range(4)}, {c for c in "hello"} == set("helo"), [[j for j in range(i)] for i in range(3)])
+
+### Exceptions | try/except/else/finally
+def f(x):
+    try:
+        r = 10 // x
+    except ZeroDivisionError as e:
+        return f"err {e}"
+    else:
+        return f"ok {r}"
+    finally:
+        print("finally", x)
+print(f(2), f(0))
+### Exceptions | custom exceptions and chaining
+class AppError(Exception):
+    def __init__(self, msg, code):
+        super().__init__(msg)
+        self.code = code
+try:
+    try:
+        {}["k"]
+    except KeyError as e:
+        raise AppError("failed", 7) from e
+except AppError as e:
+    print(e, e.code, type(e.__cause__).__name__, e.args)
+### Exceptions | exception groups and except*
+try:
+    raise ExceptionGroup("many", [ValueError("a"), TypeError("b")])
+except* ValueError as eg:
+    print("values", [str(e) for e in eg.exceptions])
+except* TypeError as eg:
+    print("types", len(eg.exceptions))
+### Exceptions | built-in exception messages
+for code in ["1/0", "[][1]", "{}['x']", "int('x')", "None.x", "undefined_name", "'a' + 1"]:
+    try:
+        eval(code)
+    except Exception as e:
+        print(type(e).__name__, e)
+### Exceptions | traceback text of an uncaught error
+import traceback
+try:
+    def boom():
+        raise RuntimeError("bad")
+    boom()
+except RuntimeError:
+    print(traceback.format_exc().splitlines()[-1])
+### Exceptions | raise in finally and context
+try:
+    try:
+        raise ValueError("first")
+    finally:
+        print("cleanup")
+except ValueError as e:
+    print("caught", e)
+try:
+    try:
+        1 / 0
+    except ZeroDivisionError:
+        raise KeyError("k")
+except KeyError as e:
+    print(type(e.__context__).__name__)
+### Exceptions | warnings
+import warnings
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    warnings.warn("careful", UserWarning)
+print(len(w), str(w[0].message))
+
+### Modules | math
+import math
+print(math.sqrt(16), math.floor(-2.5), math.ceil(2.1), math.pi, math.gcd(12, 18), math.isclose(0.1 + 0.2, 0.3), math.factorial(10), math.hypot(3, 4), math.log(math.e), math.comb(5, 2))
+### Modules | random with seed
+import random
+random.seed(42)
+print(random.randint(1, 100), random.random(), random.choice("abc"), random.sample(range(10), 3))
+### Modules | json
+import json
+s = json.dumps({"a": [1, 2.5, None, True], "b": "é"}, sort_keys=True)
+print(s, json.loads(s)["a"], json.dumps([1, {"x": 1}], indent=2))
+### Modules | re
+import re
+m = re.search(r"(?P<y>\d{4})-(\d\d)", "on 2024-05-01")
+print(m.group("y"), m.groups(), re.findall(r"\b\w", "hello big world"), re.sub(r"(\w+)@(\w+)", r"\2:\1", "me@home"), re.split(r"\s*,\s*", "a , b,c"))
+### Modules | collections
+from collections import Counter, defaultdict, deque, OrderedDict, ChainMap
+c = Counter("mississippi")
+dd = defaultdict(list)
+dd["k"].append(1)
+dq = deque([1, 2, 3], maxlen=3)
+dq.append(4)
+dq.appendleft(0)
+print(c.most_common(2), dict(dd), dq, OrderedDict(a=1), ChainMap({"a": 1}, {"b": 2})["b"])
+### Modules | itertools
+import itertools as it
+print(list(it.permutations("abc", 2))[:3], list(it.combinations(range(4), 2))[:3], list(it.product("ab", repeat=2)), list(it.accumulate([1, 2, 3])), [(k, len(list(g))) for k, g in it.groupby("aabbbc")], list(it.chain([1], [2])))
+### Modules | string and textwrap
+import string, textwrap
+print(string.ascii_lowercase[:5], string.Template("$x!").substitute(x="hi"), textwrap.wrap("the quick brown fox jumps", 10), textwrap.dedent("  a\n  b"))
+### Modules | datetime
+import datetime
+d = datetime.date(2024, 2, 28) + datetime.timedelta(days=2)
+print(d, d.weekday(), datetime.datetime(2024, 1, 1, 12, 30).isoformat(), d.strftime("%Y/%m/%d"))
+### Modules | os and os.path
+import os
+os.makedirs("out/sub", exist_ok=True)
+with open("out/sub/a.txt", "w") as f:
+    f.write("x")
+print(os.path.join("out", "sub"), os.path.exists("out/sub/a.txt"), sorted(os.listdir("out/sub")), os.path.splitext("a/b.tar.gz"), os.path.basename("/x/y.py"))
+### Modules | sys
+import sys
+print(sys.version_info[0], type(sys.argv).__name__, sys.maxsize > 2 ** 31)
+### Modules | typing
+from typing import Optional, Union, List, TypeVar, Generic, NamedTuple, Protocol
+T = TypeVar("T")
+class Box(Generic[T]):
+    def __init__(self, v: T):
+        self.v = v
+class Pt(NamedTuple):
+    x: int
+    y: int = 0
+print(Box[int](3).v, Pt(1), Optional[int], List[str])
+### Modules | copy
+import copy
+a = [[1, 2], {"k": [3]}]
+b = copy.deepcopy(a)
+b[0].append(9)
+c = copy.copy(a)
+print(a, b, c[0] is a[0])
+### Modules | fractions and decimal
+from fractions import Fraction
+from decimal import Decimal
+print(Fraction(1, 3) + Fraction(1, 6), Fraction("0.75"), Decimal("1.10") + Decimal("2.20"), Decimal("0.1") * 3)
+### Modules | statistics
+import statistics as st
+print(st.mean([1, 2, 3, 4]), st.median([3, 1, 2]), st.mode([1, 1, 2]), round(st.stdev([1, 2, 3, 4]), 4))
+### Modules | heapq and bisect
+import heapq, bisect
+h = [5, 1, 4]
+heapq.heapify(h)
+heapq.heappush(h, 0)
+a = [1, 3, 5]
+bisect.insort(a, 4)
+print(heapq.heappop(h), heapq.nsmallest(2, [9, 2, 7]), a, bisect.bisect_left(a, 3))
+### Modules | contextlib
+from contextlib import contextmanager, suppress
+@contextmanager
+def tagged(name):
+    print("<" + name + ">")
+    yield name.upper()
+    print("</" + name + ">")
+with tagged("p") as t:
+    print(t)
+with suppress(KeyError):
+    {}["x"]
+print("ok")
+### Modules | operator
+import operator
+print(operator.add(1, 2), sorted([(1, "b"), (0, "a")], key=operator.itemgetter(1)), operator.attrgetter("real")(3), list(map(operator.mul, [1, 2], [3, 4])))
+### Modules | struct
+import struct
+print(struct.pack("<hI", 1, 2), struct.unpack("<hI", struct.pack("<hI", 1, 2)), struct.calcsize("<hI"))
+### Modules | io.StringIO
+import io
+buf = io.StringIO()
+buf.write("line1\n")
+print("line2", file=buf)
+print(buf.getvalue().split())
+### Modules | time
+import time
+t0 = time.time()
+print(type(t0).__name__, time.perf_counter() >= 0)

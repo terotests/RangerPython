@@ -11,8 +11,8 @@ def import_module(name, deprecated=False, *, required_on=()):
 
 
 def import_fresh_module(name, fresh=(), blocked=(), deprecated=False):
-    if blocked:
-        return None
+    # there is one implementation of each module here, so a blocked
+    # accelerator gives the same module
     try:
         return __import__(name, fromlist=["_"])
     except ImportError:

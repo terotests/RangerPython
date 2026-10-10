@@ -17,6 +17,7 @@ const put = (dir, mount) => {
 };
 put(path.join(cache, "test"), "/t/test");
 put(path.join(HERE, "support/test/support"), "/t/test/support");
+put(path.join(HERE, "support/stubs"), "/t");
 rt.addPath("/t");
 rt.addArg("driver.py");
 rt.addArg("test." + name);

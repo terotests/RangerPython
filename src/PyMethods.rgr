@@ -27,7 +27,7 @@ class PyMethods {
         this.addNames("set" "__init__ add remove discard pop clear copy update union intersection difference symmetric_difference issubset issuperset isdisjoint intersection_update difference_update symmetric_difference_update __len__ __contains__ __iter__")
         this.addNames("frozenset" "copy union intersection difference symmetric_difference issubset issuperset isdisjoint __len__ __contains__ __iter__ __hash__")
         this.addNames("file" "write writelines read readline readlines close flush seek tell __enter__ __exit__ __iter__ __next__ readable writable")
-        this.addNames("int" "bit_length conjugate is_integer __index__ __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ to_bytes")
+        this.addNames("int" "bit_length bit_count as_integer_ratio conjugate is_integer __index__ __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ to_bytes")
         this.addNames("float" "is_integer conjugate hex __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ as_integer_ratio")
         this.addNames("iter" "__next__ __iter__")
         this.addNames("complex" "conjugate __abs__ __add__ __sub__ __mul__ __truediv__ __pow__ __eq__ __hash__ __neg__ __pos__ __bool__ __complex__ __radd__ __rsub__ __rmul__ __rtruediv__ __rpow__ __repr__ __str__ __getnewargs__ __format__")
@@ -232,6 +232,17 @@ class PyMethods {
             def optrnw@(optional):PyVal (ip.mkBuiltinMethod(tv "type.__new__"))
             return optrnw
         }
+        if ((name == "__new__") && (kind == "type")) {
+            def optrtn@(optional):PyVal (ip.mkBuiltinMethod(tv "metatype.__new__"))
+            return optrtn
+        }
+        if ((name == "__new__") && (kind == "object")) {
+            def optron@(optional):PyVal (ip.mkBuiltinMethod(tv "object.__new__"))
+            return optron
+        }
+        if ((name == "__init__") && (kind == "object")) {
+            return (get ip.builtins "__object_init__")
+        }
         if ((name == "__init__") && ((kind == "list") || (kind == "dict") || (kind == "set"))) {
             def optrin@(optional):PyVal (ip.mkBuiltinMethod(tv "unbound:__init__"))
             return optrin
@@ -305,6 +316,49 @@ class PyMethods {
             }
             return ip.NONE
         }
+        if (name == "metatype.__new__") {
+            ; type.__new__(meta, name, bases, ns, **kw)
+            if ((array_length args) == 0) {
+                ip.raise("TypeError" "type.__new__(): not enough arguments")
+            }
+            def mrest:[PyVal]
+            def mi:int 1
+            while (mi < (array_length args)) {
+                push mrest (itemAt args mi)
+                mi = mi + 1
+            }
+            return (ip.typeNew((itemAt args 0) mrest kn kv))
+        }
+        if (name == "type.__call__") {
+            return (ip.instantiate(self args kn kv))
+        }
+        if (name == "object.__new__") {
+            if ((array_length args) == 0) {
+                ip.raise("TypeError" "object.__new__(): not enough arguments")
+            }
+            def ocls:PyVal (itemAt args 0)
+            if (ocls.t != PyT.Class) {
+                ip.raise("TypeError" ("object.__new__(X): X is not a type object (" + (ip.typeName(ocls)) + ")"))
+            }
+            if ((strlen ocls.bt) > 0) {
+                def okn:[string]
+                def okv:[PyVal]
+                def onone:[PyVal]
+                return (ip.makeDataSub(ocls onone okn okv))
+            }
+            def oobj (new PyVal(PyT.Inst))
+            oobj.cls = ocls
+            if ocls.isExc {
+                def orest:[PyVal]
+                def oi:int 1
+                while (oi < (array_length args)) {
+                    push orest (itemAt args oi)
+                    oi = oi + 1
+                }
+                oobj.putAttr("args" (ip.mkTuple(orest)))
+            }
+            return oobj
+        }
         if (name == "type.__new__") {
             ; int.__new__(cls, …): the built-in value made for a subclass
             if ((array_length args) == 0) {
@@ -368,6 +422,12 @@ class PyMethods {
             def p (new PyVal(PyT.Prop))
             p.wrapped = self.wrapped
             p.setter = self.setter
+            for (self.attrKeys()) pk:string pki {
+                p.putAttr(pk (unwrap (get self.attrs pk)))
+            }
+            if (name == "property.deleter") {
+                p.putAttr("__deleter__" (this.arg(args 0)))
+            }
             if (name == "property.setter") {
                 p.setter = (this.arg(args 0))
             }
@@ -504,6 +564,24 @@ class PyMethods {
             def kn:[string]
             def kv:[PyVal]
             return (ip.bi.call("abs" ([] _:PyVal (self)) kn kv))
+        }
+        if ((name == "as_integer_ratio") && (self.t != PyT.Float)) {
+            return (ip.pair((ip.bi.toIntValue(self)) (ip.mkInt(1))))
+        }
+        if (name == "bit_count") {
+            def bv:int self.i
+            if (bv < 0) {
+                bv = (0 - bv)
+            }
+            def bc:int 0
+            while (bv > 0) {
+                bc = bc + (bv - ((PyFormat.floorDivInt(bv 2)) * 2))
+                bv = (PyFormat.floorDivInt(bv 2))
+            }
+            return (ip.mkInt(bc))
+        }
+        if ((name == "numerator") || (name == "real")) {
+            return self
         }
         if (name == "as_integer_ratio") {
             def x:double (ip.toDouble(self))
@@ -1813,6 +1891,14 @@ class PyMethods {
     ; ---- dict
 
     fn dictMethod:PyVal (self:PyVal name:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        def r:PyVal (this.dictMethodPlain(self name args kn kv))
+        if (!null? self.owner) {
+            self.ownerSync()
+        }
+        return r
+    }
+
+    fn dictMethodPlain:PyVal (self:PyVal name:string args:[PyVal] kn:[string] kv:[PyVal]) {
         def n:int (array_length args)
         if (name == "move_to_end") {
             def mk:PyVal (this.arg(args 0))

@@ -452,6 +452,34 @@ class PyLexer {
                     pos = pos + 1
                     continue
                 }
+                if ((md == 1) && (c == 92) && (raw == false)) {
+                    ; an escape in a format spec stands for its character
+                    def e2:int (this.ch(1))
+                    def ev:int -1
+                    if (e2 == 110) {
+                        ev = 10
+                    }
+                    if (e2 == 116) {
+                        ev = 9
+                    }
+                    if (e2 == 114) {
+                        ev = 13
+                    }
+                    if (e2 == 102) {
+                        ev = 12
+                    }
+                    if (e2 == 118) {
+                        ev = 11
+                    }
+                    if ((e2 == 92) || (e2 == 39) || (e2 == 34)) {
+                        ev = e2
+                    }
+                    if (ev >= 0) {
+                        push out ev
+                        pos = pos + 2
+                        continue
+                    }
+                }
                 if (md != 1) {
                     if ((c == 40) || (c == 91)) {
                         push modes 3

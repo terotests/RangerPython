@@ -8,63 +8,63 @@ score is out of the tests CPython (Python 3.13.16) passes with the same
 driver. Tests that need CPython internals (reference counts, object sizes,
 subprocesses) are skipped by the test.support stand-in and are not counted.
 
-**592 of 3582 tests pass: 16.5 %**
+**1002 of 3582 tests pass: 28.0 %**
 
 | file | pass | of | score | note |
 |---|---:|---:|---:|---|
 | test_augassign | 5 | 7 | 71.4 % |  |
-| test_baseexception | 0 | 10 | 0.0 % | does not import: ModuleNotFoundError: No module named 'platform' |
-| test_binop | 0 | 12 | 0.0 % | does not import: AttributeError: type object 'B' has no attribute 'register' |
+| test_baseexception | 8 | 10 | 80.0 % |  |
+| test_binop | 9 | 12 | 75.0 % |  |
 | test_bool | 23 | 31 | 74.2 % |  |
-| test_builtin | 0 | 115 | 0.0 % | does not import: ModuleNotFoundError: No module named 'ast' |
-| test_class | 0 | 33 | 0.0 % | does not import: ModuleNotFoundError: No module named '_testinternalcapi' |
-| test_collections | 0 | 99 | 0.0 % | does not import: ModuleNotFoundError: No module named 'array' |
-| test_compare | 0 | 16 | 0.0 % | does not import: ModuleNotFoundError: No module named 'fractions' |
+| test_builtin | 0 | 115 | 0.0 % | does not import: ModuleNotFoundError: No module named 'asyncio' |
+| test_class | 7 | 33 | 21.2 % |  |
+| test_collections | 40 | 99 | 40.4 % |  |
+| test_compare | 9 | 16 | 56.3 % |  |
 | test_contains | 2 | 4 | 50.0 % |  |
-| test_copy | 0 | 81 | 0.0 % | does not import: ModuleNotFoundError: No module named 'copyreg' |
+| test_copy | 34 | 81 | 42.0 % |  |
 | test_decorators | 10 | 16 | 62.5 % |  |
-| test_dict | 52 | 111 | 46.8 % |  |
+| test_dict | 53 | 111 | 47.7 % |  |
 | test_dictviews | 5 | 16 | 31.3 % |  |
 | test_enumerate | 0 | 92 | 0.0 % | does not import: TypeError: type 'enumerate' is not an acceptable base type |
-| test_exceptions | 0 | 95 | 0.0 % | does not import: ModuleNotFoundError: No module named 'errno' |
-| test_float | 0 | 47 | 0.0 % | does not import: ModuleNotFoundError: No module named 'fractions' |
-| test_format | 0 | 18 | 0.0 % | does not import: ModuleNotFoundError: No module named 'locale' |
+| test_exceptions | 14 | 95 | 14.7 % |  |
+| test_float | 0 | 47 | 0.0 % | does not import: ModuleNotFoundError: No module named 'struct' |
+| test_format | 3 | 18 | 16.7 % | run stopped: killed after 82 s |
 | test_fstring | 0 | 84 | 0.0 % | does not import: SyntaxError: unexpected character after line continuation character (test.test_fstring.py, line 868) |
-| test_functools | 0 | 273 | 0.0 % | does not import: ModuleNotFoundError: No module named 'unittest.mock' |
-| test_generators | 0 | 40 | 0.0 % | does not import: ModuleNotFoundError: No module named 'inspect' |
+| test_functools | 0 | 273 | 0.0 % | does not import: TypeError: type 'functools.partial' is not an acceptable base type |
+| test_generators | 14 | 40 | 35.0 % |  |
 | test_genexps | 0 | 0 | 0.0 % |  |
-| test_grammar | 0 | 78 | 0.0 % | does not import: SyntaxError: invalid syntax near 'async' (test.test_grammar.py, line 1993) |
+| test_grammar | 48 | 78 | 61.5 % |  |
 | test_index | 0 | 55 | 0.0 % | does not import: NameError: name 'bytearray' is not defined |
-| test_int | 0 | 46 | 0.0 % | does not import: ImportError: cannot import name 'mock' from 'unittest' |
+| test_int | 7 | 46 | 15.2 % |  |
 | test_isinstance | 2 | 23 | 8.7 % |  |
-| test_iter | 8 | 57 | 14.0 % | run stopped: TimeoutError: the script ran more than 4003596 steps |
-| test_itertools | 0 | 137 | 0.0 % | does not import: ModuleNotFoundError: No module named 'decimal' |
+| test_iter | 8 | 57 | 14.0 % | run stopped: TimeoutError: the script ran more than 4003598 steps |
+| test_itertools | 0 | 137 | 0.0 % | does not import: ModuleNotFoundError: No module named 'struct' |
 | test_keywordonlyarg | 7 | 11 | 63.6 % |  |
 | test_list | 39 | 63 | 61.9 % |  |
 | test_listcomps | 41 | 57 | 71.9 % |  |
-| test_long | 0 | 42 | 0.0 % | does not import: ModuleNotFoundError: No module named 'array' |
-| test_math | 0 | 82 | 0.0 % | does not import: ModuleNotFoundError: No module named 'fractions' |
-| test_opcodes | 0 | 8 | 0.0 % | does not import: NameError: name '__annotations__' is not defined |
+| test_long | 0 | 42 | 0.0 % | does not import: TypeError: unsupported operand type(s) for <<: 'float' and 'int' |
+| test_math | 0 | 82 | 0.0 % | does not import: ModuleNotFoundError: No module named 'struct' |
+| test_opcodes | 6 | 8 | 75.0 % |  |
 | test_pow | 4 | 7 | 57.1 % |  |
 | test_property | 0 | 29 | 0.0 % | does not import: TypeError: type 'property' is not an acceptable base type |
 | test_raise | 20 | 37 | 54.1 % |  |
-| test_random | 0 | 101 | 0.0 % | does not import: ModuleNotFoundError: No module named 'unittest.mock' |
-| test_range | 3 | 28 | 10.7 % | run stopped: killed after 104 s |
+| test_random | 0 | 101 | 0.0 % | does not import: AttributeError: module 'random' has no attribute 'SystemRandom' |
+| test_range | 3 | 28 | 10.7 % | run stopped: killed after 98 s |
 | test_scope | 27 | 41 | 65.9 % |  |
 | test_set | 227 | 623 | 36.4 % | run stopped: killed after 180 s |
 | test_setcomps | 0 | 1 | 0.0 % |  |
 | test_slice | 2 | 11 | 18.2 % |  |
 | test_sort | 16 | 21 | 76.2 % |  |
-| test_statistics | 0 | 370 | 0.0 % | does not import: ModuleNotFoundError: No module named 'decimal' |
-| test_str | 0 | 128 | 0.0 % | does not import: ModuleNotFoundError: No module named 'codecs' |
+| test_statistics | 160 | 370 | 43.2 % |  |
+| test_str | 0 | 128 | 0.0 % | does not import: ModuleNotFoundError: No module named 'struct' |
 | test_string | 33 | 38 | 86.8 % |  |
-| test_string_literals | 0 | 15 | 0.0 % | does not import: ModuleNotFoundError: No module named 'shutil' |
-| test_super | 0 | 36 | 0.0 % | does not import: ModuleNotFoundError: No module named 'unittest.mock' |
+| test_string_literals | 6 | 15 | 40.0 % |  |
+| test_super | 0 | 36 | 0.0 % |  |
 | test_tuple | 22 | 36 | 61.1 % |  |
-| test_types | 0 | 118 | 0.0 % | does not import: ModuleNotFoundError: No module named '_datetime' |
+| test_types | 28 | 118 | 23.7 % | run stopped: killed after 147 s |
 | test_unary | 5 | 6 | 83.3 % |  |
 | test_unpack | 1 | 1 | 100.0 % |  |
-| test_userdict | 0 | 25 | 0.0 % | does not import: TypeError: '_NullContext' object is not callable |
+| test_userdict | 16 | 25 | 64.0 % |  |
 | test_with | 38 | 51 | 74.5 % |  |
 
 ## Why tests fail
@@ -73,46 +73,46 @@ The most common reasons, by the error a failing test ends with:
 
 | tests | reason |
 |---:|---|
-| 1856 | not run: ModuleNotFoundError: No module named '…' |
+| 509 | not run: ModuleNotFoundError: No module named '…' |
+| 394 | not run: TypeError: type '…' is not an acceptable base type |
 | 359 | not run: killed after 180 s |
-| 135 | wrong result (AssertionError) |
-| 121 | not run: TypeError: type '…' is not an acceptable base type |
+| 298 | wrong result (AssertionError) |
+| 239 | AttributeError: module '…' has no attribute '…' |
+| 102 | AttributeError: '…' object has no attribute '…' |
+| 101 | not run: AttributeError: module '…' has no attribute '…' |
 | 84 | not run: SyntaxError: unexpected character after line continuation character (test.test_fstring.py, line 868) |
-| 78 | not run: SyntaxError: invalid syntax near '…' (test.test_grammar.py, line 1993) |
-| 63 | not run: NameError: name '…' is not defined |
-| 49 | not run: TimeoutError: the script ran more than 4003596 steps |
-| 46 | not run: ImportError: cannot import name '…' from '…' |
-| 36 | AttributeError: '…' object has no attribute '…' |
-| 27 | NameError: name '…' is not defined |
-| 25 | not run: TypeError: '…' object is not callable |
-| 20 | skipped here: CPython implementation detail |
-| 18 | not run: killed after 104 s |
-| 12 | not run: AttributeError: type object '…' has no attribute '…' |
-| 7 | AttributeError: module '…' has no attribute '…' |
+| 68 | NameError: name '…' is not defined |
+| 55 | not run: NameError: name '…' is not defined |
+| 49 | not run: TimeoutError: the script ran more than 4003598 steps |
+| 42 | not run: TypeError: unsupported operand type(s) for <<: '…' and '…' |
+| 41 | not run: killed after 147 s |
+| 38 | skipped here: CPython implementation detail |
+| 18 | not run: killed after 98 s |
+| 11 | AttributeError: type object '…' has no attribute '…' |
+| 11 | RuntimeError: internal error: TypeError: Cannot read properties of undefined (reading '…') |
+| 10 | SyntaxError: no binding for nonlocal '…' found |
+| 9 | not run: killed after 82 s |
+| 8 | ModuleNotFoundError: No module named '…' |
+| 8 | KeyError: '…' |
+| 7 | RecursionError: maximum recursion depth exceeded |
+| 6 | TypeError: bases must be types |
 | 6 | TypeError: isinstance() arg N must be a type, a tuple of types, or a union |
+| 5 | TypeError: '…' not supported between instances of '…' and '…' |
 | 5 | StopIteration: |
+| 5 | TypeError: '…' object cannot be interpreted as an integer |
+| 5 | skipped here: resource not enabled |
 | 4 | skipped here: object finalization is the host's |
-| 4 | TypeError: '…' object cannot be interpreted as an integer |
-| 3 | KeyError: None |
-| 3 | KeyError: '…' |
+| 4 | KeyError: None |
+| 3 | TypeError: unsupported operand type(s) for \|: '…' and '…' |
 | 3 | TypeError: unsupported operand type(s) for &: '…' and '…' |
+| 3 | TypeError: '…' object is not iterable |
 | 3 | TypeError: slice indices must be integers or None or have an __index__ method |
-| 2 | TypeError: unsupported operand type(s) for -: '…' and '…' |
-| 2 | RuntimeError: internal error: RangeError: Invalid array length |
-| 2 | IndexError: |
-| 2 | TypeError: '…' object is not iterable |
-| 1 | RecursionError: maximum recursion depth exceeded |
-| 1 | ModuleNotFoundError: No module named '…' |
-| 1 | TypeError: unsupported operand type(s) for ^: '…' and '…' |
-| 1 | TypeError: unsupported operand type(s) for \|: '…' and '…' |
-| 1 | TypeError: <lambda>() missing N required argument: '…' |
-| 1 | Exc: |
-| 1 | IndexError: pop from empty list |
-| 1 | skipped here: test.support.catch_unraisable_exception is not available on this runtime |
-| 1 | TypeError: foo |
-| 1 | RuntimeError: internal error: TypeError: Cannot read properties of undefined (reading '…') |
-| 1 | ValueError: Invalid format specifier '…' |
-| 1 | TypeError: format() got multiple values for argument '…' |
+| 3 | TypeError: both arguments should be Rational instances |
+| 3 | StatisticsError: no median for empty data |
+| 2 | TypeError: '…' object is not callable |
+| 2 | TypeError: unsupported operand type(s) for +: '…' and '…' |
+| 2 | TypeError: bad operand type for unary +: '…' |
+| 2 | SyntaxError: '…' outside function |
 
 Run `node tests/conformance/run.mjs` for the full list in
 tests/conformance/results.json.

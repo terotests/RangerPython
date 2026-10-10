@@ -252,6 +252,12 @@ class PyParser {
                 push out (this.parseDef(decos3))
                 return
             }
+            if ((w == "async") && (((this.peekAt(1)).text == "for") || ((this.peekAt(1)).text == "with"))) {
+                ; async for / async with run as their plain forms
+                p = p + 1
+                this.parseStatementInto(out)
+                return
+            }
         }
         if (this.isOp("@")) {
             def ds:[PyNode]

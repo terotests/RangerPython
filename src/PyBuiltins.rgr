@@ -47,6 +47,7 @@ class PyBuiltins {
         def ni:PyVal ip.NOTIMPL
         set ip.builtins "NotImplemented" ni
         this.put("Ellipsis")
+        set ip.builtins "__debug__" ip.TRUE
         def base:PyVal (this.excClassMake("BaseException" ip.NONE))
         def exc:PyVal (this.excClassMake("Exception" base))
         this.excClassMake("SystemExit" base)
@@ -741,6 +742,18 @@ class PyBuiltins {
             }
             return false
         }
+        if ((cls.t == PyT.Class) && (!null? cls.cls)) {
+            def mick@(optional):PyVal (ip.classLookup((unwrap cls.cls) "__instancecheck__"))
+            if ((!null? mick) && ((ip.orNone(mick)).t == PyT.Func)) {
+                return (ip.truthy((ip.callMethodVal((unwrap mick) cls ([] _:PyVal (obj))))))
+            }
+        }
+        if ((cls.t == PyT.Class) && (obj.t == PyT.Class) && (cls.bt == "type")) {
+            if (null? obj.cls) {
+                return false
+            }
+            return (ip.isSubclass((unwrap obj.cls) cls))
+        }
         if (cls.t == PyT.Class) {
             if (has cls.attrs "__instancecheck__") {
                 def ick:PyVal (ip.getAttr(cls "__instancecheck__"))
@@ -801,6 +814,9 @@ class PyBuiltins {
 
     fn typeOf:PyVal (v:PyVal) {
         if (v.t == PyT.Inst) {
+            return (unwrap v.cls)
+        }
+        if ((v.t == PyT.Class) && (!null? v.cls)) {
             return (unwrap v.cls)
         }
         if (ip.isDataSub(v)) {
@@ -1346,6 +1362,12 @@ class PyBuiltins {
                 }
                 return ip.FALSE
             }
+            if ((b.t == PyT.Class) && (!null? b.cls)) {
+                def msck@(optional):PyVal (ip.classLookup((unwrap b.cls) "__subclasscheck__"))
+                if ((!null? msck) && ((ip.orNone(msck)).t == PyT.Func)) {
+                    return (ip.mkBool((ip.truthy((ip.callMethodVal((unwrap msck) b ([] _:PyVal (c))))))))
+                }
+            }
             if ((b.t == PyT.Class) && (has b.attrs "__subclasscheck__")) {
                 def sck:PyVal (ip.getAttr(b "__subclasscheck__"))
                 return (ip.mkBool((ip.truthy((ip.callValue(sck ([] _:PyVal (c)) kn kv))))))
@@ -1371,37 +1393,20 @@ class PyBuiltins {
             if (n != 3) {
                 ip.raise("TypeError" "type() takes 1 or 3 arguments")
             }
-            def tname:PyVal (itemAt args 0)
-            def tbases:PyVal (itemAt args 1)
-            def tdict:PyVal (itemAt args 2)
-            if (tname.t != PyT.Str) {
-                ip.raise("TypeError" "type.__new__() argument 1 must be str")
-            }
-            if (tbases.t != PyT.Tuple) {
-                ip.raise("TypeError" "type.__new__() argument 2 must be tuple")
-            }
-            if (tdict.t != PyT.Dict) {
-                ip.raise("TypeError" "type.__new__() argument 3 must be dict")
-            }
-            def ncls (new PyVal(PyT.Class))
-            ncls.s = tname.s
-            for tbases.items tb:PyVal tbi {
-                ip.addBase(ncls tb)
-            }
-            ip.computeMro(ncls)
-            ncls.putAttr("__module__" (ip.mkStr("__main__")))
-            ncls.putAttr("__qualname__" tname)
-            ncls.putAttr("__doc__" ip.NONE)
-            for (ip.iterValues(tdict)) tk:PyVal tki {
-                if (tk.t != PyT.Str) {
-                    continue
+            ; the most derived metaclass of the bases makes it
+            def tmeta:PyVal (unwrap (get ip.builtins "type"))
+            def tb3:PyVal (itemAt args 1)
+            if (tb3.t == PyT.Tuple) {
+                for tb3.items tbb:PyVal tbbi {
+                    if ((tbb.t == PyT.Class) && (!null? tbb.cls)) {
+                        tmeta = (unwrap tbb.cls)
+                    }
                 }
-                def tv:PyVal (unwrap (ip.dictGet(tdict tk)))
-                ncls.putAttr(tk.s tv)
-                ip.setOwner(tv ncls)
             }
-            ip.finishClass(ncls kn kv)
-            return ncls
+            if (tmeta.t == PyT.Class) {
+                return (ip.metaInstantiate(tmeta args kn kv))
+            }
+            return (ip.typeNew(tmeta args kn kv))
         }
         if (name == "chr") {
             this.need("chr" args 1 1)
@@ -1508,6 +1513,16 @@ class PyBuiltins {
             }
             if (((hv.t == PyT.Float) || ((hv.t == PyT.Complex) && (hv.d2 == 0.0))) && ((py_floor hv.d) == hv.d) && (hv.d < 9000000000000000.0) && (hv.d > -9000000000000000.0)) {
                 return (ip.mkInt((py_trunc hv.d)))
+            }
+            if (hv.t == PyT.Inst) {
+                def hm@(optional):PyVal (ip.findMethod(hv "__hash__"))
+                if (!null? hm) {
+                    def hr:PyVal (ip.callMethodVal((unwrap hm) hv ([] _:PyVal ())))
+                    if ((ip.isIntLike(hr)) == false) {
+                        ip.raise("TypeError" "__hash__ method should return an integer")
+                    }
+                    return (ip.mkInt(hr.i))
+                }
             }
             def hk:string (ip.hashKey(hv))
             return (ip.mkInt((this.strHash(hk))))
@@ -1707,6 +1722,15 @@ class PyBuiltins {
             if (fset.t != PyT.None) {
                 p.setter = fset
             }
+            def fdel:PyVal (this.arg(args 2 kn kv "fdel"))
+            if (fdel.t != PyT.None) {
+                p.putAttr("__deleter__" fdel)
+            }
+            def pdoc:PyVal (this.arg(args 3 kn kv "doc"))
+            if ((pdoc.t == PyT.None) && (fg.t == PyT.Func)) {
+                pdoc = (ip.getAttr(fg "__doc__"))
+            }
+            p.putAttr("__doc__" pdoc)
             return p
         }
         if (name == "staticmethod") {

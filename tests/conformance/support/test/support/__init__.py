@@ -169,6 +169,9 @@ class _NullContext:
     def __exit__(self, *exc):
         return False
 
+    def __call__(self, func):
+        return func
+
 
 def infinite_recursion(max_depth=None):
     return _NullContext()

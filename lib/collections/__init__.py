@@ -435,3 +435,9 @@ class ChainMap:
 
     def __eq__(self, other):
         return dict(self.items()) == dict(other.items())
+
+
+def _count_elements(mapping, iterable):
+    get = mapping.get
+    for elem in iterable:
+        mapping[elem] = get(elem, 0) + 1

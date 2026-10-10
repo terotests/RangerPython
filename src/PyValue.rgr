@@ -97,6 +97,10 @@ class PyVal {
     ; Class: the built-in type it derives from (int, list, …), "native" for
     ; a runtime class (Counter, deque, …) kept in wrapped
     def bt:string ""
+    ; Inst: its __dict__ once asked for, kept in step with attrs; the dict
+    ; knows its owner
+    def dictv@(optional):PyVal
+    def owner@(optional):PyVal
 
     Constructor (tag:PyT) {
         t = tag
@@ -108,6 +112,9 @@ class PyVal {
             push akeys k
         }
         set attrs k v
+        if (!null? dictv) {
+            this.mirrorPut(k v)
+        }
     }
 
     fn delAttrKey:void (k:string) {
@@ -119,6 +126,66 @@ class PyVal {
             }
         }
         akeys = kept
+        if (!null? dictv) {
+            this.mirrorDel(k)
+        }
+    }
+
+    fn mirrorPut:void (k:string v:PyVal) {
+        def d:PyVal (unwrap dictv)
+        def hk:string ("s" + k)
+        def at@(optional):int (get d.index hk)
+        if (null? at) {
+            set d.index hk (array_length d.items)
+            def ks (new PyVal(PyT.Str))
+            ks.s = k
+            push d.items ks
+            push d.vals v
+            return
+        }
+        set_at d.vals (unwrap at) v
+    }
+
+    fn mirrorDel:void (k:string) {
+        def d:PyVal (unwrap dictv)
+        def hk:string ("s" + k)
+        def at@(optional):int (get d.index hk)
+        if (null? at) {
+            return
+        }
+        def p:int (unwrap at)
+        remove_index d.items p
+        remove_index d.vals p
+        py_map_del d.index hk
+        def n:int (array_length d.items)
+        while (p < n) {
+            def it:PyVal (itemAt d.items p)
+            if (it.t == PyT.Str) {
+                set d.index ("s" + it.s) p
+            }
+            p = p + 1
+        }
+    }
+
+    ; an owned dict changed by a dict method: the owner's attrs follow
+    fn ownerSync:void () {
+        def o:PyVal (unwrap owner)
+        def na:[string:PyVal]
+        def nk:[string]
+        def n:int (array_length items)
+        def i:int 0
+        while (i < n) {
+            def it:PyVal (itemAt items i)
+            if (it.t == PyT.Str) {
+                if ((has na it.s) == false) {
+                    push nk it.s
+                }
+                set na it.s (itemAt vals i)
+            }
+            i = i + 1
+        }
+        o.attrs = na
+        o.akeys = nk
     }
 
     fn attrKeys:[string] () {
