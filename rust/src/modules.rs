@@ -55,13 +55,18 @@ fn weak_module() -> Value {
     m
 }
 
-/// a weak handle to an instance, function or class; anything else is kept as is
+/// a weak handle to an instance, function, class, generator, set or native
+/// object; anything else is kept as is
 fn weak_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let t = match &a[0] {
         Value::Instance(i) => WeakTarget::Inst(Rc::downgrade(i)),
         Value::Func(f) => WeakTarget::Func(Rc::downgrade(f)),
         Value::Class(c) => WeakTarget::Class(Rc::downgrade(c)),
+        Value::Gen(g) => WeakTarget::Gen(Rc::downgrade(g)),
+        Value::Set(d) => WeakTarget::Set(Rc::downgrade(d), false),
+        Value::FrozenSet(d) => WeakTarget::Set(Rc::downgrade(d), true),
+        Value::Obj(o) => WeakTarget::Obj(Rc::downgrade(o)),
         other => return Ok(other.clone()),
     };
     Ok(vm.native_obj("weakhandle", ObjKind::Weak(t)))
@@ -75,6 +80,10 @@ fn weak_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
                 WeakTarget::Inst(w) => w.upgrade().map(Value::Instance),
                 WeakTarget::Func(w) => w.upgrade().map(Value::Func),
                 WeakTarget::Class(w) => w.upgrade().map(Value::Class),
+                WeakTarget::Gen(w) => w.upgrade().map(Value::Gen),
+                WeakTarget::Set(w, false) => w.upgrade().map(Value::Set),
+                WeakTarget::Set(w, true) => w.upgrade().map(Value::FrozenSet),
+                WeakTarget::Obj(w) => w.upgrade().map(Value::Obj),
             }
             .unwrap_or(Value::None));
         }
@@ -668,6 +677,8 @@ fn sys_module(vm: &mut Vm) -> Value {
             ("sys.setrecursionlimit", sys_setrecursionlimit),
             ("sys.exc_info", sys_exc_info),
             ("sys.excepthook", sys_excepthook),
+            ("sys.unraisablehook", sys_unraisablehook),
+            ("sys.__unraisablehook__", sys_unraisablehook),
             ("sys.__excepthook__", sys_excepthook),
             ("sys.exception", sys_exception),
             ("sys.getsizeof", sys_getsizeof),
@@ -738,6 +749,23 @@ fn sys_excepthook(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let m = vm.import("traceback", &Value::None, 0, &vm.main_globals.clone())?;
     let f = vm.getattr(&m, &ps("print_exception"))?;
     vm.call_vec(&f, a.to_vec(), &[])?;
+    Ok(Value::None)
+}
+/// prints an exception that could not be raised, and what it came from
+fn sys_unraisablehook(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let arg = |vm: &mut Vm, n: &str| vm.getattr(&a[0], &ps(n));
+    let (msg, obj) = (arg(vm, "err_msg")?, arg(vm, "object")?);
+    let head = if msg.is_none() { "Exception ignored in".to_string() } else { vm.str_of(&msg)? };
+    let line = if obj.is_none() { format!("{}\n", head) } else { format!("{}: {}\n", head, vm.repr(&obj)?) };
+    let sys = vm.import("sys", &Value::None, 0, &vm.main_globals.clone())?;
+    let err = vm.getattr(&sys, &ps("stderr"))?;
+    let w = vm.getattr(&err, &ps("write"))?;
+    vm.call_vec(&w, vec![Value::string(line)], &[])?;
+    let (t, v, tb) = (arg(vm, "exc_type")?, arg(vm, "exc_value")?, arg(vm, "exc_traceback")?);
+    let m = vm.import("traceback", &Value::None, 0, &vm.main_globals.clone())?;
+    let f = vm.getattr(&m, &ps("print_exception"))?;
+    vm.call_vec(&f, vec![t, v, tb], &[])?;
     Ok(Value::None)
 }
 fn sys_exception(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {

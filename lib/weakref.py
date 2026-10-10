@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
-# weakref for the Ranger Python runtime. A ref to an instance, function or
-# class really is weak (it reads None once the object is gone; callbacks never
-# run); to anything else it is a strong one that never dies.
+# weakref for the Ranger Python runtime. A ref to an instance, function,
+# class, generator, set or native object really is weak (it reads None once
+# the object is gone; callbacks never run); to anything else it is a strong
+# one that never dies.
 from _rpyweak import new as _new, get as _get
 
 
@@ -50,13 +51,114 @@ class ref:
 ReferenceType = ref
 
 
-def proxy(obj, callback=None):
-    return obj
+def _referent(p):
+    o = _get(object.__getattribute__(p, "_ref"))
+    if o is None:
+        raise ReferenceError("weakly-referenced object no longer exists")
+    return o
 
 
-ProxyType = type(None)
-CallableProxyType = type(None)
+class ProxyType:
+    """A proxy forwards every operation to its referent while it lives."""
+    __slots__ = ("_ref", "_callback")
+
+    def __init__(self, obj, callback=None):
+        object.__setattr__(self, "_ref", _new(obj))
+        object.__setattr__(self, "_callback", callback)
+
+    def __getattribute__(self, name):
+        return getattr(_referent(self), name)
+
+    def __setattr__(self, name, value):
+        setattr(_referent(self), name, value)
+
+    def __delattr__(self, name):
+        delattr(_referent(self), name)
+
+    def __repr__(self):
+        o = _referent(self)
+        return "<weakproxy at %#x; to '%s' at %#x>" % (id(self), type(o).__name__, id(o))
+
+    def __str__(self):
+        return str(_referent(self))
+
+    def __bytes__(self):
+        return bytes(_referent(self))
+
+    def __bool__(self):
+        return bool(_referent(self))
+
+    def __hash__(self):
+        raise TypeError("unhashable type: 'weakref.ProxyType'")
+
+    def __len__(self):
+        return len(_referent(self))
+
+    def __iter__(self):
+        return iter(_referent(self))
+
+    def __next__(self):
+        return next(_referent(self))
+
+    def __contains__(self, item):
+        return item in _referent(self)
+
+    def __getitem__(self, key):
+        return _referent(self)[key]
+
+    def __setitem__(self, key, value):
+        _referent(self)[key] = value
+
+    def __delitem__(self, key):
+        del _referent(self)[key]
+
+    def __reversed__(self):
+        return reversed(_referent(self))
+
+
+def _unwrap(o):
+    return _referent(o) if isinstance(o, ProxyType) else o
+
+
+def _forward(name, op):
+    def method(self, *args):
+        return op(_referent(self), *map(_unwrap, args))
+    method.__name__ = name
+    setattr(ProxyType, name, method)
+
+
+import operator as _op
+for _name, _fn in [("__lt__", _op.lt), ("__le__", _op.le), ("__eq__", _op.eq),
+                   ("__ne__", _op.ne), ("__gt__", _op.gt), ("__ge__", _op.ge),
+                   ("__neg__", _op.neg), ("__pos__", _op.pos), ("__abs__", abs),
+                   ("__invert__", _op.invert), ("__int__", int), ("__float__", float),
+                   ("__index__", _op.index)]:
+    _forward(_name, _fn)
+for _name in ("add", "sub", "mul", "matmul", "truediv", "floordiv", "mod", "pow",
+              "lshift", "rshift", "and", "or", "xor"):
+    _fn = getattr(_op, _name + "_" if _name in ("and", "or") else _name)
+    _forward("__%s__" % _name, _fn)
+    _forward("__r%s__" % _name, lambda a, b, _fn=_fn: _fn(b, a))
+    _forward("__i%s__" % _name, getattr(_op, "i" + _name, _fn))
+_forward("__divmod__", divmod)
+_forward("__rdivmod__", lambda a, b: divmod(b, a))
+del _name, _fn
+
+
+class CallableProxyType(ProxyType):
+    __slots__ = ()
+
+    def __call__(self, /, *args, **kwargs):
+        return _referent(self)(*args, **kwargs)
+
+
 ProxyTypes = (ProxyType, CallableProxyType)
+
+
+def proxy(obj, callback=None):
+    if isinstance(obj, ProxyType):
+        obj = _referent(obj)
+    return (CallableProxyType if callable(obj) else ProxyType)(obj, callback)
 
 
 def getweakrefcount(obj):

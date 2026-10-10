@@ -65,6 +65,33 @@ pub struct Generator {
     pub code: Rc<Code>,
 }
 
+impl Drop for Generator {
+    fn drop(&mut self) {
+        // a generator suspended inside try or with is closed when it goes
+        // away: it comes back to life once, so that its handlers can run
+        let resumable = self.started && !self.running && !self.coroutine;
+        if !resumable || !self.frame.as_ref().is_some_and(|f| !f.blocks.is_empty()) {
+            return;
+        }
+        let queue_open = crate::value::PENDING_DEL.try_with(|p| p.try_borrow_mut().is_ok()).unwrap_or(false);
+        if !queue_open {
+            return;
+        }
+        let g = Generator {
+            frame: self.frame.take(),
+            started: true,
+            running: false,
+            name: self.name.clone(),
+            qualname: self.qualname.clone(),
+            coroutine: false,
+            handled: std::mem::take(&mut self.handled),
+            code: self.code.clone(),
+        };
+        crate::value::PENDING_DEL.with(|p| p.borrow_mut().push(Value::Gen(Rc::new(RefCell::new(g)))));
+        crate::value::HAS_PENDING_DEL.with(|h| h.set(true));
+    }
+}
+
 /// interned names the VM looks up often
 pub struct Names {
     pub init: Rc<PyStr>,
@@ -536,15 +563,47 @@ impl Vm {
                 Some(v) => v,
                 None => break,
             };
+            if let Value::Gen(_) = &v {
+                // a lost generator is closed
+                let r = self.getattr(&v, &ps("close")).and_then(|c| self.call_vec(&c, vec![], &[]));
+                if let Err(e) = r {
+                    self.unraisable(e, &v);
+                }
+                continue;
+            }
             let name = PyStr::new("__del__".to_string());
             if let Some(f) = self.lookup_special(&v, &Rc::new(name)) {
                 if let Err(e) = self.call_vec(&f, vec![], &[]) {
-                    let fr = self.repr(&f).unwrap_or_default();
-                    let tn = self.type_name(&e.value);
-                    let msg = self.str_of(&e.value).unwrap_or_default();
-                    eprintln!("Exception ignored in: {}\n{}: {}", fr, tn, msg);
+                    self.unraisable(e, &f);
                 }
             }
+        }
+    }
+
+    /// reports an exception nothing can catch through sys.unraisablehook
+    pub fn unraisable(&mut self, e: Exc, obj: &Value) {
+        let hook = match self.modules.borrow().get_s("sys") {
+            Some(Value::Module(m)) => m.dict.borrow().get_s("unraisablehook"),
+            _ => None,
+        };
+        let tb = self.getattr(&e.value, &self.n.tb.clone()).unwrap_or(Value::None);
+        let mut d = Dict::new();
+        d.set_s("exc_type", Value::Class(self.class_of(&e.value)));
+        d.set_s("exc_value", e.value.clone());
+        d.set_s("exc_traceback", tb);
+        d.set_s("err_msg", Value::None);
+        d.set_s("object", obj.clone());
+        let ns = self.namespace_class();
+        let args = Value::Instance(Rc::new(Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(d)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()) }));
+        let r = match hook {
+            Some(h) => self.call_vec(&h, vec![args], &[]).map(|_| ()).map_err(|_| ()),
+            None => Err(()),
+        };
+        if r.is_err() {
+            let fr = self.repr(obj).unwrap_or_default();
+            let tn = self.type_name(&e.value);
+            let msg = self.str_of(&e.value).unwrap_or_default();
+            eprintln!("Exception ignored in: {}\n{}: {}", fr, tn, msg);
         }
     }
 
@@ -2118,10 +2177,7 @@ impl Vm {
         };
         self.depth += 1;
         let r = match throw {
-            Some(t) => match self.handle_exc(&mut frame, Exc { value: t }) {
-                Ok(()) => self.run_frame(&mut frame),
-                Err(e) => Err(e),
-            },
+            Some(t) => self.throw_into(&mut frame, t),
             None => self.run_frame(&mut frame),
         };
         self.depth -= 1;
@@ -2153,6 +2209,62 @@ impl Vm {
                 }
                 Err(e)
             }
+        }
+    }
+
+    /// raises `exc` inside a resumed generator frame; a frame suspended in
+    /// `yield from` hands it to the iterator it delegates to first
+    fn throw_into(&mut self, f: &mut Frame, exc: Value) -> PyResult<Exit> {
+        let mut exc = Exc { value: exc };
+        if matches!(f.code.ops.get(f.ip), Some(Op::YieldFrom)) {
+            if let Some(recv) = f.stack.last().cloned() {
+                // the delegating frame is running while the iterator handles it
+                self.frames.push(f as *mut Frame);
+                self.frame_objs.push(Value::Undef);
+                let r = self.throw_delegate(&recv, exc.value.clone());
+                self.frames.pop();
+                self.frame_objs.pop();
+                match r {
+                    Ok(Some(v)) => return Ok(Exit::Yield(v)),
+                    Ok(None) => {
+                        // the iterator finished: its value is the result of `yield from`
+                        f.stack.pop();
+                        let rv = self.last_return.take().unwrap_or(Value::None);
+                        f.stack.push(rv);
+                        f.ip += 1;
+                        return self.run_frame(f);
+                    }
+                    Err(e) => exc = e,
+                }
+            }
+        }
+        self.handle_exc(f, exc)?;
+        self.run_frame(f)
+    }
+
+    /// `yield from`'s part of throw() and close(): GeneratorExit closes the
+    /// iterator and is then raised anyway; anything else goes to its throw()
+    fn throw_delegate(&mut self, recv: &Value, exc: Value) -> PyResult<Option<Value>> {
+        if self.exc_is(&Exc { value: exc.clone() }, "GeneratorExit") {
+            if let Some(close) = self.getattr_opt(recv, &ps("close"))? {
+                self.call_vec(&close, vec![], &[])?;
+            }
+            return Err(Exc { value: exc });
+        }
+        if let Value::Gen(g) = recv {
+            return self.resume(g, Value::None, Some(exc));
+        }
+        let Some(throw) = self.getattr_opt(recv, &ps("throw"))? else {
+            return Err(Exc { value: exc });
+        };
+        match self.call_vec(&throw, vec![exc], &[]) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if self.exc_is(&e, "StopIteration") => {
+                let a = self.exc_args(&e.value);
+                self.last_return = Some(a.into_iter().next().unwrap_or(Value::None));
+                Ok(None)
+            }
+            Err(e) => Err(e),
         }
     }
 

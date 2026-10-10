@@ -751,7 +751,9 @@ fn alias_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let (origin, args) = alias_parts(&a[0]);
     let mut parts = vec![];
     for x in &args {
-        parts.push(type_repr_short(vm, x)?);
+        // a union spells NoneType as None
+        let none = origin.is_none() && matches!(x, Value::Class(c) if Rc::ptr_eq(c, &vm.t.none));
+        parts.push(if none { "None".into() } else { type_repr_short(vm, x)? });
     }
     if origin.is_none() {
         return Ok(Value::string(parts.join(" | ")));
@@ -853,7 +855,6 @@ pub fn make_union(vm: &mut Vm, a: &Value, b: &Value) -> PyResult<Value> {
             }
         }
     }
-    let args: Vec<Value> = args.into_iter().map(|x| if let Value::Class(c) = &x { if Rc::ptr_eq(c, &vm.t.none) { Value::None } else { x } } else { x }).collect();
     Ok(Value::Obj(Rc::new(NativeObj { class: c, kind: RefCell::new(ObjKind::Other(Value::tuple(vec![Value::None, Value::tuple(args)]))) })))
 }
 

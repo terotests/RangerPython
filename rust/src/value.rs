@@ -311,6 +311,10 @@ pub enum WeakTarget {
     Inst(std::rc::Weak<Instance>),
     Func(std::rc::Weak<Function>),
     Class(std::rc::Weak<Class>),
+    Gen(std::rc::Weak<RefCell<crate::vm::Generator>>),
+    /// a set or (when the flag is set) a frozenset
+    Set(std::rc::Weak<RefCell<Dict>>, bool),
+    Obj(std::rc::Weak<NativeObj>),
 }
 
 pub enum Iter {

@@ -154,6 +154,13 @@ _MAGICS = ("__lt__ __gt__ __le__ __ge__ __int__ __contains__ __len__ __iter__ __
 
 
 class NonCallableMock:
+    def __new__(cls, /, *args, **kwargs):
+        # every mock gets a class of its own, so magic methods configured
+        # on one mock live on that class and nowhere else
+        new = type(cls.__name__, (cls,), {"__doc__": cls.__doc__, "__module__": cls.__module__,
+                                          "__qualname__": cls.__qualname__, "_mock_own_class": True})
+        return object.__new__(new)
+
     def __init__(self, spec=None, wraps=None, name=None, spec_set=None, parent=None,
                  _new_name="", _new_parent=None, unsafe=False, return_value=DEFAULT,
                  side_effect=None, **kwargs):
@@ -200,6 +207,8 @@ class NonCallableMock:
 
     def _get_child_mock(self, **kw):
         klass = type(self)
+        if klass.__dict__.get("_mock_own_class"):
+            klass = klass.__mro__[1]
         if issubclass(klass, NonCallableMagicMock) and not issubclass(klass, MagicMock):
             klass = MagicMock
         elif issubclass(klass, NonCallableMock) and not issubclass(klass, Mock) and not issubclass(klass, MagicMock):
@@ -245,6 +254,15 @@ class NonCallableMock:
         if self.__dict__.get("_spec_set") and self.__dict__.get("_mock_methods") is not None and \
                 name not in self.__dict__["_mock_methods"] and name not in self.__dict__:
             raise AttributeError("Mock object has no attribute '%s'" % name)
+        if name in _MAGICS or name in ("__eq__", "__ne__"):
+            # a configured magic method is looked up on the type
+            if not isinstance(value, NonCallableMock):
+                func = value
+                value = lambda self, /, *args, **kw: func(self, *args, **kw)
+            else:
+                self.__dict__["_mock_children"][name] = value
+            setattr(type(self), name, value)
+            return
         if isinstance(value, NonCallableMock) and value.__dict__.get("_mock_parent") is None:
             value.__dict__["_mock_parent"] = self
             value.__dict__["_mock_new_name"] = name

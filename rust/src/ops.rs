@@ -433,6 +433,14 @@ impl Vm {
             let g = p.fget.clone();
             return Ok(Some(self.call_vec(&g, vec![Value::Class(c.clone())], &[])?));
         }
+        if let Some(t @ Value::Instance(_)) = &mattr {
+            let dcls = self.class_of(t);
+            if dcls.lookup(&self.n.set).is_some() || dcls.lookup(&self.n.delete).is_some() {
+                if let Some(g) = dcls.lookup(&self.n.get) {
+                    return Ok(Some(self.call_vec(&g, vec![t.clone(), Value::Class(c.clone()), Value::Class(meta.clone())], &[])?));
+                }
+            }
+        }
         // type's own data descriptors
         if matches!(&*name.s, "__name__" | "__qualname__" | "__dict__" | "__mro__" | "__bases__") {
             if let Some(v) = crate::builtins::class_special(self, c, &name.s)? {
@@ -457,6 +465,12 @@ impl Vm {
             return Ok(Some(v));
         }
         if let Some(m) = mattr {
+            if let Value::Instance(_) = &m {
+                let dcls = self.class_of(&m);
+                if let Some(g) = dcls.lookup(&self.n.get) {
+                    return Ok(Some(self.call_vec(&g, vec![m.clone(), Value::Class(c.clone()), Value::Class(meta.clone())], &[])?));
+                }
+            }
             return Ok(Some(self.bind(m, &Value::Class(c.clone()), &meta)));
         }
         // methods of type itself (mro(), __subclasses__...)
@@ -2106,8 +2120,15 @@ impl Vm {
                         let tn = cls.name();
                         Err(self.type_error(format!("unhashable type: '{}'", tn)))
                     }
-                    Some(f @ Value::Func(_)) => {
-                        let f = self.bind(f, v, &cls);
+                    Some(f @ (Value::Func(_) | Value::Instance(_))) => {
+                        // a callable instance binds only through its own __get__
+                        let f = match &f {
+                            Value::Instance(_) => match self.class_of(&f).lookup(&self.n.get) {
+                                Some(g) => self.call_vec(&g, vec![f.clone(), v.clone(), Value::Class(cls.clone())], &[])?,
+                                None => f,
+                            },
+                            _ => self.bind(f, v, &cls),
+                        };
                         let r = self.call_vec(&f, vec![], &[])?;
                         match r {
                             Value::Int(i) => Ok(if i == -1 { -2i64 as u64 } else { i as u64 }),
@@ -2862,9 +2883,10 @@ impl Vm {
                         if !matches!(b, Value::Instance(_)) {
                             return self.getitem(&b, idx);
                         }
-                        if let Some(f) = other {
-                            let f = self.bind(f, obj, &cls);
-                            return self.call_vec(&f, vec![idx.clone()], &[]);
+                        if other.is_some() {
+                            if let Some(f) = self.lookup_special_get(obj, &self.n.getitem.clone())? {
+                                return self.call_vec(&f, vec![idx.clone()], &[]);
+                            }
                         }
                         let tn = cls.name();
                         Err(self.type_error(format!("'{}' object is not subscriptable", tn)))

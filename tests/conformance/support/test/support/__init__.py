@@ -13,6 +13,8 @@ is_jython = False
 is_android = False
 is_emscripten = False
 is_wasi = False
+is_s390x = False
+skip_on_s390x = unittest.skipIf(is_s390x, "skipped on s390x")
 is_apple_mobile = False
 has_subprocess_support = False
 Py_DEBUG = False
@@ -211,8 +213,22 @@ class adjust_int_max_str_digits:
         return wrapper
 
 
-def catch_unraisable_exception():
-    return _Missing("catch_unraisable_exception")
+class catch_unraisable_exception:
+    def __init__(self):
+        self.unraisable = None
+        self._old_hook = None
+
+    def _hook(self, unraisable):
+        self.unraisable = unraisable
+
+    def __enter__(self):
+        self._old_hook = sys.unraisablehook
+        sys.unraisablehook = self._hook
+        return self
+
+    def __exit__(self, *exc_info):
+        sys.unraisablehook = self._old_hook
+        del self.unraisable
 
 
 class swap_attr:

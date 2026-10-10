@@ -70,8 +70,41 @@ NoReturn = _Alias("NoReturn")
 Never = _Alias("Never")
 Self = _Alias("Self")
 LiteralString = _Alias("LiteralString")
-Union = _Alias("Union")
-Optional = _Alias("Optional")
+class _UnionForm(_Alias):
+    # Union[...] flattens nested unions, drops duplicates and spells None
+    # as NoneType; a single remaining argument is the type itself
+    def __getitem__(self, params):
+        if not isinstance(params, tuple):
+            params = (params,)
+        if not params:
+            raise TypeError("Cannot take a Union of no types.")
+        args = []
+        for p in params:
+            if p is None:
+                p = type(None)
+            if isinstance(p, _Alias) and p.__origin__ is Union or _is_union_type(p):
+                sub = p.__args__
+            else:
+                sub = (p,)
+            for a in sub:
+                if a not in args:
+                    args.append(a)
+        if len(args) == 1:
+            return args[0]
+        return _Alias(self._name, tuple(args), self)
+
+
+class _OptionalForm(_Alias):
+    def __getitem__(self, arg):
+        return Union[arg, None]
+
+
+def _is_union_type(tp):
+    return type(tp) is type(int | str)
+
+
+Union = _UnionForm("Union")
+Optional = _OptionalForm("Optional")
 Literal = _Alias("Literal")
 ClassVar = _Alias("ClassVar")
 Final = _Alias("Final")
@@ -252,11 +285,46 @@ def get_overloads(func):
     return []
 
 
+def _eval_hint(value, globalns, localns):
+    if value is None:
+        return type(None)
+    if isinstance(value, str):
+        return _eval_hint(eval(value, globalns, localns), globalns, localns)
+    return value
+
+
 def get_type_hints(obj, globalns=None, localns=None, include_extras=False):
-    return dict(getattr(obj, "__annotations__", {}) or {})
+    import sys
+    if isinstance(obj, type):
+        hints = {}
+        for base in reversed(obj.__mro__):
+            ann = base.__dict__.get("__annotations__") or {}
+            if globalns is None:
+                base_globals = getattr(sys.modules.get(base.__module__), "__dict__", {})
+            else:
+                base_globals = globalns
+            base_locals = dict(vars(base)) if localns is None else localns
+            if localns is None and globalns is None:
+                base_globals, base_locals = base_locals, base_globals
+            for name, value in ann.items():
+                hints[name] = _eval_hint(value, base_globals, base_locals)
+        return hints
+    if globalns is None:
+        nsobj = obj
+        while hasattr(nsobj, "__wrapped__"):
+            nsobj = nsobj.__wrapped__
+        globalns = getattr(nsobj, "__globals__", None)
+        if globalns is None:
+            globalns = getattr(sys.modules.get(getattr(obj, "__module__", None)), "__dict__", {})
+    if localns is None:
+        localns = globalns
+    ann = getattr(obj, "__annotations__", None) or {}
+    return {name: _eval_hint(value, globalns, localns) for name, value in ann.items()}
 
 
 def get_origin(tp):
+    if _is_union_type(tp):
+        return type(tp)
     return getattr(tp, "__origin__", None)
 
 
