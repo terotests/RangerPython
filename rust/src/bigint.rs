@@ -502,3 +502,62 @@ impl std::fmt::Display for BigInt {
         write!(f, "{}", self.to_radix(10))
     }
 }
+
+/// 2**e as an f64, for e in the normal range
+fn pow2(e: i64) -> f64 {
+    f64::from_bits(((e + 1023) as u64) << 52)
+}
+
+/// `a / b` correctly rounded, after CPython's long_true_divide; None when
+/// the result is too large for a float. `b` must be non-zero.
+pub fn true_divide(a: &BigInt, b: &BigInt) -> Option<f64> {
+    const MANT: i64 = 53;
+    const MIN_EXP: i64 = -1021;
+    const MAX_EXP: i64 = 1024;
+    let neg = a.neg != b.neg;
+    let sign = |x: f64| if neg { -x } else { x };
+    if a.is_zero() {
+        return Some(sign(0.0));
+    }
+    let (aa, bb) = (a.abs(), b.abs());
+    let (asz, bsz) = (aa.bit_length() as i64, bb.bit_length() as i64);
+    if asz <= MANT && bsz <= MANT {
+        return Some(sign(aa.to_f64() / bb.to_f64()));
+    }
+    let diff = asz - bsz;
+    if diff > MAX_EXP {
+        return None;
+    }
+    if diff < MIN_EXP - MANT - 1 {
+        return Some(sign(0.0));
+    }
+    let shift = diff.max(MIN_EXP) - MANT - 2;
+    let (x, d) = if shift <= 0 { (aa.shl((-shift) as usize), bb) } else { (aa, bb.shl(shift as usize)) };
+    let (q, r) = x.divmod(&d).unwrap();
+    let inexact = !r.is_zero();
+    let mut qv: u64 = q.mag.iter().rev().fold(0u64, |acc, &w| (acc << 32) | w as u64);
+    let qsz = q.bit_length() as i64;
+    let extra = qsz.max(MIN_EXP - shift) - MANT;
+    let mask = 1u64 << (extra - 1);
+    let low = qv | inexact as u64;
+    if low & mask != 0 && low & (3 * mask - 1) != 0 {
+        qv += mask;
+    }
+    qv &= !(2 * mask - 1);
+    let dx = qv as f64;
+    if shift + qsz >= MAX_EXP && (shift + qsz > MAX_EXP || dx == pow2(qsz)) {
+        return None;
+    }
+    // dx is exact, so the scaling below does not round
+    let mut s = shift;
+    let mut v = dx;
+    while s < -1000 {
+        v *= pow2(-1000);
+        s += 1000;
+    }
+    while s > 1000 {
+        v *= pow2(1000);
+        s -= 1000;
+    }
+    Some(sign(v * pow2(s)))
+}

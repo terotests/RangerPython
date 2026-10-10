@@ -826,6 +826,9 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
             return Err(vm.value_error(format!("Invalid format specifier '{}' for object of type '{}'", spec, tn)));
         }
     };
+    if let (Some(','), Some(t @ ('x' | 'X' | 'o' | 'b' | 'c' | 'n'))) = (sp.grouping, sp.ty) {
+        return Err(vm.value_error(format!("Cannot specify ',' with '{}'.", t)));
+    }
     if let (Some(g), Some(t @ (',' | '_'))) = (sp.grouping, sp.ty) {
         let msg = if g == t { format!("Cannot specify '{}' with '{}'.", g, t) } else { "Cannot specify both ',' and '_'.".to_string() };
         return Err(vm.value_error(msg));
@@ -918,7 +921,8 @@ fn bytes_operand(vm: &mut Vm, v: &Value, conv: char) -> PyResult<String> {
         Some(b) => Ok(b.iter().map(|&x| x as char).collect()),
         None => {
             let tn = vm.type_name(v);
-            Err(vm.type_error(format!("%{} requires a bytes-like object, or an object that implements __bytes__, not '{}'", conv, tn)))
+            let _ = conv;
+            Err(vm.type_error(format!("%b requires a bytes-like object, or an object that implements __bytes__, not '{}'", tn)))
         }
     }
 }
@@ -997,8 +1001,8 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
             if w < 0 {
                 left = true;
             }
-            if w.unsigned_abs() as usize > MAX_WIDTH {
-                return Err(vm.value_error("width too big"));
+            if w.unsigned_abs() > i32::MAX as u64 {
+                return Err(vm.err("OverflowError", "Python int too large to convert to C int"));
             }
             sp.width = w.unsigned_abs() as usize;
             i += 1;
@@ -1021,7 +1025,7 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
                 let p = next_arg(vm)?;
                 let p = vm.to_index(&p)?.max(0);
                 if p > i32::MAX as i64 {
-                    return Err(vm.value_error("precision too large"));
+                    return Err(vm.err("OverflowError", "Python int too large to convert to C int"));
                 }
                 sp.prec = Some(p as usize);
                 i += 1;
@@ -1047,6 +1051,9 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
         let conv = c[i];
         i += 1;
         if conv == '%' {
+            if c[i - 2] != '%' {
+                return Err(vm.value_error(format!("unsupported format character '%' (0x25) at index {}", i - 1)));
+            }
             out.push('%');
             continue;
         }
@@ -1170,9 +1177,10 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
             }
             'e' | 'E' | 'f' | 'F' | 'g' | 'G' => {
                 let x = match &arg {
-                    Value::Str(_) => {
+                    Value::Str(_) | Value::Bytes(_) | Value::ByteArray(_) => {
                         let tn = vm.type_name(&arg);
-                        return Err(vm.type_error(format!("must be real number, not {}", tn)));
+                        let what = if bytes { "float argument required" } else { "must be real number" };
+                        return Err(vm.type_error(format!("{}, not {}", what, tn)));
                     }
                     other => vm.to_f64(other)?,
                 };
@@ -1204,7 +1212,7 @@ fn percent_format_mode(vm: &mut Vm, fmt: &Value, args: &Value, bytes: bool) -> P
         out.push_str(&piece);
     }
     if ai < items.len() && !used_mapping && !(mapping && ai == 0) {
-        return Err(vm.type_error("not all arguments converted during string formatting"));
+        return Err(vm.type_error(if bytes { "not all arguments converted during bytes formatting" } else { "not all arguments converted during string formatting" }));
     }
     Ok(out)
 }

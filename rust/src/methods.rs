@@ -1134,19 +1134,35 @@ fn int_to_bytes(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 
 fn int_from_bytes(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
+    if a.len() > 3 {
+        return Err(vm.type_error(format!("from_bytes() takes at most 2 positional arguments ({} given)", a.len() - 1)));
+    }
     let data = arg_or_kw(a, 1, k, "bytes").unwrap_or(Value::Bytes(Rc::new(vec![])));
+    if matches!(data, Value::Str(_) | Value::Int(_) | Value::Big(_) | Value::Bool(_) | Value::Float(_)) {
+        let tn = vm.type_name(&data);
+        return Err(vm.type_error(format!("cannot convert '{}' object to bytes", tn)));
+    }
     let mut bs = match &data {
         Value::Bytes(_) | Value::ByteArray(_) => bytes_of(vm, &data)?,
-        other => {
-            let v = vm.to_vec(other)?;
-            let mut out = vec![];
-            for x in v {
-                out.push(vm.to_index(&x)? as u8);
+        other => match bytes_of(vm, other) {
+            Ok(b) if !matches!(other, Value::List(_) | Value::Tuple(_)) => b,
+            _ => {
+                let v = vm.to_vec(other)?;
+                let mut out = vec![];
+                for x in v {
+                    match u8::try_from(vm.to_index(&x)?) {
+                        Ok(b) => out.push(b),
+                        Err(_) => return Err(vm.value_error("bytes must be in range(0, 256)")),
+                    }
+                }
+                out
             }
-            out
-        }
+        },
     };
     let order = arg_or_kw(a, 2, k, "byteorder").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or("big".into());
+    if order != "little" && order != "big" {
+        return Err(vm.value_error("byteorder must be either 'little' or 'big'"));
+    }
     let signed = match kwarg(k, "signed") {
         Some(v) => vm.truthy(&v)?,
         None => false,

@@ -883,7 +883,12 @@ impl Vm {
                 if y == 0 {
                     return Err(self.err("ZeroDivisionError", "division by zero"));
                 }
-                Value::Float(x as f64 / y as f64)
+                const EXACT: i64 = 1 << 53;
+                if (-EXACT..=EXACT).contains(&x) && (-EXACT..=EXACT).contains(&y) {
+                    Value::Float(x as f64 / y as f64)
+                } else {
+                    Value::Float(crate::bigint::true_divide(&BigInt::from_i64(x), &BigInt::from_i64(y)).unwrap())
+                }
             }
             BinOp::FloorDiv => {
                 if y == 0 {
@@ -952,13 +957,10 @@ impl Vm {
                 if b.is_zero() {
                     return Err(self.err("ZeroDivisionError", "division by zero"));
                 }
-                // exact enough: divide after scaling
-                let (q, r) = a.divmod(b).unwrap();
-                let f = q.to_f64() + r.to_f64() / b.to_f64();
-                if f.is_infinite() {
-                    return Err(self.err("OverflowError", "integer division result too large for a float"));
+                match crate::bigint::true_divide(a, b) {
+                    Some(f) => Value::Float(f),
+                    None => return Err(self.err("OverflowError", "integer division result too large for a float")),
                 }
-                Value::Float(f)
             }
             BinOp::FloorDiv => match a.divmod(b) {
                 Some((q, _)) => Value::from_big(q),
@@ -977,13 +979,15 @@ impl Vm {
                     _ => return Err(self.err("OverflowError", "exponent too large")),
                 }
             }
+            BinOp::LShift if b.neg => return Err(self.value_error("negative shift count")),
+            BinOp::RShift if b.neg => return Err(self.value_error("negative shift count")),
+            BinOp::LShift if a.is_zero() => Value::Int(0),
             BinOp::LShift => match b.to_i64() {
-                Some(n) if n >= 0 => Value::from_big(a.shl(n as usize)),
-                _ => return Err(self.value_error("negative shift count")),
+                Some(n) if n < 1 << 40 => Value::from_big(a.shl(n as usize)),
+                _ => return Err(self.err("OverflowError", "too many digits in integer")),
             },
             BinOp::RShift => match b.to_i64() {
-                Some(n) if n >= 0 => Value::from_big(a.shr(n as usize)),
-                Some(_) => return Err(self.value_error("negative shift count")),
+                Some(n) => Value::from_big(a.shr(n as usize)),
                 None => Value::Int(if a.neg { -1 } else { 0 }),
             },
             BinOp::BitOr => Value::from_big(a.bitop(b, '|')),
