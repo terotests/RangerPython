@@ -133,6 +133,13 @@ pub fn bytes_of(vm: &mut Vm, v: &Value) -> PyResult<Vec<u8>> {
             if matches!(b, Value::Bytes(_) | Value::ByteArray(_)) {
                 return bytes_of(vm, &b);
             }
+            // the buffer protocol: memoryview and array
+            if matches!(vm.type_name(v).as_str(), "memoryview" | "array") {
+                if let Some(f) = vm.getattr_opt(v, &ps("tobytes"))? {
+                    let r = vm.call_vec(&f, vec![], &[])?;
+                    return bytes_of(vm, &r);
+                }
+            }
             let tn = vm.type_name(v);
             Err(vm.type_error(format!("a bytes-like object is required, not '{}'", tn)))
         }
@@ -174,6 +181,9 @@ pub fn norm_index(vm: &mut Vm, idx: &Value, len: usize, what: &str) -> PyResult<
             Ok(i) => i,
             Err(_) => {
                 let tn = vm.type_name(idx);
+                if what == "string" {
+                    return Err(vm.type_error(format!("string indices must be integers, not '{}'", tn)));
+                }
                 return Err(vm.type_error(format!("{} indices must be integers or slices, not {}", what, tn)));
             }
         },
@@ -1012,6 +1022,15 @@ pub fn instance_special(vm: &mut Vm, obj: &Value, inst: &Rc<Instance>, name: &st
             "name" | "path" | "obj" if cls.is_subclass(&vm.exc_class("ImportError")) || cls.is_subclass(&vm.exc_class("AttributeError")) || cls.is_subclass(&vm.exc_class("NameError")) => Some(Value::None),
             "msg" if cls.is_subclass(&vm.exc_class("SyntaxError")) => Some(args.into_iter().next().unwrap_or(Value::None)),
             "lineno" | "offset" | "text" | "filename" | "end_lineno" | "end_offset" if cls.is_subclass(&vm.exc_class("SyntaxError")) => Some(Value::None),
+            "encoding" | "object" | "start" | "end" | "reason" if cls.is_subclass(&vm.exc_class("UnicodeError")) => {
+                let translate = cls.is_subclass(&vm.exc_class("UnicodeTranslateError"));
+                let i = ["encoding", "object", "start", "end", "reason"].iter().position(|n| *n == name).unwrap();
+                match (translate, i) {
+                    (true, 0) => Some(Value::None),
+                    (true, i) => args.get(i - 1).cloned(),
+                    (false, i) => args.get(i).cloned(),
+                }
+            }
             "exceptions" | "message" => None,
             _ => None,
         });
@@ -1057,9 +1076,62 @@ pub fn class_special(vm: &mut Vm, c: &Rc<Class>, name: &str) -> PyResult<Option<
 // -------------------------------------------------------------------------
 // exceptions
 
+/// a UnicodeDecodeError with CPython's fields
+pub fn decode_error(vm: &mut Vm, enc: &str, obj: &[u8], start: usize, end: usize, reason: &str) -> Exc {
+    let cls = vm.exc_class("UnicodeDecodeError");
+    let v = vm.new_exc(&cls, vec![Value::str(enc), Value::Bytes(Rc::new(obj.to_vec())), Value::Int(start as i64), Value::Int(end as i64), Value::str(reason)]);
+    Exc { value: v }
+}
+
+/// a UnicodeEncodeError with CPython's fields
+pub fn encode_error(vm: &mut Vm, enc: &str, obj: &str, start: usize, end: usize, reason: &str) -> Exc {
+    let cls = vm.exc_class("UnicodeEncodeError");
+    let v = vm.new_exc(&cls, vec![Value::str(enc), Value::str(obj), Value::Int(start as i64), Value::Int(end as i64), Value::str(reason)]);
+    Exc { value: v }
+}
+
+fn unicode_error_str(vm: &mut Vm, cls: &Rc<Class>, args: &[Value]) -> PyResult<Option<String>> {
+    let decode = cls.is_subclass(&vm.exc_class("UnicodeDecodeError"));
+    let encode = cls.is_subclass(&vm.exc_class("UnicodeEncodeError"));
+    if !(decode || encode) || args.len() != 5 {
+        return Ok(None);
+    }
+    let enc = vm.str_of(&args[0])?;
+    let (start, end) = match (&args[2], &args[3]) {
+        (Value::Int(a), Value::Int(b)) => (*a, *b),
+        _ => return Ok(None),
+    };
+    let reason = vm.str_of(&args[4])?;
+    if decode {
+        let byte = match &args[1] {
+            Value::Bytes(b) => b.get(start as usize).copied(),
+            _ => None,
+        };
+        return Ok(Some(match byte {
+            Some(c) if end == start + 1 => format!("'{}' codec can't decode byte 0x{:02x} in position {}: {}", enc, c, start, reason),
+            _ => format!("'{}' codec can't decode bytes in position {}-{}: {}", enc, start, end - 1, reason),
+        }));
+    }
+    let ch = match &args[1] {
+        Value::Str(s) => s.s.chars().nth(start as usize),
+        _ => None,
+    };
+    Ok(Some(match ch {
+        Some(c) if end == start + 1 => {
+            let n = c as u32;
+            let esc = if n <= 0xff { format!("\\x{:02x}", n) } else if n <= 0xffff { format!("\\u{:04x}", n) } else { format!("\\U{:08x}", n) };
+            format!("'{}' codec can't encode character '{}' in position {}: {}", enc, esc, start, reason)
+        }
+        _ => format!("'{}' codec can't encode characters in position {}-{}: {}", enc, start, end - 1, reason),
+    }))
+}
+
 pub fn exc_str(vm: &mut Vm, v: &Value) -> PyResult<String> {
     let args = vm.exc_args(v);
     let cls = vm.class_of(v);
+    if let Some(s) = unicode_error_str(vm, &cls, &args)? {
+        return Ok(s);
+    }
     if cls.is_subclass(&vm.exc_class("KeyError")) && args.len() == 1 {
         return vm.repr(&args[0]);
     }
@@ -1231,8 +1303,16 @@ pub fn def_class(c: &Rc<Class>, name: &'static str, f: NativeFnPtr) {
     c.dict.borrow_mut().set_s(short, Value::ClassMethod(Rc::new(Value::Native(Rc::new(NativeFn::new(name, f, Value::None))))));
 }
 
+/// a method that takes lo..=hi positional arguments besides self
+pub fn def_arity(c: &Rc<Class>, name: &'static str, f: NativeFnPtr, lo: u8, hi: u8) {
+    let short = name.rsplit('.').next().unwrap();
+    let mut n = NativeFn::new(name, f, Value::None);
+    n.arity = Some((lo, hi));
+    c.dict.borrow_mut().set_s(short, Value::Native(Rc::new(n)));
+}
+
 pub fn native(name: &'static str, f: NativeFnPtr) -> Value {
-    Value::Native(Rc::new(NativeFn { name, f, data: Value::None, bind: false }))
+    Value::Native(Rc::new(NativeFn { name, f, data: Value::None, bind: false, arity: None }))
 }
 
 fn mk(name: &str, base: Option<&Rc<Class>>, b: Builtin) -> Rc<Class> {
@@ -1519,13 +1599,42 @@ fn bi_len(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(vm.len(&a[0])? as i64))
 }
 
+/// what a user-defined __repr__ or __str__ returns, kept as the str
+/// subclass it may be
+pub fn user_str_result(vm: &mut Vm, v: &Value, dunder: &str) -> PyResult<Option<Value>> {
+    if !matches!(v, Value::Instance(_)) {
+        return Ok(None);
+    }
+    let f = match vm.lookup_special(v, &ps(dunder)) {
+        Some(f @ Value::Method(_)) if matches!(&f, Value::Method(m) if matches!(m.1, Value::Func(_))) => f,
+        _ => return Ok(None),
+    };
+    let r = vm.call_vec(&f, vec![], &[])?;
+    if matches!(r, Value::Str(_)) || (matches!(r, Value::Instance(_)) && matches!(vm.base_of(&r), Value::Str(_))) {
+        return Ok(Some(r));
+    }
+    let rn = vm.type_name(&r);
+    Err(vm.type_error(format!("{} returned non-string (type {})", dunder, rn)))
+}
+
 fn bi_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "repr", a, 1, 1)?;
+    if let Some(r) = user_str_result(vm, &a[0], "__repr__")? {
+        return Ok(r);
+    }
     Ok(Value::string(vm.repr(&a[0])?))
 }
 
 fn bi_ascii(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "ascii", a, 1, 1)?;
+    if let Some(r) = user_str_result(vm, &a[0], "__repr__")? {
+        if let Value::Str(t) = vm.base_of(&r) {
+            if t.ascii {
+                return Ok(r);
+            }
+            return Ok(Value::string(crate::format::ascii_escape(&t.s)));
+        }
+    }
     let r = vm.repr(&a[0])?;
     Ok(Value::string(crate::format::ascii_escape(&r)))
 }
@@ -2365,25 +2474,58 @@ fn mod_inverse(a: &BigInt, m: &BigInt) -> Option<BigInt> {
 }
 
 /// round half to even at `nd` decimals
-pub fn round_float(x: f64, nd: i64) -> f64 {
-    if !x.is_finite() {
-        return x;
+/// round(x, nd) as CPython: correctly rounded, ties to even; None when the
+/// result overflows
+pub fn round_float(x: f64, nd: i64) -> Option<f64> {
+    if !x.is_finite() || nd > 323 {
+        return Some(x);
     }
-    if nd > 300 {
-        return x;
+    if nd < -308 {
+        return Some(0.0f64.copysign(x));
     }
-    if nd >= 0 {
-        // exact decimal rounding through the formatter
-        let s = format!("{:.*}", nd as usize, x);
-        // the formatter rounds the exact binary value, ties to even, as CPython
-        s.parse().unwrap_or(x)
+    let r: f64 = if nd >= 0 {
+        // the formatter rounds the exact binary value, ties to even
+        format!("{:.*}", nd as usize, x).parse().unwrap_or(x)
     } else {
-        let p = 10f64.powi((-nd) as i32);
-        let y = x / p;
-        let r = y.round();
-        let r = if (y - y.trunc()).abs() == 0.5 { 2.0 * (y / 2.0).round() } else { r };
-        r * p
+        // exactly: x = num/den, q = round(x / 10**k), result q * 10**k
+        let bits = x.abs();
+        let (num, den) = float_ratio_exact(bits);
+        let p = BigInt::from_i64(10).pow((-nd) as u64);
+        let d = den.mul(&p);
+        let (q, rem) = num.divmod(&d).unwrap();
+        let q = match rem.shl(1).cmp(&d) {
+            std::cmp::Ordering::Greater => q.add(&BigInt::from_i64(1)),
+            std::cmp::Ordering::Equal if q.is_odd() => q.add(&BigInt::from_i64(1)),
+            _ => q,
+        };
+        format!("{}e{}", q, -nd).parse::<f64>().unwrap_or(f64::INFINITY)
+    };
+    if r.is_infinite() {
+        return None;
     }
+    Some(if r == 0.0 || nd < 0 { r.copysign(x) } else { r })
+}
+
+/// a finite non-negative float as an exact fraction
+fn float_ratio_exact(f: f64) -> (BigInt, BigInt) {
+    let bits = f.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i64;
+    let mant = if exp == 0 { (bits & ((1 << 52) - 1)) << 1 } else { (bits & ((1 << 52) - 1)) | (1 << 52) };
+    let e = exp - 1075;
+    let num = BigInt::from_i64(mant as i64);
+    if e >= 0 {
+        (num.shl(e as usize), BigInt::from_i64(1))
+    } else {
+        (num, BigInt::from_i64(1).shl((-e) as usize))
+    }
+}
+
+/// an index, clamped to the i64 range when it is larger
+fn index_clamped(vm: &mut Vm, v: &Value) -> PyResult<i64> {
+    if let Value::Big(b) = vm.base_of(v) {
+        return Ok(if b.neg { i64::MIN } else { i64::MAX });
+    }
+    vm.to_index(v)
 }
 
 fn bi_round(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
@@ -2405,8 +2547,11 @@ fn bi_round(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
                 let r = if (f - f.trunc()).abs() == 0.5 { 2.0 * (f / 2.0).round() } else { r };
                 return Ok(if r.abs() < 9e18 { Value::Int(r as i64) } else { Value::from_big(BigInt::from_f64(r).unwrap()) });
             }
-            let n = vm.to_index(&nd)?;
-            Ok(Value::Float(round_float(*f, n)))
+            let n = index_clamped(vm, &nd)?;
+            match round_float(*f, n) {
+                Some(r) => Ok(Value::Float(r)),
+                None => Err(vm.err("OverflowError", "rounded value too large to represent")),
+            }
         }
         Value::Int(_) | Value::Bool(_) | Value::Big(_) => {
             if nd.is_none() {
@@ -2415,7 +2560,7 @@ fn bi_round(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
                     o => o.clone(),
                 });
             }
-            let n = vm.to_index(&nd)?;
+            let n = index_clamped(vm, &nd)?;
             if n >= 0 {
                 return Ok(match &x {
                     Value::Bool(b) => Value::Int(*b as i64),
@@ -2423,6 +2568,10 @@ fn bi_round(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
                 });
             }
             let b = crate::ops::big_of(&x).unwrap();
+            // more digits rounded off than there are: zero
+            if (-(n as i128)) as u128 > b.bit_length() as u128 / 3 + 2 {
+                return Ok(Value::Int(0));
+            }
             let p = BigInt::from_i64(10).pow((-n) as u64);
             let (q, r) = b.divmod(&p).unwrap();
             // half to even

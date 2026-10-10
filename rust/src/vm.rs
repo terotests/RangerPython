@@ -1645,6 +1645,12 @@ impl Vm {
     /// runs a native; a bug that panics in it becomes a SystemError
     #[inline]
     pub fn run_native(&mut self, n: &NativeFn, args: &[Value], kw: crate::builtins::Kw) -> PyResult<Value> {
+        if let Some((lo, hi)) = n.arity {
+            let got = args.len().saturating_sub(1);
+            if got < lo as usize || got > hi as usize {
+                return Err(self.arity_error(n.name, lo, hi, got));
+            }
+        }
         #[cfg(panic = "unwind")]
         {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (n.f)(self, args, kw))) {
@@ -1659,6 +1665,21 @@ impl Vm {
         {
             (n.f)(self, args, kw)
         }
+    }
+
+    #[cold]
+    fn arity_error(&mut self, name: &str, lo: u8, hi: u8, got: usize) -> Exc {
+        let short = name.rsplit('.').next().unwrap_or(name);
+        let msg = if hi == 0 {
+            format!("{}() takes no arguments ({} given)", name, got)
+        } else if lo == hi && hi == 1 {
+            format!("{}() takes exactly one argument ({} given)", name, got)
+        } else if got < lo as usize {
+            format!("{} expected at least {} argument{}, got {}", short, lo, if lo == 1 { "" } else { "s" }, got)
+        } else {
+            format!("{} expected at most {} argument{}, got {}", short, hi, if hi == 1 { "" } else { "s" }, got)
+        };
+        self.type_error(msg)
     }
 
     pub fn call(&mut self, f: &Value, args: &[Value]) -> PyResult<Value> {

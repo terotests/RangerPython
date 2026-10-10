@@ -1,7 +1,24 @@
 # SPDX-License-Identifier: MIT
 # time for the Rust runtime. The clock is the host's; the time zone is UTC.
 import _time
-from _time import time, time_ns, perf_counter, perf_counter_ns, monotonic, monotonic_ns, sleep
+from _time import time, time_ns, perf_counter, perf_counter_ns, monotonic, monotonic_ns
+
+
+
+def sleep(secs, /):
+    if not isinstance(secs, (int, float)):
+        if hasattr(type(secs), "__float__"):
+            secs = float(secs)
+        elif hasattr(type(secs), "__index__"):
+            secs = secs.__index__()
+        else:
+            raise TypeError(f"'{type(secs).__name__}' object cannot be interpreted as an integer or float")
+    if secs != secs:
+        raise ValueError("Invalid value NaN (not a number)")
+    if secs < 0:
+        raise ValueError("sleep length must be non-negative")
+    _time.sleep(secs)
+
 
 timezone = 0
 altzone = 0

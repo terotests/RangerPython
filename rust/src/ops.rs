@@ -1017,10 +1017,14 @@ impl Vm {
                 fmod_py(x, y)
             }
             BinOp::Pow => {
+                // C99 pow has CPython's special cases for nan and infinite exponents
+                if x.is_nan() || !y.is_finite() {
+                    return Ok(Value::Float(x.powf(y)));
+                }
                 if x == 0.0 && y < 0.0 {
                     return Err(self.err("ZeroDivisionError", "zero to a negative power"));
                 }
-                if x < 0.0 && y.fract() != 0.0 {
+                if x < 0.0 && x.is_finite() && y.is_finite() && y.fract() != 0.0 {
                     // a complex result
                     let r = x.abs().powf(y);
                     let th = std::f64::consts::PI * y;
@@ -1088,6 +1092,7 @@ impl Vm {
                 let (x, y) = (big_of(a).unwrap(), big_of(b).unwrap());
                 self.big_binop(op, &x, &y)?
             }
+            (Str(_), _) if op == BinOp::Mod => Value::string(crate::format::percent_format(self, a, b)?),
             (Complex(_), _) | (_, Complex(_)) => match crate::builtins::complex_binop(self, op, a, b)? {
                 Some(v) => v,
                 Option::None => return Ok(Option::None),
@@ -1099,6 +1104,9 @@ impl Vm {
                 Value::string(s)
             }
             (Str(x), Int(n)) | (Int(n), Str(x)) if op == BinOp::Mul => {
+                if *n == 1 {
+                    return Ok(Some(Str(x.clone())));
+                }
                 if *n <= 0 {
                     Value::str("")
                 } else {
@@ -1107,7 +1115,6 @@ impl Vm {
                 }
             }
             (Str(x), Bool(n)) | (Bool(n), Str(x)) if op == BinOp::Mul => Value::string(if *n { x.s.clone() } else { String::new() }),
-            (Str(_), _) if op == BinOp::Mod => Value::string(crate::format::percent_format(self, a, b)?),
             (Bytes(x), Bytes(y)) if op == BinOp::Add => {
                 let mut v = (**x).clone();
                 v.extend_from_slice(y);
@@ -1203,6 +1210,14 @@ impl Vm {
         if b_inst && !b_first {
             if let Some(r) = self.try_dunder(b, &rev, a)? {
                 return Ok(r);
+            }
+        }
+        // str % anything formats the operand itself
+        if op == BinOp::Mod && !a_inst && matches!(a, Value::Str(_) | Value::Bytes(_) | Value::ByteArray(_)) {
+            let bt = self.base_of(b);
+            let operand = if matches!(bt, Value::Tuple(_)) { bt } else { b.clone() };
+            if let Some(v) = self.builtin_binop(op, a, &operand)? {
+                return Ok(v);
             }
         }
         // instances wrapping a built-in value
@@ -1820,7 +1835,7 @@ impl Vm {
                             return Err(self.type_error(format!("unhashable type: '{}'", tn)));
                         }
                         let b = self.base_of(v);
-                        if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
+                        if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) && !matches!(b, Value::Float(f) if f.is_nan()) {
                             return self.hash(&b);
                         }
                         Ok((ptr_id(v) as u64) >> 4)

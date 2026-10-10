@@ -53,6 +53,20 @@ macro_rules! leak {
     };
 }
 
+/// the positional arguments a str or bytes method takes besides self
+fn str_arity(n: &str) -> Option<(u8, u8)> {
+    Some(match n {
+        "__len__" | "__iter__" | "__hash__" | "__repr__" | "__str__" | "__getnewargs__" | "upper" | "lower" | "casefold" | "capitalize" | "title" | "swapcase" | "isdigit" | "isdecimal" | "isnumeric" | "isalpha" | "isalnum" | "isspace" | "isupper" | "islower" | "istitle" | "isidentifier" | "isprintable" | "isascii" => (0, 0),
+        "__getitem__" | "__contains__" | "__add__" | "__mul__" | "__rmul__" | "__mod__" | "__rmod__" | "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__" | "__format__" | "format_map" | "join" | "zfill" | "partition" | "rpartition" | "removeprefix" | "removesuffix" | "translate" => (1, 1),
+        "split" | "rsplit" | "encode" => (0, 2),
+        "splitlines" | "strip" | "lstrip" | "rstrip" | "expandtabs" => (0, 1),
+        "startswith" | "endswith" | "find" | "rfind" | "index" | "rindex" | "count" => (1, 3),
+        "replace" => (2, 3),
+        "center" | "ljust" | "rjust" => (1, 2),
+        _ => return None,
+    })
+}
+
 pub fn install(vm: &mut Vm) {
     let c = vm.t.str_.clone();
     let fs: &[(&str, NativeFnPtr)] = &[
@@ -96,7 +110,7 @@ pub fn install(vm: &mut Vm) {
         ("replace", str_replace),
         ("upper", str_upper),
         ("lower", str_lower),
-        ("casefold", str_lower),
+        ("casefold", str_casefold),
         ("capitalize", str_capitalize),
         ("title", str_title),
         ("swapcase", str_swapcase),
@@ -125,7 +139,10 @@ pub fn install(vm: &mut Vm) {
         ("translate", str_translate),
     ];
     for (n, f) in fs {
-        def(&c, leak!("str", n), *f);
+        match str_arity(n) {
+            Some((lo, hi)) => def_arity(&c, leak!("str", n), *f, lo, hi),
+            None => def(&c, leak!("str", n), *f),
+        }
     }
     def_static(&c, "str.maketrans", str_maketrans);
     for (cls, tname) in [(vm.t.bytes.clone(), "bytes"), (vm.t.bytearray.clone(), "bytearray")] {
@@ -204,23 +221,50 @@ pub fn install(vm: &mut Vm) {
 // -------------------------------------------------------------------------
 // construction
 
+/// UTF-8 as CPython decodes it: each maximal bad subpart is one error
+fn decode_utf8(vm: &mut Vm, b: &[u8], errors: &str) -> PyResult<String> {
+    let mut out = String::with_capacity(b.len());
+    let mut rest = b;
+    let mut pos = 0;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(s) => {
+                out.push_str(s);
+                return Ok(out);
+            }
+            Err(e) => {
+                let ok = e.valid_up_to();
+                out.push_str(std::str::from_utf8(&rest[..ok]).unwrap());
+                let lead = rest[ok];
+                let (n, reason) = match e.error_len() {
+                    None => (rest.len() - ok, "unexpected end of data"),
+                    Some(n) if lead < 0xc2 || lead > 0xf4 => (n, "invalid start byte"),
+                    Some(n) => (n, "invalid continuation byte"),
+                };
+                let start = pos + ok;
+                match errors {
+                    "replace" => out.push('\u{fffd}'),
+                    "ignore" => {}
+                    "backslashreplace" => {
+                        for c in &rest[ok..ok + n] {
+                            out.push_str(&format!("\\x{:02x}", c));
+                        }
+                    }
+                    _ => return Err(crate::builtins::decode_error(vm, "utf-8", b, start, start + n, reason)),
+                }
+                rest = &rest[ok + n..];
+                pos = start + n;
+            }
+        }
+    }
+}
+
 fn decode_bytes(vm: &mut Vm, b: &[u8], enc: &str, errors: &str) -> PyResult<String> {
     let enc = enc.to_ascii_lowercase().replace('_', "-");
     match enc.as_str() {
         "utf-8" | "utf8" | "u8" | "utf-8-sig" => {
             let b = if enc == "utf-8-sig" && b.starts_with(&[0xef, 0xbb, 0xbf]) { &b[3..] } else { b };
-            match std::str::from_utf8(b) {
-                Ok(s) => Ok(s.to_string()),
-                Err(e) => {
-                    if errors == "replace" || errors == "ignore" {
-                        let s = String::from_utf8_lossy(b).into_owned();
-                        return Ok(if errors == "ignore" { s.replace('\u{fffd}', "") } else { s });
-                    }
-                    let pos = e.valid_up_to();
-                    let byte = b[pos];
-                    Err(vm.err("UnicodeDecodeError", format!("'utf-8' codec can't decode byte 0x{:02x} in position {}: {}", byte, pos, if byte >= 0x80 && byte < 0xc0 { "invalid start byte" } else { "unexpected end of data" })))
-                }
-            }
+            decode_utf8(vm, b, errors)
         }
         "ascii" | "us-ascii" => {
             let mut out = String::new();
@@ -231,7 +275,7 @@ fn decode_bytes(vm: &mut Vm, b: &[u8], enc: &str, errors: &str) -> PyResult<Stri
                     out.push('\u{fffd}');
                 } else if errors == "ignore" {
                 } else {
-                    return Err(vm.err("UnicodeDecodeError", format!("'ascii' codec can't decode byte 0x{:02x} in position {}: ordinal not in range(128)", c, i)));
+                    return Err(crate::builtins::decode_error(vm, "ascii", b, i, i + 1, "ordinal not in range(128)"));
                 }
             }
             Ok(out)
@@ -306,7 +350,7 @@ fn unescape_bytes(vm: &mut Vm, b: &[u8], raw: bool, errors: &str) -> PyResult<St
     let codec = if raw { "rawunicodeescape" } else { "unicodeescape" };
     let mut out = String::new();
     let mut i = 0;
-    let bad = |vm: &mut Vm, start: usize, end: usize, msg: &str| vm.err("UnicodeDecodeError", format!("'{}' codec can't decode bytes in position {}-{}: {}", codec, start, end.saturating_sub(1), msg));
+    let bad = |vm: &mut Vm, start: usize, end: usize, msg: &str| crate::builtins::decode_error(vm, codec, b, start, end, msg);
     while i < b.len() {
         let c = b[i];
         if c != b'\\' || i + 1 >= b.len() {
@@ -320,7 +364,7 @@ fn unescape_bytes(vm: &mut Vm, b: &[u8], raw: bool, errors: &str) -> PyResult<St
                     i += 1;
                     continue;
                 }
-                return Err(vm.err("UnicodeDecodeError", format!("'{}' codec can't decode byte 0x5c in position {}: \\ at end of string", codec, i)));
+                return Err(crate::builtins::decode_error(vm, codec, b, i, i + 1, "\\ at end of string"));
             }
             out.push(c as char);
             i += 1;
@@ -500,7 +544,7 @@ pub fn encode_str(vm: &mut Vm, st: &str, enc: &str, errors: &str) -> PyResult<Ve
                     out.extend_from_slice(r.as_bytes());
                 } else {
                     let name = if limit == 128 { "ascii" } else { "latin-1" };
-                    return Err(vm.err("UnicodeEncodeError", format!("'{}' codec can't encode character {} in position {}: ordinal not in range({})", name, crate::format::str_repr(&c.to_string()).replace('\'', "'"), i, limit)));
+                    return Err(crate::builtins::encode_error(vm, name, st, i, i + 1, &format!("ordinal not in range({})", limit)));
                 }
             }
             Ok(out)
@@ -563,6 +607,9 @@ pub fn encode_str(vm: &mut Vm, st: &str, enc: &str, errors: &str) -> PyResult<Ve
 
 fn str_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
+    if a.len() + k.len() > 4 {
+        return Err(vm.type_error(format!("str expected at most 3 arguments, got {}", a.len() + k.len() - 1)));
+    }
     let obj = arg_or_kw(a, 1, k, "object");
     let enc = arg_or_kw(a, 2, k, "encoding");
     let errors = arg_or_kw(a, 3, k, "errors");
@@ -577,7 +624,17 @@ fn str_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             } else {
                 match &o {
                     Value::Str(_) => o.clone(),
-                    _ => Value::string(vm.str_of(&o)?),
+                    _ => {
+                        let exact = matches!(&a[0], Value::Class(c) if Rc::ptr_eq(c, &vm.t.str_));
+                        match crate::builtins::user_str_result(vm, &o, "__str__")? {
+                            Some(r) if exact => return Ok(r),
+                            Some(r) => vm.base_of(&r),
+                            None => match vm.base_of(&o) {
+                                b @ Value::Str(_) if vm.lookup_special(&o, &ps("__str__")).is_some_and(|f| matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)))) => b,
+                                _ => Value::string(vm.str_of(&o)?),
+                            },
+                        }
+                    }
                 }
             }
         }
@@ -618,7 +675,18 @@ fn str_mul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     match vm.base_of(&a[1]) {
         Value::Int(n) => { let n = vm.repeat_count(x.s.len(), n)?; Ok(s(x.s.repeat(n))) }
         Value::Bool(b) => Ok(s(if b { x.s.clone() } else { String::new() })),
-        _ => Ok(Value::NotImplemented),
+        Value::Big(_) => Err(vm.err("OverflowError", "cannot fit 'int' into an index-sized integer")),
+        _ => match vm.lookup_special(&a[1], &vm.n.index.clone()) {
+            Some(_) => {
+                let n = vm.to_index(&a[1])?;
+                let n = vm.repeat_count(x.s.len(), n)?;
+                Ok(s(x.s.repeat(n)))
+            }
+            None => {
+                let tn = vm.type_name(&a[1]);
+                Err(vm.type_error(format!("can't multiply sequence by non-int of type '{}'", tn)))
+            }
+        },
     }
 }
 fn str_mod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -670,22 +738,35 @@ fn str_format_m(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "__format__")?;
     let spec = str_arg(vm, a, 1, "__format__")?;
     if spec.s.is_empty() {
+        if matches!(a[0], Value::Instance(_)) {
+            return Ok(Value::string(vm.str_of(&a[0])?));
+        }
         return Ok(Value::Str(x));
     }
     Ok(s(crate::format::format_spec(vm, &Value::Str(x), &spec.s)?))
 }
 fn str_getnewargs(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "__getnewargs__")?;
-    Ok(Value::tuple(vec![Value::Str(x)]))
+    // a copy, as CPython's
+    Ok(Value::tuple(vec![Value::string(x.s.clone())]))
 }
 
 // -------------------------------------------------------------------------
 // str.format
 
 /// the value a replacement field names: "0", "name", "a.b", "x[0]"
-fn field_value(vm: &mut Vm, field: &str, args: &[Value], kw: &Value, auto: &mut usize, manual: &mut bool) -> PyResult<Value> {
+fn field_value(vm: &mut Vm, field: &str, args: Option<&[Value]>, kw: &Value, auto: &mut usize, manual: &mut bool) -> PyResult<Value> {
     let end = field.find(['.', '[']).unwrap_or(field.len());
     let head = &field[..end];
+    let numeric = head.is_empty() || head.bytes().all(|b| b.is_ascii_digit());
+    let args = match args {
+        Some(a) => a,
+        None if numeric => return Err(vm.value_error("Format string contains positional fields")),
+        None => &[],
+    };
+    if numeric && !head.is_empty() && head.parse::<i64>().is_err() {
+        return Err(vm.value_error("Too many decimal digits in format string"));
+    }
     let mut v = if head.is_empty() {
         if *manual {
             return Err(vm.value_error("cannot switch from manual field specification to automatic field numbering"));
@@ -723,6 +804,9 @@ fn field_value(vm: &mut Vm, field: &str, args: &[Value], kw: &Value, auto: &mut 
         if let Some(r) = rest.strip_prefix('.') {
             let e = r.find(['.', '[']).unwrap_or(r.len());
             let name = &r[..e];
+            if name.is_empty() {
+                return Err(vm.value_error("Empty attribute in format string"));
+            }
             v = vm.getattr(&v, &ps(name))?;
             rest = &r[e..];
         } else if let Some(r) = rest.strip_prefix('[') {
@@ -731,6 +815,12 @@ fn field_value(vm: &mut Vm, field: &str, args: &[Value], kw: &Value, auto: &mut 
                 None => return Err(vm.value_error("Missing ']' in format string")),
             };
             let key = &r[..e];
+            if key.is_empty() {
+                return Err(vm.value_error("Empty attribute in format string"));
+            }
+            if key.bytes().all(|b| b.is_ascii_digit()) && key.parse::<i64>().is_err() {
+                return Err(vm.value_error("Too many decimal digits in format string"));
+            }
             let kv = match key.parse::<i64>() {
                 Ok(i) => Value::Int(i),
                 Err(_) => Value::str(key),
@@ -747,11 +837,11 @@ fn field_value(vm: &mut Vm, field: &str, args: &[Value], kw: &Value, auto: &mut 
 pub fn format_str(vm: &mut Vm, fmt: &str, args: &[Value], kw: &Value) -> PyResult<String> {
     let mut auto = 0usize;
     let mut manual = false;
-    format_inner(vm, fmt, args, kw, &mut auto, &mut manual, 0)
+    format_inner(vm, fmt, Some(args), kw, &mut auto, &mut manual, 0)
 }
 
-fn format_inner(vm: &mut Vm, fmt: &str, args: &[Value], kw: &Value, auto: &mut usize, manual: &mut bool, depth: u32) -> PyResult<String> {
-    if depth > 2 {
+fn format_inner(vm: &mut Vm, fmt: &str, args: Option<&[Value]>, kw: &Value, auto: &mut usize, manual: &mut bool, depth: u32) -> PyResult<String> {
+    if depth >= 2 {
         return Err(vm.value_error("Max string recursion exceeded"));
     }
     let c: Vec<char> = fmt.chars().collect();
@@ -804,10 +894,22 @@ fn format_inner(vm: &mut Vm, fmt: &str, args: &[Value], kw: &Value, auto: &mut u
                 }
             }
             let field = &body[..field_end];
+            let mut inb = false;
+            for b in field.chars() {
+                match b {
+                    '[' => inb = true,
+                    ']' => inb = false,
+                    '{' | '}' if !inb => return Err(vm.value_error("unexpected '{' in field name")),
+                    _ => {}
+                }
+            }
             let mut rest = &body[field_end..];
             let mut conv = None;
             if let Some(r) = rest.strip_prefix('!') {
                 let cc = r.chars().next();
+                if cc.is_none() || cc == Some(':') {
+                    return Err(vm.value_error("end of string while looking for conversion specifier"));
+                }
                 conv = cc;
                 rest = &r[cc.map(|x| x.len_utf8()).unwrap_or(0)..];
                 if !rest.is_empty() && !rest.starts_with(':') {
@@ -815,8 +917,8 @@ fn format_inner(vm: &mut Vm, fmt: &str, args: &[Value], kw: &Value, auto: &mut u
                 }
             }
             let spec = rest.strip_prefix(':').unwrap_or("");
-            let spec = if spec.contains('{') { format_inner(vm, spec, args, kw, auto, manual, depth + 1)? } else { spec.to_string() };
             let v = field_value(vm, field, args, kw, auto, manual)?;
+            let spec = if spec.contains('{') { format_inner(vm, spec, args, kw, auto, manual, depth + 1)? } else { spec.to_string() };
             let v = match conv {
                 None => v,
                 Some('r') => Value::string(vm.repr(&v)?),
@@ -852,7 +954,8 @@ fn str_format(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 fn str_format_map(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "format_map")?;
     margs(vm, "format_map", a, 1, 1)?;
-    Ok(s(format_str(vm, &x.s, &[], &a[1])?))
+    let (mut auto, mut manual) = (0usize, false);
+    Ok(s(format_inner(vm, &x.s, None, &a[1], &mut auto, &mut manual, 0)?))
 }
 
 // -------------------------------------------------------------------------
@@ -1025,18 +1128,32 @@ fn str_rstrip(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 /// the char range [start, end) of optional start/end arguments, as byte offsets
+/// a slice index as CPython's _PyEval_SliceIndex: big values clamp
+fn slice_index(vm: &mut Vm, v: &Value) -> PyResult<i64> {
+    match vm.base_of(v) {
+        Value::Big(b) => Ok(if b.neg { i64::MIN / 2 } else { i64::MAX / 2 }),
+        _ => match vm.to_index(v) {
+            Ok(i) => Ok(i),
+            Err(_) => Err(vm.type_error("slice indices must be integers or None or have an __index__ method")),
+        },
+    }
+}
+
+/// start and end as find/count take them: (start byte, end byte, start
+/// char, end char); the start char may lie past the end of the string
 fn sub_range(vm: &mut Vm, x: &PyStr, a: &[Value], i: usize) -> PyResult<(usize, usize, usize, usize)> {
     let n = x.char_len() as i64;
-    let norm = |v: i64| -> i64 { if v < 0 { (v + n).max(0) } else { v.min(n) } };
+    let adjust = |v: i64| -> i64 { if v < 0 { (v + n).max(0) } else { v } };
     let st = match a.get(i) {
         Some(Value::None) | None => 0,
-        Some(v) => norm(vm.to_index(v)?),
+        Some(v) => adjust(slice_index(vm, v)?),
     };
     let en = match a.get(i + 1) {
         Some(Value::None) | None => n,
-        Some(v) => norm(vm.to_index(v)?),
+        Some(v) => adjust(slice_index(vm, v)?).min(n),
     };
     let to_byte = |ci: i64| -> usize {
+        let ci = ci.min(n);
         if x.ascii {
             ci as usize
         } else {
@@ -1181,48 +1298,109 @@ fn str_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     Ok(s(x.s.replacen(&*old.s, &new.s, count as usize)))
 }
 
+use crate::unidata as ud;
+
+fn cased(c: char) -> bool {
+    ud::is_in(&ud::CASED, c)
+}
+
+/// a capital sigma at i ends a word: cased before it, none after
+/// (case-ignorable characters skipped)
+fn final_sigma(cs: &[char], i: usize) -> bool {
+    let before = cs[..i].iter().rev().find(|c| !ud::is_in(&ud::CASE_IGNORABLE, **c));
+    let after = cs[i + 1..].iter().find(|c| !ud::is_in(&ud::CASE_IGNORABLE, **c));
+    before.is_some_and(|c| cased(*c)) && !after.is_some_and(|c| cased(*c))
+}
+
+fn push_lower(out: &mut String, cs: &[char], i: usize) {
+    if cs[i] == 'Σ' {
+        out.push(if final_sigma(cs, i) { 'ς' } else { 'σ' });
+    } else {
+        ud::push_lower(out, cs[i]);
+    }
+}
+
+fn push_title(out: &mut String, c: char) {
+    match ud::mapped(&ud::TITLE_MAP, c) {
+        Some(t) => out.push_str(t),
+        None => ud::push_upper(out, c),
+    }
+}
+
 fn str_upper(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "upper")?;
-    Ok(s(x.s.to_uppercase()))
+    if x.ascii {
+        return Ok(s(x.s.to_ascii_uppercase()));
+    }
+    let mut out = String::with_capacity(x.s.len());
+    for c in x.s.chars() {
+        ud::push_upper(&mut out, c);
+    }
+    Ok(s(out))
 }
 fn str_lower(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "lower")?;
-    Ok(s(x.s.to_lowercase()))
+    if x.ascii {
+        return Ok(s(x.s.to_ascii_lowercase()));
+    }
+    let cs: Vec<char> = x.s.chars().collect();
+    let mut out = String::with_capacity(x.s.len());
+    for i in 0..cs.len() {
+        push_lower(&mut out, &cs, i);
+    }
+    Ok(s(out))
+}
+fn str_casefold(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let x = me(vm, a, "casefold")?;
+    let mut out = String::with_capacity(x.s.len());
+    for c in x.s.chars() {
+        match ud::mapped(&ud::FOLD_MAP, c) {
+            Some(f) => out.push_str(f),
+            None => ud::push_lower(&mut out, c),
+        }
+    }
+    Ok(s(out))
 }
 fn str_capitalize(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "capitalize")?;
-    let mut cs = x.s.chars();
-    Ok(s(match cs.next() {
-        Some(f) => {
-            let mut out: String = f.to_uppercase().collect();
-            out.push_str(&cs.as_str().to_lowercase());
-            out
+    let cs: Vec<char> = x.s.chars().collect();
+    let mut out = String::with_capacity(x.s.len());
+    for i in 0..cs.len() {
+        if i == 0 {
+            push_title(&mut out, cs[0]);
+        } else {
+            push_lower(&mut out, &cs, i);
         }
-        None => String::new(),
-    }))
+    }
+    Ok(s(out))
 }
 fn str_title(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "title")?;
-    let mut out = String::new();
+    let cs: Vec<char> = x.s.chars().collect();
+    let mut out = String::with_capacity(x.s.len());
     let mut prev_cased = false;
-    for c in x.s.chars() {
+    for i in 0..cs.len() {
         if prev_cased {
-            out.extend(c.to_lowercase());
+            push_lower(&mut out, &cs, i);
         } else {
-            out.extend(c.to_uppercase());
+            push_title(&mut out, cs[i]);
         }
-        prev_cased = c.is_alphabetic();
+        prev_cased = cased(cs[i]);
     }
     Ok(s(out))
 }
 fn str_swapcase(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "swapcase")?;
-    let mut out = String::new();
-    for c in x.s.chars() {
-        if c.is_uppercase() {
-            out.extend(c.to_lowercase());
+    let cs: Vec<char> = x.s.chars().collect();
+    let mut out = String::with_capacity(x.s.len());
+    for i in 0..cs.len() {
+        let c = cs[i];
+        if ud::is_in(&ud::UPPER, c) {
+            push_lower(&mut out, &cs, i);
+        } else if ud::is_in(&ud::LOWER, c) {
+            ud::push_upper(&mut out, c);
         } else {
-            out.extend(c.to_uppercase());
+            out.push(c);
         }
     }
     Ok(s(out))
@@ -1364,47 +1542,62 @@ fn is_decimal(c: char) -> bool {
 }
 
 fn str_isdigit(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    char_test(vm, a, "isdigit", |c| is_decimal(c) || matches!(c, '²' | '³' | '¹' | '\u{2070}'..='\u{2079}' | '\u{2080}'..='\u{2089}' | '\u{2460}'..='\u{2468}'))
+    char_test(vm, a, "isdigit", |c| ud::is_in(&ud::DIGIT, c))
 }
 fn str_isdecimal(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     char_test(vm, a, "isdecimal", is_decimal)
 }
 fn str_isnumeric(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    char_test(vm, a, "isnumeric", |c| c.is_numeric())
+    char_test(vm, a, "isnumeric", |c| ud::is_in(&ud::NUMERIC, c))
 }
 fn str_isalpha(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    char_test(vm, a, "isalpha", |c| c.is_alphabetic())
+    char_test(vm, a, "isalpha", |c| ud::is_in(&ud::ALPHA, c))
 }
 fn str_isalnum(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    char_test(vm, a, "isalnum", |c| c.is_alphanumeric())
+    char_test(vm, a, "isalnum", |c| ud::is_in(&ud::ALPHA, c) || ud::is_in(&ud::NUMERIC, c))
 }
 fn str_isspace(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    char_test(vm, a, "isspace", |c| c.is_whitespace() || matches!(c, '\x1c'..='\x1f'))
+    char_test(vm, a, "isspace", |c| ud::is_in(&ud::SPACE, c))
 }
 fn str_isupper(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "isupper")?;
-    Ok(Value::Bool(x.s.chars().any(|c| c.is_uppercase()) && !x.s.chars().any(|c| c.is_lowercase())))
+    let mut any = false;
+    for c in x.s.chars() {
+        if ud::is_in(&ud::LOWER, c) || ud::is_in(&ud::TITLE, c) {
+            return Ok(Value::Bool(false));
+        }
+        any |= ud::is_in(&ud::UPPER, c);
+    }
+    Ok(Value::Bool(any))
 }
 fn str_islower(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "islower")?;
-    Ok(Value::Bool(x.s.chars().any(|c| c.is_lowercase()) && !x.s.chars().any(|c| c.is_uppercase())))
+    let mut any = false;
+    for c in x.s.chars() {
+        if ud::is_in(&ud::UPPER, c) || ud::is_in(&ud::TITLE, c) {
+            return Ok(Value::Bool(false));
+        }
+        any |= ud::is_in(&ud::LOWER, c);
+    }
+    Ok(Value::Bool(any))
 }
 fn str_istitle(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "istitle")?;
     let mut prev_cased = false;
     let mut any = false;
     for c in x.s.chars() {
-        if c.is_uppercase() {
+        if ud::is_in(&ud::UPPER, c) || ud::is_in(&ud::TITLE, c) {
             if prev_cased {
                 return Ok(Value::Bool(false));
             }
             prev_cased = true;
             any = true;
-        } else if c.is_lowercase() {
+        } else if ud::is_in(&ud::LOWER, c) {
             if !prev_cased {
                 return Ok(Value::Bool(false));
             }
             prev_cased = true;
+            any = true;
         } else {
             prev_cased = false;
         }
@@ -1415,13 +1608,13 @@ fn str_isidentifier(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "isidentifier")?;
     let mut cs = x.s.chars();
     Ok(Value::Bool(match cs.next() {
-        Some(f) => (f == '_' || f.is_alphabetic()) && cs.all(|c| c == '_' || c.is_alphanumeric()),
+        Some(f) => ud::is_in(&ud::XID_START, f) && cs.all(|c| ud::is_in(&ud::XID_CONTINUE, c)),
         None => false,
     }))
 }
 fn str_isprintable(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "isprintable")?;
-    Ok(Value::Bool(x.s.chars().all(|c| c == ' ' || (!c.is_control() && !c.is_whitespace()))))
+    Ok(Value::Bool(x.s.chars().all(|c| ud::is_in(&ud::PRINTABLE, c))))
 }
 fn str_isascii(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "isascii")?;
@@ -1498,7 +1691,10 @@ fn str_translate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         match r {
             None => out.push(c),
             Some(Value::None) => {}
-            Some(Value::Int(i)) => out.push(char::from_u32(i as u32).unwrap_or('\u{fffd}')),
+            Some(Value::Int(i)) => match u32::try_from(i).ok().filter(|&u| u < 0x110000) {
+                Some(u) => out.push(char::from_u32(u).unwrap_or('\u{fffd}')),
+                None => return Err(vm.value_error("character mapping must be in range(0x110000)")),
+            },
             Some(Value::Str(t)) => out.push_str(&t.s),
             Some(_) => return Err(vm.type_error("character mapping must return integer, None or str")),
         }

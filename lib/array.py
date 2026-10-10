@@ -202,6 +202,22 @@ class array:
     def __deepcopy__(self, memo):
         return array(self.typecode, self._a)
 
+    def tobytes(self):
+        import struct
+        if self.typecode in "uw":
+            return "".join(self._a).encode("utf-32-le")
+        return struct.pack("<%d%s" % (len(self._a), self.typecode), *self._a)
+
+    def frombytes(self, b):
+        import struct
+        b = bytes(b)
+        if len(b) % self.itemsize:
+            raise ValueError("bytes length not a multiple of item size")
+        if self.typecode in "uw":
+            self._a.extend(b.decode("utf-32-le"))
+        else:
+            self._a.extend(struct.unpack("<%d%s" % (len(b) // self.itemsize, self.typecode), b))
+
     def __reduce_ex__(self, proto):
         return (array, (self.typecode, list(self._a)))
 

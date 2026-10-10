@@ -1183,12 +1183,33 @@ fn bool_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 // -------------------------------------------------------------------------
 // float
 
+/// digit (['_'] digit)*, from i; the index after it
+fn digit_part(cs: &[u8], mut i: usize) -> Option<usize> {
+    if i >= cs.len() || !cs[i].is_ascii_digit() {
+        return None;
+    }
+    while i < cs.len() {
+        if cs[i].is_ascii_digit() {
+            i += 1;
+        } else if cs[i] == b'_' && i + 1 < cs.len() && cs[i + 1].is_ascii_digit() {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    Some(i)
+}
+
+/// float(text) as CPython parses it; None for a malformed string
 pub fn parse_float(s: &str) -> Option<f64> {
-    let t = s.trim();
-    let lower = t.to_ascii_lowercase();
-    let body = lower.trim_start_matches(['+', '-']);
-    let neg = lower.starts_with('-');
-    let special = match body {
+    let t = s.trim_matches(|c: char| c.is_whitespace());
+    let t: String = t.chars().map(|c| if c.is_ascii() { c } else if let Some(d) = crate::strmethods::decimal_value(c) { char::from_digit(d, 10).unwrap() } else { c }).collect();
+    let (neg, body) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, &t[..]),
+    };
+    let special = match body.to_ascii_lowercase().as_str() {
         "inf" | "infinity" => Some(f64::INFINITY),
         "nan" => Some(f64::NAN),
         _ => None,
@@ -1196,66 +1217,117 @@ pub fn parse_float(s: &str) -> Option<f64> {
     if let Some(v) = special {
         return Some(if neg { -v } else { v });
     }
-    if t.contains('_') {
-        // underscores only between digits
-        let cs: Vec<char> = t.chars().collect();
-        for (i, c) in cs.iter().enumerate() {
-            if *c == '_' && (i == 0 || i + 1 == cs.len() || !cs[i - 1].is_ascii_digit() || !cs[i + 1].is_ascii_digit()) {
-                return None;
+    let cs = body.as_bytes();
+    let mut i = match digit_part(cs, 0) {
+        Some(j) => {
+            if j < cs.len() && cs[j] == b'.' {
+                digit_part(cs, j + 1).unwrap_or(j + 1)
+            } else {
+                j
             }
         }
+        None if cs.first() == Some(&b'.') => digit_part(cs, 1)?,
+        None => return None,
+    };
+    if i < cs.len() && (cs[i] == b'e' || cs[i] == b'E') {
+        let mut j = i + 1;
+        if j < cs.len() && (cs[j] == b'+' || cs[j] == b'-') {
+            j += 1;
+        }
+        i = digit_part(cs, j)?;
     }
-    let clean: String = t.chars().filter(|c| *c != '_').collect();
-    if clean.is_empty() || clean.contains(|c: char| c.is_ascii_alphabetic() && c != 'e' && c != 'E') {
+    if i != cs.len() {
         return None;
     }
-    clean.parse::<f64>().ok()
+    let clean: String = body.chars().filter(|c| *c != '_').collect();
+    let v = clean.parse::<f64>().ok()?;
+    Some(if neg { -v } else { v })
 }
 
-fn float_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn float_text(vm: &mut Vm, text: &str, shown: String) -> PyResult<f64> {
+    parse_float(text).ok_or_else(|| vm.value_error(format!("could not convert string to float: {}", shown)))
+}
+
+/// float(x): the number x stands for
+pub fn float_of(vm: &mut Vm, x: &Value) -> PyResult<f64> {
+    match x {
+        Value::Float(f) => Ok(*f),
+        Value::Int(_) | Value::Bool(_) | Value::Big(_) => vm.to_f64(x),
+        Value::Str(s) => {
+            let r = crate::format::str_repr(&s.s);
+            float_text(vm, &s.s, r)
+        }
+        Value::Bytes(_) | Value::ByteArray(_) => {
+            let s = bytes_to_latin1(x);
+            let raw: Vec<u8> = s.chars().map(|c| c as u8).collect();
+            let r = crate::format::bytes_repr(&raw);
+            if !raw.is_ascii() {
+                return Err(vm.value_error(format!("could not convert string to float: {}", r)));
+            }
+            float_text(vm, &s, r)
+        }
+        _ => {
+            let b = vm.base_of(x);
+            if let Some(f) = vm.lookup_special(x, &vm.n.float_.clone()) {
+                let native = matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)));
+                if !(native && matches!(x, Value::Instance(_)) && !matches!(b, Value::Instance(_))) {
+                    let r = vm.call_vec(&f, vec![], &[])?;
+                    if let Value::Float(f) = r {
+                        return Ok(f);
+                    }
+                    if let (Value::Instance(_), Value::Float(f)) = (&r, vm.base_of(&r)) {
+                        let tn = vm.type_name(x);
+                        let rn = vm.type_name(&r);
+                        crate::tb::warn(vm, "DeprecationWarning", &format!("{}.__float__ returned non-float (type {}).  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.", tn, rn))?;
+                        return Ok(f);
+                    }
+                    let tn = vm.type_name(x);
+                    let rn = vm.type_name(&r);
+                    return Err(vm.type_error(format!("{}.__float__ returned non-float (type {})", tn, rn)));
+                }
+            }
+            if matches!(x, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
+                return float_of(vm, &b);
+            }
+            if let Some(f) = vm.lookup_special(x, &vm.n.index.clone()) {
+                let r = vm.call_vec(&f, vec![], &[])?;
+                return match vm.base_of(&r) {
+                    i @ (Value::Int(_) | Value::Big(_) | Value::Bool(_)) => vm.to_f64(&i),
+                    _ => {
+                        let rn = vm.type_name(&r);
+                        Err(vm.type_error(format!("__index__ returned non-int (type {})", rn)))
+                    }
+                };
+            }
+            if matches!(vm.type_name(x).as_str(), "memoryview" | "array") {
+                if let Some(f) = vm.getattr_opt(x, &ps("tobytes"))? {
+                    let by = vm.call_vec(&f, vec![], &[])?;
+                    return float_of(vm, &by);
+                }
+            }
+            let tn = vm.type_name(x);
+            Err(vm.type_error(format!("float() argument must be a string or a real number, not '{}'", tn)))
+        }
+    }
+}
+
+fn float_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    if !k.is_empty() {
+        let own_init = match &a[0] {
+            Value::Class(c) => matches!(c.lookup(&ps("__init__")), Some(Value::Func(_))),
+            _ => false,
+        };
+        if !own_init {
+            return Err(vm.type_error("float() takes no keyword arguments"));
+        }
+    }
+    if a.len() > 2 {
+        return Err(vm.type_error(format!("float expected at most 1 argument, got {}", a.len() - 1)));
+    }
     let v = match a.get(1) {
         None => Value::Float(0.0),
-        Some(x) => match x {
-            Value::Float(_) => x.clone(),
-            Value::Str(s) => match parse_float(&s.s) {
-                Some(f) => Value::Float(f),
-                None => {
-                    let r = crate::format::str_repr(&s.s);
-                    return Err(vm.value_error(format!("could not convert string to float: {}", r)));
-                }
-            },
-            Value::Bytes(_) | Value::ByteArray(_) => {
-                let s = bytes_to_latin1(x);
-                match parse_float(&s) {
-                    Some(f) => Value::Float(f),
-                    None => return Err(vm.value_error(format!("could not convert string to float: {}", crate::format::bytes_repr(s.as_bytes())))),
-                }
-            }
-            Value::Instance(_) => {
-                if let Some(f) = vm.lookup_special(x, &vm.n.float_.clone()) {
-                    let is_native = matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)));
-                    if !is_native {
-                        let r = vm.call_vec(&f, vec![], &[])?;
-                        return match r {
-                            Value::Float(_) => Ok(r),
-                            _ => {
-                                let tn = vm.type_name(&r);
-                                Err(vm.type_error(format!("{}.__float__ returned non-float (type {})", vm.type_name(x), tn)))
-                            }
-                        };
-                    }
-                }
-                match vm.base_of(x) {
-                    Value::Str(_) | Value::Bytes(_) => return float_new(vm, &[a[0].clone(), vm.base_of(x)], &[]),
-                    _ => Value::Float(vm.to_f64(x)?),
-                }
-            }
-            Value::Int(_) | Value::Bool(_) | Value::Big(_) => Value::Float(vm.to_f64(x)?),
-            _ => {
-                let tn = vm.type_name(x);
-                return Err(vm.type_error(format!("float() argument must be a string or a real number, not '{}'", tn)));
-            }
-        },
+        Some(x) => Value::Float(float_of(vm, x)?),
     };
     let t = vm.t.float.clone();
     Ok(wrap_new(vm, &a[0], &t, v))
@@ -1340,37 +1412,132 @@ fn float_hex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let exp = ((bits >> 52) & 0x7ff) as i64;
     let mant = bits & ((1 << 52) - 1);
     let (lead, e) = if exp == 0 { (0, -1022) } else { (1, exp - 1023) };
-    let mut hex = format!("{:013x}", mant);
-    while hex.len() > 1 && hex.ends_with('0') {
-        hex.pop();
-    }
+    let hex = format!("{:013x}", mant);
     Ok(Value::string(format!("{}0x{}.{}p{}{}", sign, lead, hex, if e >= 0 { "+" } else { "-" }, e.abs())))
 }
+/// x * 2**e for an x exactly representable at that scale
+fn ldexp_exact(mut x: f64, mut e: i64) -> f64 {
+    while e > 1000 {
+        x *= 2f64.powi(1000);
+        e -= 1000;
+    }
+    while e < -1000 {
+        x *= 2f64.powi(-1000);
+        e += 1000;
+    }
+    x * 2f64.powi(e as i32)
+}
+
+/// float.fromhex as CPython: correctly rounded, half to even
+pub fn parse_hex_float(s: &str) -> Result<f64, &'static str> {
+    const BAD: &str = "invalid hexadecimal floating-point string";
+    let t = s.trim_matches(|c: char| c.is_whitespace());
+    let (neg, t) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let sign = |v: f64| if neg { -v } else { v };
+    match t.to_ascii_lowercase().as_str() {
+        "inf" | "infinity" => return Ok(sign(f64::INFINITY)),
+        "nan" => return Ok(sign(f64::NAN)),
+        _ => {}
+    }
+    let t = if t.len() >= 2 && t.as_bytes()[..2].eq_ignore_ascii_case(b"0x") { &t[2..] } else { t };
+    let cs = t.as_bytes();
+    let mut i = 0;
+    let mut digits = String::new();
+    let mut frac = 0i64;
+    while i < cs.len() && cs[i].is_ascii_hexdigit() {
+        digits.push(cs[i] as char);
+        i += 1;
+    }
+    let int_len = digits.len();
+    if i < cs.len() && cs[i] == b'.' {
+        i += 1;
+        while i < cs.len() && cs[i].is_ascii_hexdigit() {
+            digits.push(cs[i] as char);
+            frac += 1;
+            i += 1;
+        }
+    }
+    if digits.is_empty() || (int_len == 0 && frac == 0) {
+        return Err(BAD);
+    }
+    let mut exp: i64 = 0;
+    if i < cs.len() && (cs[i] == b'p' || cs[i] == b'P') {
+        i += 1;
+        let mut eneg = false;
+        if i < cs.len() && (cs[i] == b'+' || cs[i] == b'-') {
+            eneg = cs[i] == b'-';
+            i += 1;
+        }
+        let start = i;
+        while i < cs.len() && cs[i].is_ascii_digit() {
+            // clamp: anything this large over- or underflows anyway
+            exp = (exp * 10 + (cs[i] - b'0') as i64).min(1 << 40);
+            i += 1;
+        }
+        if i == start {
+            return Err(BAD);
+        }
+        if eneg {
+            exp = -exp;
+        }
+    }
+    if i != cs.len() {
+        return Err(BAD);
+    }
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Ok(sign(0.0));
+    }
+    let m = BigInt::from_radix(digits, 16).ok_or(BAD)?;
+    let e = exp - 4 * frac;
+    let nbits = m.bit_length() as i64;
+    let top = nbits - 1 + e;
+    const TOO_LARGE: &str = "hexadecimal value too large to represent as a float";
+    if top >= 1024 {
+        return Err(TOO_LARGE);
+    }
+    if top < -1075 {
+        return Ok(sign(0.0));
+    }
+    let lsb = (top - 52).max(-1074);
+    let shift = lsb - e;
+    let q: u64 = if shift <= 0 {
+        m.shl((-shift) as usize).to_i64().unwrap() as u64
+    } else {
+        let sh = shift as usize;
+        let q = m.shr(sh);
+        let r = m.sub(&q.shl(sh));
+        let half = BigInt::from_i64(1).shl(sh - 1);
+        let mut q = q.to_i64().unwrap() as u64;
+        match r.cmp(&half) {
+            std::cmp::Ordering::Greater => q += 1,
+            std::cmp::Ordering::Equal if q & 1 == 1 => q += 1,
+            _ => {}
+        }
+        q
+    };
+    if q >= (1u64 << 53) && lsb + 53 >= 1024 {
+        return Err(TOO_LARGE);
+    }
+    Ok(sign(ldexp_exact(q as f64, lsb)))
+}
+
 fn float_fromhex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let s = as_pystr(vm, &a[1], "fromhex() argument")?;
-    let t = s.s.trim().to_ascii_lowercase();
-    let (neg, t) = match t.strip_prefix('-') {
-        Some(r) => (true, r.to_string()),
-        None => (false, t.trim_start_matches('+').to_string()),
+    let f = match parse_hex_float(&s.s) {
+        Ok(f) => f,
+        Err(m) if m.starts_with("hex") => return Err(vm.err("OverflowError", m)),
+        Err(m) => return Err(vm.value_error(m)),
     };
-    let t = t.trim_start_matches("0x");
-    let (mant, exp) = match t.split_once('p') {
-        Some((m, e)) => (m.to_string(), e.parse::<i32>().unwrap_or(0)),
-        None => (t.to_string(), 0),
-    };
-    let (ip, fp) = mant.split_once('.').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((mant.clone(), String::new()));
-    let mut v = 0f64;
-    for c in ip.chars() {
-        v = v * 16.0 + c.to_digit(16).ok_or_else(|| vm.value_error("invalid hexadecimal floating-point string"))? as f64;
+    match &a[0] {
+        Value::Class(c) if !Rc::ptr_eq(c, &vm.t.float) => vm.call_vec(&a[0], vec![Value::Float(f)], &[]),
+        _ => Ok(Value::Float(f)),
     }
-    let mut scale = 1.0 / 16.0;
-    for c in fp.chars() {
-        v += c.to_digit(16).ok_or_else(|| vm.value_error("invalid hexadecimal floating-point string"))? as f64 * scale;
-        scale /= 16.0;
-    }
-    let r = v * 2f64.powi(exp);
-    Ok(Value::Float(if neg { -r } else { r }))
 }
 
 fn complex_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {

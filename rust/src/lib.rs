@@ -19,6 +19,7 @@ pub mod compile;
 pub mod format;
 pub mod fs;
 pub mod lexer;
+pub mod mathmod;
 pub mod matching;
 pub mod methods;
 pub mod modules;
@@ -29,6 +30,7 @@ pub mod strmethods;
 pub mod value;
 pub mod vm;
 pub mod tb;
+pub mod unidata;
 
 use value::Value;
 

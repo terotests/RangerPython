@@ -421,6 +421,9 @@ pub fn unescape(s: &str, bytes: bool) -> Result<String, String> {
                 }
                 let hex: String = cs[i..i + len].iter().collect();
                 let v = u32::from_str_radix(&hex, 16).map_err(|_| format!("truncated \\{} escape", e))?;
+                if v > 0x10ffff {
+                    return Err("illegal Unicode character".into());
+                }
                 out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
                 i += len;
             }
@@ -442,19 +445,45 @@ pub fn unescape(s: &str, bytes: bool) -> Result<String, String> {
     Ok(out)
 }
 
+/// digit (['_'] digit)*, from i; the index after it
+fn digit_run(chars: &[char], mut i: usize, radix: u32, what: &str) -> Result<usize, String> {
+    let n = chars.len();
+    if i >= n || !chars[i].is_digit(radix) {
+        return Err(format!("invalid {} literal", what));
+    }
+    while i < n {
+        if chars[i].is_digit(radix) {
+            i += 1;
+        } else if chars[i] == '_' {
+            if i + 1 < n && chars[i + 1].is_digit(radix) {
+                i += 1;
+            } else {
+                return Err(format!("invalid {} literal", what));
+            }
+        } else {
+            break;
+        }
+    }
+    Ok(i)
+}
+
 fn read_number(chars: &[char], start: usize) -> Result<(Tok, usize), String> {
     let n = chars.len();
     let mut i = start;
     if chars[i] == '0' && i + 1 < n && "xXoObB".contains(chars[i + 1]) {
-        let radix = match chars[i + 1] {
-            'x' | 'X' => 16,
-            'o' | 'O' => 8,
-            _ => 2,
+        let (radix, what) = match chars[i + 1] {
+            'x' | 'X' => (16, "hexadecimal"),
+            'o' | 'O' => (8, "octal"),
+            _ => (2, "binary"),
         };
         i += 2;
-        let s0 = i;
-        while i < n && (chars[i].is_digit(radix) || chars[i] == '_') {
+        if i < n && chars[i] == '_' {
             i += 1;
+        }
+        let s0 = i;
+        i = digit_run(chars, i, radix, what)?;
+        if i < n && chars[i].is_ascii_alphanumeric() {
+            return Err(if chars[i].is_ascii_digit() { format!("invalid digit '{}' in {} literal", chars[i], what) } else { format!("invalid {} literal", what) });
         }
         let digits: String = chars[s0..i].iter().filter(|c| **c != '_').collect();
         return match i64::from_str_radix(&digits, radix) {
@@ -466,14 +495,16 @@ fn read_number(chars: &[char], start: usize) -> Result<(Tok, usize), String> {
         };
     }
     let mut is_float = false;
-    while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-        i += 1;
+    if chars[i] != '.' {
+        i = digit_run(chars, i, 10, "decimal")?;
     }
     if i < n && chars[i] == '.' {
         is_float = true;
         i += 1;
-        while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-            i += 1;
+        if i < n && chars[i].is_ascii_digit() {
+            i = digit_run(chars, i, 10, "decimal")?;
+        } else if i < n && chars[i] == '_' {
+            return Err("invalid decimal literal".into());
         }
     }
     if i < n && (chars[i] == 'e' || chars[i] == 'E') {
@@ -484,9 +515,9 @@ fn read_number(chars: &[char], start: usize) -> Result<(Tok, usize), String> {
         }
         if i < n && chars[i].is_ascii_digit() {
             is_float = true;
-            while i < n && chars[i].is_ascii_digit() {
-                i += 1;
-            }
+            i = digit_run(chars, i, 10, "decimal")?;
+        } else if i < n && chars[i] == '_' {
+            return Err("invalid decimal literal".into());
         } else {
             i = save;
         }

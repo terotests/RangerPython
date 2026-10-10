@@ -132,11 +132,13 @@ pub struct NativeFn {
     pub data: Value,
     /// a method of a type binds to its instance; a module function does not
     pub bind: bool,
+    /// the positional arguments a method takes besides self, when checked
+    pub arity: Option<(u8, u8)>,
 }
 
 impl NativeFn {
     pub fn new(name: &'static str, f: NativeFnPtr, data: Value) -> NativeFn {
-        NativeFn { name, f, data, bind: true }
+        NativeFn { name, f, data, bind: true, arity: None }
     }
 }
 
@@ -374,6 +376,9 @@ impl Dict {
             if ix >= 0 {
                 if let Some(e) = &self.entries[ix as usize] {
                     if e.hash == hash {
+                        if e.key.is(key) {
+                            return Lookup::Found(ix as usize);
+                        }
                         match fast_eq(&e.key, key) {
                             Some(true) => return Lookup::Found(ix as usize),
                             Some(false) => {}
@@ -591,7 +596,8 @@ pub fn hash_float(f: f64) -> u64 {
     // CPython's _Py_HashDouble: the value as a fraction mod 2^61-1, so equal
     // ints, floats and Fractions hash alike
     if f.is_nan() {
-        return 0;
+        // as object.__hash__: by identity, which for a float is its bits
+        return f.to_bits() >> 4;
     }
     if f.is_infinite() {
         return if f > 0.0 { 314159 } else { (-314159i64) as u64 };
@@ -746,7 +752,7 @@ pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
                 return Some(false);
             }
             for (p, q) in x.iter().zip(y.iter()) {
-                if !fast_eq(p, q)? {
+                if !p.is(q) && !fast_eq(p, q)? {
                     return Some(false);
                 }
             }

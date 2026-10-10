@@ -174,7 +174,8 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
                 let p = p.max(1);
                 let e = sci(x, p - 1);
                 let exp: i32 = e[e.find('e').unwrap() + 1..].parse().unwrap();
-                if exp >= -4 && exp < p as i32 {
+                // an integral result keeps its ".0", so it turns exponential one digit sooner
+                if exp >= -4 && exp < p as i32 - 1 {
                     let s = strip_zeros(&fixed(x, (p as i32 - 1 - exp).max(0) as usize));
                     if s.contains('.') || s.contains("inf") || s.contains("nan") {
                         s
@@ -207,10 +208,11 @@ pub fn str_repr(s: &str) -> String {
                 out.push(c);
             }
             c if (c as u32) < 0x20 || (c as u32) == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c if (0x80..0xa0).contains(&(c as u32)) || c == '\u{ad}' => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c if is_unprintable(c) => {
+            c if !c.is_ascii() && !crate::unidata::is_in(&crate::unidata::PRINTABLE, c) => {
                 let n = c as u32;
-                if n <= 0xffff {
+                if n <= 0xff {
+                    out.push_str(&format!("\\x{:02x}", n))
+                } else if n <= 0xffff {
                     out.push_str(&format!("\\u{:04x}", n))
                 } else {
                     out.push_str(&format!("\\U{:08x}", n))
@@ -221,12 +223,6 @@ pub fn str_repr(s: &str) -> String {
     }
     out.push(q);
     out
-}
-
-fn is_unprintable(c: char) -> bool {
-    let n = c as u32;
-    matches!(n, 0x2028 | 0x2029 | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2064 | 0xfeff | 0xd800..=0xdfff | 0xe000..=0xf8ff | 0xfff9..=0xfffb | 0xe0000..=0xe007f | 0xf0000..=0x10ffff)
-        || (0x1680 == n || (0x2000..=0x200a).contains(&n) || n == 0x3000 || n == 0x205f || n == 0x202f || n == 0xa0)
 }
 
 pub fn bytes_repr(b: &[u8]) -> String {
@@ -573,6 +569,7 @@ pub fn str_builtin(vm: &mut Vm, v: &Value) -> PyResult<String> {
 #[derive(Default, Debug)]
 pub struct Spec {
     pub fill: char,
+    pub fill_set: bool,
     pub align: Option<char>,
     pub sign: Option<char>,
     pub z: bool,
@@ -584,6 +581,9 @@ pub struct Spec {
     pub ty: Option<char>,
 }
 
+/// the widest field formatting accepts, past what memory could hold
+const MAX_WIDTH: usize = if usize::BITS > 32 { (1u64 << 40) as usize } else { usize::MAX / 2 };
+
 pub fn parse_spec(s: &str) -> Option<Spec> {
     let c: Vec<char> = s.chars().collect();
     let mut i = 0;
@@ -591,6 +591,7 @@ pub fn parse_spec(s: &str) -> Option<Spec> {
     let is_align = |ch: char| matches!(ch, '<' | '>' | '^' | '=');
     if c.len() >= 2 && is_align(c[1]) {
         sp.fill = c[0];
+        sp.fill_set = true;
         sp.align = Some(c[1]);
         i = 2;
     } else if !c.is_empty() && is_align(c[0]) {
@@ -621,7 +622,7 @@ pub fn parse_spec(s: &str) -> Option<Spec> {
         sp.width = c[st..i].iter().collect::<String>().parse().ok()?;
         // CPython's widths are Py_ssize_t; past what memory could hold
         // the answer is an error either way
-        if sp.width > 1 << 40 {
+        if sp.width > MAX_WIDTH {
             return None;
         }
     }
@@ -678,7 +679,13 @@ fn pad(sp: &Spec, sign: &str, body: &str, numeric: bool, default_left: bool) -> 
         return format!("{}{}", sign, body);
     }
     let n = sp.width - len;
-    let (fill, align) = if sp.zero && sp.align.is_none() && numeric { ('0', '=') } else { (sp.fill, sp.align.unwrap_or(if default_left { '<' } else { '>' })) };
+    // the 0 flag fills with zeros unless a fill is given, after the sign for numbers
+    let default_align = if default_left { '<' } else { '>' };
+    let (fill, align) = if sp.zero && !sp.fill_set {
+        ('0', sp.align.unwrap_or(if numeric { '=' } else { default_align }))
+    } else {
+        (sp.fill, sp.align.unwrap_or(default_align))
+    };
     let f = |k: usize| std::iter::repeat(fill).take(k).collect::<String>();
     match align {
         '<' => format!("{}{}{}", sign, body, f(n)),
@@ -826,8 +833,14 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
                     return Err(vm.value_error(format!("Unknown format code '{}' for object of type 'str'", t)));
                 }
             }
+            if sp.sign == Some(' ') {
+                return Err(vm.value_error("Space not allowed in string format specifier"));
+            }
             if sp.sign.is_some() {
                 return Err(vm.value_error("Sign not allowed in string format specifier"));
+            }
+            if sp.alt {
+                return Err(vm.value_error("Alternate form (#) not allowed in string format specifier"));
             }
             if sp.align == Some('=') {
                 return Err(vm.value_error("'=' alignment not allowed in string format specifier"));
@@ -841,6 +854,9 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
         Value::Complex(c) => {
             let (re, im) = (c.0, c.1);
             let ty = sp.ty.unwrap_or('\0');
+            if !matches!(ty, 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'n' | '\0') {
+                return Err(vm.value_error(format!("Unknown format code '{}' for object of type 'complex'", ty)));
+            }
             if ty == '\0' && sp.prec.is_none() {
                 let body = complex_repr(re, im);
                 return Ok(pad(&sp, "", &body, false, false));
@@ -949,7 +965,7 @@ pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String
             if i > st {
                 let w: Option<usize> = c[st..i].iter().collect::<String>().parse().ok();
                 match w {
-                    Some(w) if w <= 1 << 40 => sp.width = w,
+                    Some(w) if w <= MAX_WIDTH => sp.width = w,
                     _ => return Err(vm.value_error("width too big")),
                 }
             }
@@ -1023,6 +1039,10 @@ pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String
                     }
                     other => match crate::ops::big_of(&vm.base_of(other)) {
                         Some(b) => b,
+                        None if ["__int__", "__index__", "__float__"].iter().any(|d| vm.lookup_special(other, &crate::builtins::ps(d)).is_some()) => {
+                            let r = crate::methods::to_int(vm, other)?;
+                            crate::ops::big_of(&r).unwrap()
+                        }
                         None => {
                             let tn = vm.type_name(other);
                             return Err(vm.type_error(format!("%{} format: a real number is required, not {}", conv, tn)));
@@ -1040,10 +1060,19 @@ pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String
             'x' | 'X' | 'o' => {
                 let n = match crate::ops::big_of(&vm.base_of(&arg)) {
                     Some(b) => b,
-                    None => {
-                        let tn = vm.type_name(&arg);
-                        return Err(vm.type_error(format!("%{} format: an integer is required, not {}", conv, tn)));
-                    }
+                    None => match vm.lookup_special(&arg, &vm.n.index.clone()) {
+                        Some(f) => {
+                            let r = vm.call_vec(&f, vec![], &[])?;
+                            match crate::ops::big_of(&vm.base_of(&r)) {
+                                Some(b) => b,
+                                None => return Err(vm.type_error("__index__ returned non-int")),
+                            }
+                        }
+                        None => {
+                            let tn = vm.type_name(&arg);
+                            return Err(vm.type_error(format!("%{} format: an integer is required, not {}", conv, tn)));
+                        }
+                    },
                 };
                 let mut digits = n.abs().to_radix(if conv == 'o' { 8 } else { 16 });
                 if conv == 'X' {
@@ -1077,13 +1106,20 @@ pub fn percent_format(vm: &mut Vm, fmt: &Value, args: &Value) -> PyResult<String
                 pad(&sp, sign_str(&sp, x.is_sign_negative() && !x.is_nan()), &body, true, false)
             }
             'c' => {
-                let ch = match &arg {
-                    Value::Str(s) if s.char_len() == 1 => s.s.clone(),
-                    Value::Int(n) => match char::from_u32(*n as u32) {
+                let code = match &arg {
+                    Value::Str(_) => None,
+                    Value::Int(n) => Some(*n),
+                    Value::Big(_) => Some(-1),
+                    other if vm.lookup_special(other, &vm.n.index.clone()).is_some() => Some(vm.to_index(other)?),
+                    _ => None,
+                };
+                let ch = match (&arg, code) {
+                    (Value::Str(s), _) if s.char_len() == 1 => s.s.clone(),
+                    (_, Some(n)) => match u32::try_from(n).ok().and_then(char::from_u32) {
                         Some(c) => c.to_string(),
                         None => return Err(vm.err("OverflowError", "%c arg not in range(0x110000)")),
                     },
-                    _ => return Err(vm.type_error("%c requires an int or a unicode character")),
+                    _ => return Err(vm.type_error("%c requires int or char")),
                 };
                 pad(&sp, "", &ch, false, false)
             }
