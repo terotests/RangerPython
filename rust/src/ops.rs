@@ -510,6 +510,19 @@ impl Vm {
 
     pub fn setattr(&mut self, obj: &Value, name: &Rc<PyStr>, v: Value) -> PyResult<()> {
         match obj {
+            Value::Gen(g) if matches!(&*name.s, "__name__" | "__qualname__") => {
+                let s = match &v {
+                    Value::Str(s) => s.clone(),
+                    _ => return Err(self.type_error(format!("{} must be set to a string object", name.s))),
+                };
+                let mut g = g.borrow_mut();
+                if &*name.s == "__name__" {
+                    g.name = s;
+                } else {
+                    g.qualname = s;
+                }
+                Ok(())
+            }
             Value::Instance(inst) => {
                 let cls = inst.class.borrow().clone();
                 if cls.has_setattr.get() {
@@ -735,6 +748,7 @@ impl Vm {
 
     pub fn delattr(&mut self, obj: &Value, name: &Rc<PyStr>) -> PyResult<()> {
         match obj {
+            Value::Gen(_) if matches!(&*name.s, "__name__" | "__qualname__") => Err(self.type_error(format!("{} must be set to a string object", name.s))),
             Value::Instance(inst) => {
                 let cls = inst.class.borrow().clone();
                 if cls.has_setattr.get() {

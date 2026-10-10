@@ -459,12 +459,36 @@ def getfullargspec(func):
     return (args, varargs, varkw, func.__defaults__, kwonly, func.__kwdefaults__, getattr(func, "__annotations__", {}))
 
 
-def getgeneratorstate(gen):
-    if gen.gi_running:
-        return "GEN_RUNNING"
-    if gen.gi_frame is None:
-        return "GEN_CLOSED"
-    return "GEN_CREATED"
+GEN_CREATED = 'GEN_CREATED'
+GEN_RUNNING = 'GEN_RUNNING'
+GEN_SUSPENDED = 'GEN_SUSPENDED'
+GEN_CLOSED = 'GEN_CLOSED'
+
+
+def getgeneratorstate(generator):
+    if generator.gi_running:
+        return GEN_RUNNING
+    if generator.gi_suspended:
+        return GEN_SUSPENDED
+    if generator.gi_frame is None:
+        return GEN_CLOSED
+    return GEN_CREATED
+
+
+CORO_CREATED = 'CORO_CREATED'
+CORO_RUNNING = 'CORO_RUNNING'
+CORO_SUSPENDED = 'CORO_SUSPENDED'
+CORO_CLOSED = 'CORO_CLOSED'
+
+
+def getcoroutinestate(coroutine):
+    if coroutine.cr_running:
+        return CORO_RUNNING
+    if coroutine.cr_suspended:
+        return CORO_SUSPENDED
+    if coroutine.cr_frame is None:
+        return CORO_CLOSED
+    return CORO_CREATED
 
 
 def getattr_static_safe(obj, attr):

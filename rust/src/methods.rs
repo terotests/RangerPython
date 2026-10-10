@@ -740,6 +740,10 @@ fn object_reduce_ex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         return Err(vm.type_error(format!("object.__reduce_ex__() takes exactly one argument ({} given)", a.len().saturating_sub(1))));
     }
     let proto = vm.to_index(&a[1])?;
+    if let Value::Gen(g) = &a[0] {
+        let tn = if g.borrow().coroutine { "coroutine" } else { "generator" };
+        return Err(vm.type_error(format!("cannot pickle '{}' object", tn)));
+    }
     reduce_helper(vm, "reduce_ex", vec![a[0].clone(), Value::Int(proto)])
 }
 
@@ -2501,7 +2505,15 @@ fn gen_throw(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             Some(v) => vec![v.clone()],
         };
         let c = c.clone();
-        e = vm.call_vec(&Value::Class(c), args, &[])?;
+        // an error making the exception is thrown into the generator instead
+        e = match vm.call_vec(&Value::Class(c.clone()), args, &[]) {
+            Ok(v) if vm.class_of(&v).is_subclass(&vm.t.base_exception) => v,
+            Ok(v) => {
+                let tn = vm.type_name(&v);
+                vm.type_error(format!("calling {} should have returned an instance of BaseException, not {}", crate::format::class_repr(&c), tn)).value
+            }
+            Err(x) => x.value,
+        };
     }
     let e = vm.make_raisable(e)?;
     match vm.resume(&g, Value::None, Some(e))? {
@@ -2528,7 +2540,7 @@ fn gen_close(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             g.borrow_mut().frame = None;
             Err(vm.err("RuntimeError", "generator ignored GeneratorExit"))
         }
-        Ok(None) => Ok(Value::None),
+        Ok(None) => Ok(vm.last_return.take().unwrap_or(Value::None)),
         Err(e) if vm.exc_is(&e, "GeneratorExit") || vm.exc_is(&e, "StopIteration") => {
             g.borrow_mut().frame = None;
             Ok(Value::None)

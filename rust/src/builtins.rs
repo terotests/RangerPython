@@ -944,15 +944,28 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
                 _ => None,
             },
         },
+        Value::Gen(g) if matches!(name, "gi_frame" | "cr_frame" | "ag_frame") => {
+            let g = g.borrow();
+            match &g.frame {
+                Some(f) => {
+                    let line = f.code.lines.get(f.ip.saturating_sub(1)).copied().unwrap_or(f.code.firstline);
+                    Some(vm.frame_obj(f, line))
+                }
+                None => Some(Value::None),
+            }
+        }
         Value::Gen(g) => {
             let g = g.borrow();
             match name {
                 "__name__" => Some(Value::Str(g.name.clone())),
                 "__qualname__" => Some(Value::Str(g.qualname.clone())),
                 "gi_running" | "cr_running" => Some(Value::Bool(g.running)),
-                "gi_frame" | "cr_frame" => Some(if g.frame.is_some() { Value::Bool(true) } else { Value::None }),
                 "gi_code" | "cr_code" => g.frame.as_ref().map(|f| Value::Code(f.code.clone())),
-                "gi_yieldfrom" => Some(Value::None),
+                "gi_yieldfrom" | "cr_await" => Some(match &g.frame {
+                    Some(f) if !g.running && matches!(f.code.ops.get(f.ip), Some(crate::code::Op::YieldFrom)) => f.stack.last().cloned().unwrap_or(Value::None),
+                    _ => Value::None,
+                }),
+                "gi_suspended" | "cr_suspended" => Some(Value::Bool(g.started && !g.running && g.frame.is_some())),
                 _ => None,
             }
         }
