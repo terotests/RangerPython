@@ -261,7 +261,28 @@ fn decode_utf8(vm: &mut Vm, b: &[u8], errors: &str) -> PyResult<String> {
     }
 }
 
+/// In development mode (-X dev) the encoding and the error handler of an
+/// encode or decode must exist even when no character needs them, as in
+/// CPython's unicode_check_encoding_errors.
+fn check_encoding_errors(vm: &mut Vm, enc: &str, errors: &str) -> PyResult<()> {
+    if !vm.host.dev_mode {
+        return Ok(());
+    }
+    let g = vm.main_globals.clone();
+    let m = vm.import("codecs", &Value::None, 0, &g)?;
+    if enc != "utf-8" && enc != "utf8" {
+        let f = vm.getattr(&m, &ps("lookup"))?;
+        vm.call_vec(&f, vec![Value::str(enc)], &[])?;
+    }
+    if errors != "strict" {
+        let f = vm.getattr(&m, &ps("lookup_error"))?;
+        vm.call_vec(&f, vec![Value::str(errors)], &[])?;
+    }
+    Ok(())
+}
+
 fn decode_bytes(vm: &mut Vm, b: &[u8], enc: &str, errors: &str) -> PyResult<String> {
+    check_encoding_errors(vm, enc, errors)?;
     let enc = enc.to_ascii_lowercase().replace('_', "-");
     match enc.as_str() {
         "utf-8" | "utf8" | "u8" | "utf-8-sig" => {
@@ -532,6 +553,7 @@ fn encode_replacement(errors: &str, c: char, ascii_q: bool) -> Option<String> {
 }
 
 pub fn encode_str(vm: &mut Vm, st: &str, enc: &str, errors: &str) -> PyResult<Vec<u8>> {
+    check_encoding_errors(vm, enc, errors)?;
     let e = enc.to_ascii_lowercase().replace('_', "-");
     match e.as_str() {
         "utf-8" | "utf8" | "u8" => Ok(st.as_bytes().to_vec()),

@@ -25,6 +25,7 @@ pub mod methods;
 pub mod modules;
 pub mod ops;
 pub mod parser;
+pub mod process;
 pub mod range;
 pub mod stdlib;
 pub mod strmethods;
@@ -68,6 +69,8 @@ pub struct RunResult {
     pub error_line: u32,
     /// CPython style, last line = error
     pub traceback: String,
+    /// the status a process running the script exits with (SystemExit's code)
+    pub exit_code: i32,
 }
 
 pub struct Runtime {
@@ -78,6 +81,8 @@ pub struct Runtime {
     pub echo: bool,
     /// folders imports look in after /
     pub search_path: Vec<String>,
+    /// how the interpreter was started (sys.executable, sys.flags)
+    pub host: process::Host,
 }
 
 impl Default for Runtime {
@@ -88,7 +93,7 @@ impl Default for Runtime {
 
 impl Runtime {
     pub fn new() -> Runtime {
-        Runtime { fs: fs::Fs::new(), argv: vec![], max_steps: 0, echo: false, search_path: vec![] }
+        Runtime { fs: fs::Fs::new(), argv: vec![], max_steps: 0, echo: false, search_path: vec![], host: Default::default() }
     }
 
     pub fn write_file(&mut self, path: &str, text: &str) {
@@ -115,6 +120,7 @@ impl Runtime {
         vm.max_steps = self.max_steps;
         vm.echo = self.echo;
         vm.search_path = self.search_path.clone();
+        vm.host = self.host.clone();
         let globals = vm.main_globals.clone();
         globals.borrow_mut().set_s("__file__", Value::str(filename));
         let r = vm.run_source(source, filename, globals);
@@ -126,10 +132,12 @@ impl Runtime {
             error: String::new(),
             error_line: 0,
             traceback: String::new(),
+            exit_code: 0,
         };
         if let Err(e) = r {
             report(&mut vm, &e.value, &mut res);
         }
+        vm.finalize();
         res.stdout = std::mem::take(&mut vm.out);
         res.stderr = std::mem::take(&mut vm.err_out);
         self.fs = std::mem::replace(&mut vm.fs, fs::Fs::new());
@@ -137,25 +145,60 @@ impl Runtime {
     }
 }
 
+/// the source line of a SyntaxError and the carets under the bad part, as
+/// the traceback module shows them
+fn syntax_error_lines(text: &str, at: [Option<Value>; 4]) -> Vec<String> {
+    let int = |v: &Option<Value>| match v {
+        Some(Value::Int(n)) => Some(*n),
+        _ => None,
+    };
+    let [lineno, end_lineno, offset, end_offset] = at.each_ref().map(int);
+    let rtext = text.trim_end_matches('\n');
+    let ltext = rtext.trim_start_matches([' ', '\n', '\x0c']);
+    let (rlen, tlen) = (rtext.chars().count() as i64, text.chars().count() as i64);
+    let spaces = rlen - ltext.chars().count() as i64;
+    let mut lines = vec![format!("    {}", ltext)];
+    let Some(mut offset) = offset else { return lines };
+    let mut end = if lineno == end_lineno { end_offset.filter(|e| *e != 0).unwrap_or(offset) } else { rlen + 1 };
+    if tlen > 0 && offset > tlen {
+        offset = rlen + 1;
+    }
+    if tlen > 0 && end > tlen {
+        end = rlen + 1;
+    }
+    if offset >= end || end < 0 {
+        end = offset + 1;
+    }
+    let (col, end_col) = (offset - 1 - spaces, end - 1 - spaces);
+    if col >= 0 {
+        let pad: String = ltext.chars().take(col as usize).map(|c| if c.is_whitespace() { c } else { ' ' }).collect();
+        lines.push(format!("    {}{}", pad, "^".repeat((end_col - col).max(0) as usize)));
+    }
+    lines
+}
+
 fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
     let cls = vm.class_of(exc);
     if cls.is_subclass(&vm.exc_class("SystemExit")) {
-        let args = vm.exc_args(exc);
-        match args.first() {
-            None | Some(Value::None) => return,
-            Some(Value::Int(0)) => return,
-            Some(Value::Int(_)) | Some(Value::Bool(_)) => {}
-            Some(v) => {
-                let s = vm.str_of(v).unwrap_or_default();
+        let code = vm.getattr(exc, &builtins::ps("code")).unwrap_or(Value::None);
+        res.exit_code = match code {
+            Value::None => return,
+            Value::Int(0) | Value::Bool(false) => return,
+            Value::Int(n) => n as i32,
+            Value::Bool(true) => 1,
+            v => {
+                let s = vm.str_of(&v).unwrap_or_default();
                 vm.write_err(&s);
                 vm.write_err("\n");
+                1
             }
-        }
+        };
         res.ok = false;
         res.error_type = "SystemExit".into();
         return;
     }
     res.ok = false;
+    res.exit_code = 1;
     let mut lines = vec!["Traceback (most recent call last):".to_string()];
     let tb = vm.getattr(exc, &builtins::ps("__traceback__")).unwrap_or(Value::None);
     let mut entries = vm.tb_entries(&tb);
@@ -180,11 +223,19 @@ fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
     if run >= 3 {
         lines.push(format!("  [Previous line repeated {} more time{}]", run - 2, if run - 2 == 1 { "" } else { "s" }));
     }
+    // an error in compiling the script has no traceback to show
+    if entries.is_empty() {
+        lines.clear();
+    }
     if cls.is_subclass(&vm.exc_class("SyntaxError")) {
         let attr = |vm: &mut vm::Vm, n: &str| vm.getattr(exc, &builtins::ps(n)).ok();
         if let (Some(Value::Str(f)), Some(Value::Int(l))) = (attr(vm, "filename"), attr(vm, "lineno")) {
             lines.push(format!("  File \"{}\", line {}", f.s, l));
             entries.push((f.s.clone(), l, String::new()));
+        }
+        if let Some(Value::Str(t)) = attr(vm, "text") {
+            let at = ["lineno", "end_lineno", "offset", "end_offset"].map(|n| attr(vm, n));
+            lines.extend(syntax_error_lines(&t.s, at));
         }
     }
     res.error_line = entries.last().map(|e| e.1 as u32).unwrap_or(0);

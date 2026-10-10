@@ -44,6 +44,7 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_rpyweak" => weak_module(),
         "_rpygc" => gc_module(),
         "_rpyitertools" => itertools_module(),
+        "_rpyprocess" => crate::process::module(),
         _ => return Ok(None),
     }))
 }
@@ -690,7 +691,33 @@ fn sys_structseqs(vm: &mut Vm, d: &Rc<RefCell<Dict>>) {
         (
             "flags",
             vec!["debug", "inspect", "interactive", "optimize", "dont_write_bytecode", "no_user_site", "no_site", "ignore_environment", "verbose", "bytes_warning", "quiet", "hash_randomization", "isolated", "dev_mode", "utf8_mode", "warn_default_encoding", "safe_path", "int_max_str_digits", "gil", "thread_inherit_context", "context_aware_warnings"],
-            vec![i(0), i(0), i(0), i(0), i(1), i(1), i(0), i(0), i(0), i(0), i(0), i(1), i(0), Value::Bool(false), i(1), i(0), Value::Bool(false), i(4300), i(1), i(0), i(0)],
+            {
+                let h = &vm.host;
+                let b = |x: bool| i(x as i64);
+                vec![
+                    i(0),
+                    b(h.inspect),
+                    b(h.inspect),
+                    i(h.optimize),
+                    i(1),
+                    i(1),
+                    i(0),
+                    b(h.ignore_environment),
+                    i(h.verbose),
+                    i(h.bytes_warning),
+                    b(h.quiet),
+                    i(1),
+                    b(h.isolated),
+                    Value::Bool(h.dev_mode),
+                    i(1),
+                    i(0),
+                    Value::Bool(h.safe_path),
+                    i(4300),
+                    i(1),
+                    i(0),
+                    i(0),
+                ]
+            },
         ),
     ];
     for (name, fields, values) in specs {
@@ -725,11 +752,17 @@ fn sys_module(vm: &mut Vm) -> Value {
         b.set_s("hexversion", Value::Int(0x030d00f0));
         b.set_s("platform", Value::str("linux"));
         b.set_s("byteorder", Value::str("little"));
+        // repr(float) is the shortest string that reads back the same
+        b.set_s("float_repr_style", Value::str("short"));
         b.set_s("maxsize", Value::Int(i64::MAX));
         b.set_s("maxunicode", Value::Int(0x10ffff));
-        // repr(float) is the shortest string that round-trips
-        b.set_s("float_repr_style", Value::str("short"));
-        b.set_s("executable", Value::str(""));
+        b.set_s("executable", Value::str(&vm.host.executable));
+        b.set_s("warnoptions", Value::list(vm.host.warnoptions.iter().map(|w| Value::str(w)).collect()));
+        let mut xo = Dict::new();
+        for (k, v) in &vm.host.xoptions {
+            xo.set_s(k, v.as_deref().map(Value::str).unwrap_or(Value::Bool(true)));
+        }
+        b.set_s("_xoptions", Value::dict(xo));
         for k in ["prefix", "base_prefix", "exec_prefix", "base_exec_prefix"] {
             b.set_s(k, Value::str("/"));
         }
@@ -1096,8 +1129,17 @@ fn os_module(vm: &mut Vm) -> PyResult<Value> {
         b.set_s("devnull", Value::str("/dev/null"));
         b.set_s("name", Value::str("posix"));
         let mut env = Dict::new();
-        env.set_s("HOME", Value::str("/"));
-        env.set_s("PATH", Value::str("/bin"));
+        match &vm.host.environ {
+            Some(vars) => {
+                for (k, v) in vars {
+                    env.set_s(k, Value::str(v));
+                }
+            }
+            None => {
+                env.set_s("HOME", Value::str("/"));
+                env.set_s("PATH", Value::str("/bin"));
+            }
+        }
         b.set_s("environ", Value::dict(env));
     }
     put_fns(
@@ -1119,6 +1161,7 @@ fn os_module(vm: &mut Vm) -> PyResult<Value> {
             ("os.urandom", os_urandom),
             ("os.cpu_count", os_cpu_count),
             ("os.getpid", os_getpid),
+            ("os.get_inheritable", os_get_inheritable),
             ("os.fspath", os_fspath),
             ("os.stat", os_stat),
             ("os.scandir", os_listdir),
@@ -1234,12 +1277,12 @@ fn os_rename(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
 }
 fn os_getenv(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    let k = path_arg(vm, a, 0)?;
-    Ok(match k.as_str() {
-        "HOME" => Value::str("/"),
-        "PATH" => Value::str("/bin"),
-        _ => a.get(1).cloned().unwrap_or(Value::None),
-    })
+    // os.environ.get(key, default)
+    let key = path_arg(vm, a, 0)?;
+    let os = vm.import("os", &Value::None, 0, &vm.main_globals.clone())?;
+    let env = vm.getattr(&os, &ps("environ"))?;
+    let get = vm.getattr(&env, &ps("get"))?;
+    vm.call_vec(&get, vec![Value::string(key), a.get(1).cloned().unwrap_or(Value::None)], &[])
 }
 fn os_walk(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let top = path_arg(vm, a, 0)?;
@@ -1284,6 +1327,18 @@ fn os_cpu_count(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 fn os_getpid(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(1))
+}
+/// Files are not inherited (PEP 446): a child gets the sandbox's files, not
+/// the parent's open ones; only the standard streams are its own too.
+fn os_get_inheritable(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let fd = vm.to_index(&a[0])?;
+    if fd < 0 {
+        let cls = vm.exc_class("OSError");
+        let e = vm.new_exc(&cls, vec![Value::Int(9), Value::str("Bad file descriptor")]);
+        return Err(Exc { value: e });
+    }
+    Ok(Value::Bool(fd <= 2))
 }
 fn os_fspath(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::string(path_arg(vm, a, 0)?))

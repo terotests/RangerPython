@@ -391,6 +391,70 @@ class Signature:
         return self._bind(args, kwargs, True)
 
 
+def _split_params(text):
+    # the top-level comma-separated parts of "(a, b=(1, 2), /)"
+    parts, depth, quote, cur = [], 0, None, ""
+    for c in text:
+        if quote:
+            cur += c
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+            cur += c
+        elif c in "([{":
+            depth += 1
+            cur += c
+        elif c in ")]}":
+            depth -= 1
+            cur += c
+        elif c == "," and depth == 0:
+            parts.append(cur.strip())
+            cur = ""
+        else:
+            cur += c
+    if cur.strip():
+        parts.append(cur.strip())
+    return parts
+
+
+def _signature_fromstr(text, bound):
+    # as CPython's _signature_fromstr: "$self", "$module" or "$type" names
+    # the object a built-in is bound to, dropped once it is bound
+    text = text.strip()
+    if text.startswith("(") and text.endswith(")"):
+        text = text[1:-1]
+    params = []
+    kind = 1
+    for part in _split_params(text):
+        if part == "/":
+            params = [p.replace(kind=0) if p.kind == 1 else p for p in params]
+            continue
+        if part == "*":
+            kind = 3
+            continue
+        if part.startswith("$"):
+            if bound or part == "$module":
+                continue
+            part = part[1:]
+        name, eq, default = part.partition("=")
+        name = name.strip()
+        p_kind = kind
+        if name.startswith("**"):
+            name, p_kind = name[2:], 4
+        elif name.startswith("*"):
+            name, p_kind = name[1:], 2
+            kind = 3
+        value = _empty
+        if eq:
+            try:
+                value = eval(default.strip(), {"__builtins__": {}}, {})
+            except Exception:
+                value = default.strip()
+        params.append(Parameter(name, p_kind, default=value))
+    return Signature(params)
+
+
 def signature(obj, *, follow_wrapped=True, globals=None, locals=None, eval_str=False):
     if not callable(obj):
         raise TypeError("%r is not a callable object" % (obj,))
@@ -399,6 +463,15 @@ def signature(obj, *, follow_wrapped=True, globals=None, locals=None, eval_str=F
     sig = getattr(obj, "__signature__", None)
     if sig is not None:
         return sig
+    # a built-in callable describes itself in __text_signature__
+    text = None
+    if ismethod(obj) and not isfunction(obj.__func__):
+        text, bound = getattr(obj.__func__, "__text_signature__", None), True
+    elif not isfunction(obj) and not isclass(obj) and not ismethod(obj):
+        text = getattr(obj, "__text_signature__", None)
+        bound = getattr(obj, "__self__", None) is not None
+    if isinstance(text, str):
+        return _signature_fromstr(text, bound)
     skip = 0
     if ismethod(obj):
         obj = obj.__func__

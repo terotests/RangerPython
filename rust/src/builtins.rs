@@ -855,14 +855,16 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
             "__name__" | "__qualname__" => Some(Value::str(n.name.rsplit('.').next().unwrap_or(n.name))),
             "__module__" => Some(Value::str(native_module_name(n.name))),
             "__self__" => Some(Value::None),
-            "__doc__" => Some(Value::None),
-            "__text_signature__" => Some(Value::None),
+            // a method of a type is a descriptor
+            "__get__" if n.bind => Some(Value::Method(Rc::new((obj.clone(), native("wrapper_descriptor.__get__", descr_get))))),
+            "__doc__" => Some(builtin_doc(n.name).map(|(_, d)| Value::str(d)).unwrap_or(Value::None)),
+            "__text_signature__" => Some(builtin_doc(n.name).and_then(|(s, _)| (!s.is_empty()).then(|| Value::str(s))).unwrap_or(Value::None)),
             _ => None,
         },
         Value::Method(m) => match name {
             "__self__" => Some(m.0.clone()),
             "__func__" => Some(m.1.clone()),
-            "__name__" | "__qualname__" | "__doc__" | "__module__" | "__wrapped__" | "__defaults__" | "__code__" | "__annotations__" | "__dict__" => match &m.1 {
+            "__name__" | "__qualname__" | "__doc__" | "__module__" | "__wrapped__" | "__defaults__" | "__code__" | "__annotations__" | "__dict__" | "__text_signature__" => match &m.1 {
                 Value::Native(n) if name == "__name__" || name == "__qualname__" => Some(Value::str(n.name.rsplit('.').next().unwrap_or(n.name))),
                 f => vm.getattr_opt(&f.clone(), &ps(name))?,
             },
@@ -1062,7 +1064,11 @@ pub fn class_special(vm: &mut Vm, c: &Rc<Class>, name: &str) -> PyResult<Option<
         }
         "__dict__" => crate::methods::mappingproxy(vm, Value::Dict(c.dict.clone())),
         "__module__" => Value::str("builtins"),
-        "__doc__" => Value::None,
+        // a class of the runtime's own has CPython's docstring
+        "__doc__" => match c.dict.borrow().get_s("__module__") {
+            None => builtin_doc(&c.name.borrow().s).map(|(_, d)| Value::str(d)).unwrap_or(Value::None),
+            Some(_) => Value::None,
+        },
         "__class__" => Value::Class(vm.class_of(&Value::Class(c.clone()))),
         "__annotations__" => {
             let d = Value::dict(Dict::new());
@@ -3466,6 +3472,28 @@ fn bi_anext(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
         None => Ok(r),
     }
+}
+
+/// a native method's __get__: bound to the instance, or itself from the class
+fn descr_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    need(vm, a, 2)?;
+    match (&a[1], a.get(2)) {
+        (Value::None, None | Some(Value::None)) => Err(vm.type_error("__get__(None, None) is invalid")),
+        (Value::None, Some(_)) => Ok(a[0].clone()),
+        (obj, _) => Ok(Value::Method(Rc::new((obj.clone(), a[0].clone())))),
+    }
+}
+
+static DOCS: &str = include_str!("docs.txt");
+
+/// CPython's __text_signature__ ("" when it has none) and __doc__ of a
+/// built-in function, type or method ("type.method"), from tools/docgen.py
+pub fn builtin_doc(name: &str) -> Option<(&'static str, &'static str)> {
+    let key = format!("{}\x1f", name);
+    let at = if DOCS.starts_with(&key) { 0 } else { DOCS.find(&format!("\x1e{}", key))? + 1 };
+    let rest = &DOCS[at + key.len()..];
+    let (sig, rest) = rest.split_once('\x1f')?;
+    Some((sig, &rest[..rest.find('\x1e')?]))
 }
 
 /// the module a native function belongs to, from its dotted name

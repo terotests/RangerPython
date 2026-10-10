@@ -1,0 +1,1684 @@
+ArithmeticErrorBase class for arithmetic errors.ArithmeticError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ArithmeticError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.AssertionErrorAssertion failed.AssertionError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.AssertionError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.AttributeErrorAttribute not found.AttributeError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.AttributeError.__str__($self, /)Return str(self).BaseExceptionCommon base class for all exceptionsBaseException.__getattribute__($self, name, /)Return getattr(self, name).BaseException.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.BaseException.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.BaseException.__repr__($self, /)Return repr(self).BaseException.__str__($self, /)Return str(self).BaseException.add_note($self, object, /)Exception.add_note(note) --
+    add a note to the exceptionBaseException.with_traceback($self, object, /)Exception.with_traceback(tb) --
+    set self.__traceback__ to tb and return self.BaseExceptionGroupA combination of multiple unrelated exceptions.BaseExceptionGroup.__class_getitem__($type, object, /)Exception groups are generic over the type of their contained exceptionsBaseExceptionGroup.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.BaseExceptionGroup.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.BaseExceptionGroup.__repr__($self, /)Return repr(self).BaseExceptionGroup.__str__($self, /)Return str(self).BlockingIOErrorI/O operation would block.BlockingIOError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.BrokenPipeErrorBroken pipe.BrokenPipeError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.BufferErrorBuffer error.BufferError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.BufferError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.BytesWarningBase class for warnings about bytes and buffer related problems, mostly
+related to conversion from str or comparing to str.BytesWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.BytesWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.ChildProcessErrorChild process error.ChildProcessError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ConnectionAbortedErrorConnection aborted.ConnectionAbortedError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ConnectionErrorConnection error.ConnectionError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ConnectionRefusedErrorConnection refused.ConnectionRefusedError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ConnectionResetErrorConnection reset.ConnectionResetError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.DeprecationWarningBase class for warnings about deprecated features.DeprecationWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.DeprecationWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.EOFErrorRead beyond end of file.EOFError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.EOFError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.EncodingWarningBase class for warnings about encodings.EncodingWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.EncodingWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.OSErrorBase class for I/O related errors.OSError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.OSError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.OSError.__str__($self, /)Return str(self).ExceptionCommon base class for all non-exit exceptions.Exception.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.Exception.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.FileExistsErrorFile already exists.FileExistsError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.FileNotFoundErrorFile not found.FileNotFoundError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.FloatingPointErrorFloating-point operation failed.FloatingPointError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.FloatingPointError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.FutureWarningBase class for warnings about constructs that will change semantically
+in the future.FutureWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.FutureWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.GeneratorExitRequest that a generator exit.GeneratorExit.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.GeneratorExit.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.OSErrorBase class for I/O related errors.OSError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.OSError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.OSError.__str__($self, /)Return str(self).ImportErrorImport can't find module, or can't find name in module.ImportError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ImportError.__str__($self, /)Return str(self).ImportWarningBase class for warnings about probable mistakes in module importsImportWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ImportWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.IndentationErrorImproper indentation.IndentationError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.IndexErrorSequence index out of range.IndexError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.IndexError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.InterruptedErrorInterrupted by signal.InterruptedError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.IsADirectoryErrorOperation doesn't work on directories.IsADirectoryError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.KeyErrorMapping key not found.KeyError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.KeyError.__str__($self, /)Return str(self).KeyboardInterruptProgram interrupted by user.KeyboardInterrupt.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.KeyboardInterrupt.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.LookupErrorBase class for lookup errors.LookupError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.LookupError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.MemoryErrorOut of memory.MemoryError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.MemoryError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.ModuleNotFoundErrorModule not found.ModuleNotFoundError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.NameErrorName not found globally.NameError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.NameError.__str__($self, /)Return str(self).NotADirectoryErrorOperation only works on directories.NotADirectoryError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.NotImplementedErrorMethod or function hasn't been implemented yet.NotImplementedError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.NotImplementedError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.OSErrorBase class for I/O related errors.OSError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.OSError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.OSError.__str__($self, /)Return str(self).OverflowErrorResult too large to be represented.OverflowError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.OverflowError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.PendingDeprecationWarningBase class for warnings about features which will be deprecated
+in the future.PendingDeprecationWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.PendingDeprecationWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.PermissionErrorNot enough permissions.PermissionError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ProcessLookupErrorProcess not found.ProcessLookupError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.PythonFinalizationErrorOperation blocked during Python finalization.PythonFinalizationError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.PythonFinalizationError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.RecursionErrorRecursion limit exceeded.RecursionError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.RecursionError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.ReferenceErrorWeak ref proxy used after referent went away.ReferenceError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ReferenceError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.ResourceWarningBase class for warnings about resource usage.ResourceWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ResourceWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.RuntimeErrorUnspecified run-time error.RuntimeError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.RuntimeError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.RuntimeWarningBase class for warnings about dubious runtime behavior.RuntimeWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.RuntimeWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.StopAsyncIterationSignal the end from iterator.__anext__().StopAsyncIteration.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.StopAsyncIteration.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.StopIterationSignal the end from iterator.__next__().StopIteration.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.SyntaxErrorInvalid syntax.SyntaxError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.SyntaxError.__str__($self, /)Return str(self).SyntaxWarningBase class for warnings about dubious syntax.SyntaxWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.SyntaxWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.SystemErrorInternal error in the Python interpreter.
+
+Please report this to the Python maintainer, along with the traceback,
+the Python version, and the hardware/OS platform and version.SystemError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.SystemError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.SystemExitRequest to exit from the interpreter.SystemExit.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.TabErrorImproper mixture of spaces and tabs.TabError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.TimeoutErrorTimeout expired.TimeoutError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.TypeErrorInappropriate argument type.TypeError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.TypeError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.UnboundLocalErrorLocal name referenced but not bound to a value.UnboundLocalError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.UnicodeDecodeErrorUnicode decoding error.UnicodeDecodeError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.UnicodeDecodeError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.UnicodeDecodeError.__str__($self, /)Return str(self).UnicodeEncodeErrorUnicode encoding error.UnicodeEncodeError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.UnicodeEncodeError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.UnicodeEncodeError.__str__($self, /)Return str(self).UnicodeErrorUnicode related error.UnicodeError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.UnicodeError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.UnicodeTranslateErrorUnicode translation error.UnicodeTranslateError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.UnicodeTranslateError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.UnicodeTranslateError.__str__($self, /)Return str(self).UnicodeWarningBase class for warnings about Unicode related problems, mostly
+related to conversion problems.UnicodeWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.UnicodeWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.UserWarningBase class for warnings generated by user code.UserWarning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.UserWarning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.ValueErrorInappropriate argument value (of correct type).ValueError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ValueError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.WarningBase class for warning categories.Warning.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.Warning.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.ZeroDivisionErrorSecond argument to a division or modulo operation was zero.ZeroDivisionError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.ZeroDivisionError.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature._IncompleteInputErrorincomplete input._IncompleteInputError.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.__build_class____build_class__(func, name, /, *bases, [metaclass], **kwds) -> class
+
+Internal helper function used by the class statement.__import__($module, /, name, globals=None, locals=None, fromlist=(),
+           level=0)Import a module.
+
+Because this function is meant for use by the Python
+interpreter and not for general use, it is better to use
+importlib.import_module() to programmatically import a module.
+
+The globals argument is only used to determine the context;
+they are not modified.  The locals argument is unused.  The fromlist
+should be a list of names to emulate ``from name import ...``, or an
+empty list to emulate ``import name``.
+When importing a module from a package, note that __import__('A.B', ...)
+returns package A when fromlist is empty, but its submodule B when
+fromlist is not empty.  The level argument is used to determine whether
+to perform absolute or relative imports: 0 is absolute, while a positive
+number is the number of parent directories to search relative to the
+current module.BuiltinImporterMeta path import for built-in modules.
+
+All methods are either class or static methods to avoid the need to
+instantiate the class.
+
+BuiltinImporter.create_moduleCreate a built-in moduleBuiltinImporter.exec_moduleExec a built-in moduleBuiltinImporter.get_codeReturn None as built-in modules do not have code objects.BuiltinImporter.get_sourceReturn None as built-in modules do not have source code.BuiltinImporter.is_packageReturn False as built-in modules are never packages.BuiltinImporter.load_moduleLoad the specified module into sys.modules and return it.
+
+This method is deprecated.  Use loader.exec_module() instead.
+
+abs($module, x, /)Return the absolute value of the argument.aiter($module, async_iterable, /)Return an AsyncIterator for an AsyncIterable object.all($module, iterable, /)Return True if bool(x) is True for all values x in the iterable.
+
+If the iterable is empty, return True.anext($module, aiterator, default=<unrepresentable>, /)Return the next item from the async iterator.
+
+If default is given and the async iterator is exhausted,
+it is returned instead of raising StopAsyncIteration.any($module, iterable, /)Return True if bool(x) is True for any x in the iterable.
+
+If the iterable is empty, return False.ascii($module, obj, /)Return an ASCII-only representation of an object.
+
+As repr(), return a string containing a printable representation of an
+object, but escape the non-ASCII characters in the string returned by
+repr() using \\x, \\u or \\U escapes. This generates a string similar
+to that returned by repr() in Python 2.bin($module, number, /)Return the binary representation of an integer.
+
+   >>> bin(2796202)
+   '0b1010101010101010101010'bool(object=False, /)Returns True when the argument is true, False otherwise.
+The builtins True and False are the only two instances of the class bool.
+The class bool is a subclass of the class int, and cannot be subclassed.bool.__and__($self, value, /)Return self&value.bool.__invert__($self, /)~selfbool.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.bool.__or__($self, value, /)Return self|value.bool.__rand__($self, value, /)Return value&self.bool.__repr__($self, /)Return repr(self).bool.__ror__($self, value, /)Return value|self.bool.__rxor__($self, value, /)Return value^self.bool.__xor__($self, value, /)Return self^value.breakpoint($module, /, *args, **kws)Call sys.breakpointhook(*args, **kws).  sys.breakpointhook() must accept
+whatever arguments are passed.
+
+By default, this drops you into the pdb debugger.bytearraybytearray(iterable_of_ints) -> bytearray
+bytearray(string, encoding[, errors]) -> bytearray
+bytearray(bytes_or_buffer) -> mutable copy of bytes_or_buffer
+bytearray(int) -> bytes array of size given by the parameter initialized with null bytes
+bytearray() -> empty bytes array
+
+Construct a mutable bytearray object from:
+  - an iterable yielding integers in range(256)
+  - a text string encoded using the specified encoding
+  - a bytes or a buffer object
+  - any object implementing the buffer API.
+  - an integerbytearray.__add__($self, value, /)Return self+value.bytearray.__alloc__($self, /)B.__alloc__() -> int
+
+Return the number of bytes actually allocated.bytearray.__buffer__($self, flags, /)Return a buffer object that exposes the underlying memory of the object.bytearray.__contains__($self, key, /)Return bool(key in self).bytearray.__delitem__($self, key, /)Delete self[key].bytearray.__eq__($self, value, /)Return self==value.bytearray.__ge__($self, value, /)Return self>=value.bytearray.__getattribute__($self, name, /)Return getattr(self, name).bytearray.__getitem__($self, key, /)Return self[key].bytearray.__gt__($self, value, /)Return self>value.bytearray.__iadd__($self, value, /)Implement self+=value.bytearray.__imul__($self, value, /)Implement self*=value.bytearray.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.bytearray.__iter__($self, /)Implement iter(self).bytearray.__le__($self, value, /)Return self<=value.bytearray.__len__($self, /)Return len(self).bytearray.__lt__($self, value, /)Return self<value.bytearray.__mod__($self, value, /)Return self%value.bytearray.__mul__($self, value, /)Return self*value.bytearray.__ne__($self, value, /)Return self!=value.bytearray.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.bytearray.__reduce__($self, /)Return state information for pickling.bytearray.__reduce_ex__($self, proto=0, /)Return state information for pickling.bytearray.__release_buffer__($self, buffer, /)Release the buffer object that exposes the underlying memory of the object.bytearray.__repr__($self, /)Return repr(self).bytearray.__rmod__($self, value, /)Return value%self.bytearray.__rmul__($self, value, /)Return value*self.bytearray.__setitem__($self, key, value, /)Set self[key] to value.bytearray.__sizeof__($self, /)Returns the size of the bytearray object in memory, in bytes.bytearray.__str__($self, /)Return str(self).bytearray.append($self, item, /)Append a single item to the end of the bytearray.
+
+  item
+    The item to be appended.bytearray.capitalize($self, /)B.capitalize() -> copy of B
+
+Return a copy of B with only its first character capitalized (ASCII)
+and the rest lower-cased.bytearray.center($self, width, fillchar=b' ', /)Return a centered string of length width.
+
+Padding is done using the specified fill character.bytearray.clear($self, /)Remove all items from the bytearray.bytearray.copy($self, /)Return a copy of B.bytearray.count($self, sub[, start[, end]], /)Return the number of non-overlapping occurrences of subsection 'sub' in bytes B[start:end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.bytearray.decode($self, /, encoding='utf-8', errors='strict')Decode the bytearray using the codec registered for encoding.
+
+  encoding
+    The encoding with which to decode the bytearray.
+  errors
+    The error handling scheme to use for the handling of decoding
+    errors.  The default is 'strict' meaning that decoding errors
+    raise a UnicodeDecodeError.  Other possible values are 'ignore'
+    and 'replace' as well as any other name registered with
+    codecs.register_error that can handle UnicodeDecodeErrors.bytearray.endswith($self, suffix[, start[, end]], /)Return True if the bytearray ends with the specified suffix, False otherwise.
+
+  suffix
+    A bytes or a tuple of bytes to try.
+  start
+    Optional start position. Default: start of the bytearray.
+  end
+    Optional stop position. Default: end of the bytearray.bytearray.expandtabs($self, /, tabsize=8)Return a copy where all tab characters are expanded using spaces.
+
+If tabsize is not given, a tab size of 8 characters is assumed.bytearray.extend($self, iterable_of_ints, /)Append all the items from the iterator or sequence to the end of the bytearray.
+
+  iterable_of_ints
+    The iterable of items to append.bytearray.find($self, sub[, start[, end]], /)Return the lowest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start:end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.
+
+Return -1 on failure.bytearray.fromhex($type, string, /)Create a bytearray object from a string of hexadecimal numbers.
+
+Spaces between two numbers are accepted.
+Example:
+    bytearray.fromhex('B9 01EF') -> bytearray(b'\\xb9\\x01\\xef')bytearray.hex($self, /, sep=<unrepresentable>, bytes_per_sep=1)Create a string of hexadecimal numbers from a bytearray object.
+
+  sep
+    An optional single character or byte to separate hex bytes.
+  bytes_per_sep
+    How many bytes between separators.  Positive values count from
+    the right, negative values count from the left.
+
+Example:
+>>> value = bytearray([0xb9, 0x01, 0xef])
+>>> value.hex()
+'b901ef'
+>>> value.hex(':')
+'b9:01:ef'
+>>> value.hex(':', 2)
+'b9:01ef'
+>>> value.hex(':', -2)
+'b901:ef'bytearray.index($self, sub[, start[, end]], /)Return the lowest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start:end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.
+
+Raise ValueError if the subsection is not found.bytearray.insert($self, index, item, /)Insert a single item into the bytearray before the given index.
+
+  index
+    The index where the value is to be inserted.
+  item
+    The item to be inserted.bytearray.isalnum($self, /)B.isalnum() -> bool
+
+Return True if all characters in B are alphanumeric
+and there is at least one character in B, False otherwise.bytearray.isalpha($self, /)B.isalpha() -> bool
+
+Return True if all characters in B are alphabetic
+and there is at least one character in B, False otherwise.bytearray.isascii($self, /)B.isascii() -> bool
+
+Return True if B is empty or all characters in B are ASCII,
+False otherwise.bytearray.isdigit($self, /)B.isdigit() -> bool
+
+Return True if all characters in B are digits
+and there is at least one character in B, False otherwise.bytearray.islower($self, /)B.islower() -> bool
+
+Return True if all cased characters in B are lowercase and there is
+at least one cased character in B, False otherwise.bytearray.isspace($self, /)B.isspace() -> bool
+
+Return True if all characters in B are whitespace
+and there is at least one character in B, False otherwise.bytearray.istitle($self, /)B.istitle() -> bool
+
+Return True if B is a titlecased string and there is at least one
+character in B, i.e. uppercase characters may only follow uncased
+characters and lowercase characters only cased ones. Return False
+otherwise.bytearray.isupper($self, /)B.isupper() -> bool
+
+Return True if all cased characters in B are uppercase and there is
+at least one cased character in B, False otherwise.bytearray.join($self, iterable_of_bytes, /)Concatenate any number of bytes/bytearray objects.
+
+The bytearray whose method is called is inserted in between each
+pair.
+
+The result is returned as a new bytearray object.bytearray.ljust($self, width, fillchar=b' ', /)Return a left-justified string of length width.
+
+Padding is done using the specified fill character.bytearray.lower($self, /)B.lower() -> copy of B
+
+Return a copy of B with all ASCII characters converted to lowercase.bytearray.lstrip($self, bytes=None, /)Strip leading bytes contained in the argument.
+
+If the argument is omitted or None, strip leading ASCII whitespace.bytearray.maketrans(frm, to, /)Return a translation table usable for the bytes or bytearray translate method.
+
+The returned table will be one where each byte in frm is mapped to
+the byte at the same position in to.
+
+The bytes objects frm and to must be of the same length.bytearray.partition($self, sep, /)Partition the bytearray into three parts using the given separator.
+
+This will search for the separator sep in the bytearray.  If the
+separator is found, returns a 3-tuple containing the part before the
+separator, the separator itself, and the part after it as new
+bytearray objects.
+
+If the separator is not found, returns a 3-tuple containing the copy
+of the original bytearray object and two empty bytearray objects.bytearray.pop($self, index=-1, /)Remove and return a single item from B.
+
+  index
+    The index from where to remove the item.
+    -1 (the default value) means remove the last item.
+
+If no index argument is given, will pop the last item.bytearray.remove($self, value, /)Remove the first occurrence of a value in the bytearray.
+
+  value
+    The value to remove.bytearray.removeprefix($self, prefix, /)Return a bytearray with the given prefix string removed if present.
+
+If the bytearray starts with the prefix string, return
+bytearray[len(prefix):].  Otherwise, return a copy of the original
+bytearray.bytearray.removesuffix($self, suffix, /)Return a bytearray with the given suffix string removed if present.
+
+If the bytearray ends with the suffix string and that suffix is not
+empty, return bytearray[:-len(suffix)].  Otherwise, return a copy of
+the original bytearray.bytearray.replace($self, old, new, count=-1, /)Return a copy with all occurrences of substring old replaced by new.
+
+  count
+    Maximum number of occurrences to replace.
+    -1 (the default value) means replace all occurrences.
+
+If the optional argument count is given, only the first count occurrences are
+replaced.bytearray.reverse($self, /)Reverse the order of the values in B in place.bytearray.rfind($self, sub[, start[, end]], /)Return the highest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start:end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.
+
+Return -1 on failure.bytearray.rindex($self, sub[, start[, end]], /)Return the highest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start:end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.
+
+Raise ValueError if the subsection is not found.bytearray.rjust($self, width, fillchar=b' ', /)Return a right-justified string of length width.
+
+Padding is done using the specified fill character.bytearray.rpartition($self, sep, /)Partition the bytearray into three parts using the given separator.
+
+This will search for the separator sep in the bytearray, starting at
+the end.  If the separator is found, returns a 3-tuple containing
+the part before the separator, the separator itself, and the part
+after it as new bytearray objects.
+
+If the separator is not found, returns a 3-tuple containing two
+empty bytearray objects and the copy of the original bytearray
+object.bytearray.rsplit($self, /, sep=None, maxsplit=-1)Return a list of the sections in the bytearray, using sep as the delimiter.
+
+  sep
+    The delimiter according which to split the bytearray.
+    None (the default value) means split on ASCII whitespace
+    characters (space, tab, return, newline, formfeed, vertical tab).
+  maxsplit
+    Maximum number of splits to do.
+    -1 (the default value) means no limit.
+
+Splitting is done starting at the end of the bytearray and working
+to the front.bytearray.rstrip($self, bytes=None, /)Strip trailing bytes contained in the argument.
+
+If the argument is omitted or None, strip trailing ASCII whitespace.bytearray.split($self, /, sep=None, maxsplit=-1)Return a list of the sections in the bytearray, using sep as the delimiter.
+
+  sep
+    The delimiter according which to split the bytearray.
+    None (the default value) means split on ASCII whitespace
+    characters (space, tab, return, newline, formfeed, vertical tab).
+  maxsplit
+    Maximum number of splits to do.
+    -1 (the default value) means no limit.bytearray.splitlines($self, /, keepends=False)Return a list of the lines in the bytearray, breaking at line boundaries.
+
+Line breaks are not included in the resulting list unless keepends
+is given and true.bytearray.startswith($self, prefix[, start[, end]], /)Return True if the bytearray starts with the specified prefix, False otherwise.
+
+  prefix
+    A bytes or a tuple of bytes to try.
+  start
+    Optional start position. Default: start of the bytearray.
+  end
+    Optional stop position. Default: end of the bytearray.bytearray.strip($self, bytes=None, /)Strip leading and trailing bytes contained in the argument.
+
+If the argument is omitted or None, strip leading and trailing ASCII
+whitespace.bytearray.swapcase($self, /)B.swapcase() -> copy of B
+
+Return a copy of B with uppercase ASCII characters converted
+to lowercase ASCII and vice versa.bytearray.title($self, /)B.title() -> copy of B
+
+Return a titlecased version of B, i.e. ASCII words start with
+uppercase characters, all remaining cased characters have lowercase.bytearray.translate($self, table, /, delete=b'')Return a copy with each character mapped by the given translation table.
+
+  table
+    Translation table, which must be a bytes object of length 256.
+
+All characters occurring in the optional argument delete are
+removed.  The remaining characters are mapped through the given
+translation table.bytearray.upper($self, /)B.upper() -> copy of B
+
+Return a copy of B with all ASCII characters converted to uppercase.bytearray.zfill($self, width, /)Pad a numeric string with zeros on the left, to fill a field of the given width.
+
+The original string is never truncated.bytesbytes(iterable_of_ints) -> bytes
+bytes(string, encoding[, errors]) -> bytes
+bytes(bytes_or_buffer) -> immutable copy of bytes_or_buffer
+bytes(int) -> bytes object of size given by the parameter initialized with null bytes
+bytes() -> empty bytes object
+
+Construct an immutable array of bytes from:
+  - an iterable yielding integers in range(256)
+  - a text string encoded using the specified encoding
+  - any object implementing the buffer API.
+  - an integerbytes.__add__($self, value, /)Return self+value.bytes.__buffer__($self, flags, /)Return a buffer object that exposes the underlying memory of the object.bytes.__bytes__($self, /)Convert this value to exact type bytes.bytes.__contains__($self, key, /)Return bool(key in self).bytes.__eq__($self, value, /)Return self==value.bytes.__ge__($self, value, /)Return self>=value.bytes.__getattribute__($self, name, /)Return getattr(self, name).bytes.__getitem__($self, key, /)Return self[key].bytes.__gt__($self, value, /)Return self>value.bytes.__hash__($self, /)Return hash(self).bytes.__iter__($self, /)Implement iter(self).bytes.__le__($self, value, /)Return self<=value.bytes.__len__($self, /)Return len(self).bytes.__lt__($self, value, /)Return self<value.bytes.__mod__($self, value, /)Return self%value.bytes.__mul__($self, value, /)Return self*value.bytes.__ne__($self, value, /)Return self!=value.bytes.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.bytes.__repr__($self, /)Return repr(self).bytes.__rmod__($self, value, /)Return value%self.bytes.__rmul__($self, value, /)Return value*self.bytes.__str__($self, /)Return str(self).bytes.capitalize($self, /)B.capitalize() -> copy of B
+
+Return a copy of B with only its first character capitalized (ASCII)
+and the rest lower-cased.bytes.center($self, width, fillchar=b' ', /)Return a centered string of length width.
+
+Padding is done using the specified fill character.bytes.count($self, sub[, start[, end]], /)Return the number of non-overlapping occurrences of subsection 'sub' in bytes B[start:end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.bytes.decode($self, /, encoding='utf-8', errors='strict')Decode the bytes using the codec registered for encoding.
+
+  encoding
+    The encoding with which to decode the bytes.
+  errors
+    The error handling scheme to use for the handling of decoding
+    errors.  The default is 'strict' meaning that decoding errors
+    raise a UnicodeDecodeError.  Other possible values are 'ignore'
+    and 'replace' as well as any other name registered with
+    codecs.register_error that can handle UnicodeDecodeErrors.bytes.endswith($self, suffix[, start[, end]], /)Return True if the bytes ends with the specified suffix, False otherwise.
+
+  suffix
+    A bytes or a tuple of bytes to try.
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.bytes.expandtabs($self, /, tabsize=8)Return a copy where all tab characters are expanded using spaces.
+
+If tabsize is not given, a tab size of 8 characters is assumed.bytes.find($self, sub[, start[, end]], /)Return the lowest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start,end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.
+
+Return -1 on failure.bytes.fromhex($type, string, /)Create a bytes object from a string of hexadecimal numbers.
+
+Spaces between two numbers are accepted.
+Example: bytes.fromhex('B9 01EF') -> b'\\xb9\\x01\\xef'.bytes.hex($self, /, sep=<unrepresentable>, bytes_per_sep=1)Create a string of hexadecimal numbers from a bytes object.
+
+  sep
+    An optional single character or byte to separate hex bytes.
+  bytes_per_sep
+    How many bytes between separators.  Positive values count from
+    the right, negative values count from the left.
+
+Example:
+>>> value = b'\xb9\x01\xef'
+>>> value.hex()
+'b901ef'
+>>> value.hex(':')
+'b9:01:ef'
+>>> value.hex(':', 2)
+'b9:01ef'
+>>> value.hex(':', -2)
+'b901:ef'bytes.index($self, sub[, start[, end]], /)Return the lowest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start,end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.
+
+Raise ValueError if the subsection is not found.bytes.isalnum($self, /)B.isalnum() -> bool
+
+Return True if all characters in B are alphanumeric
+and there is at least one character in B, False otherwise.bytes.isalpha($self, /)B.isalpha() -> bool
+
+Return True if all characters in B are alphabetic
+and there is at least one character in B, False otherwise.bytes.isascii($self, /)B.isascii() -> bool
+
+Return True if B is empty or all characters in B are ASCII,
+False otherwise.bytes.isdigit($self, /)B.isdigit() -> bool
+
+Return True if all characters in B are digits
+and there is at least one character in B, False otherwise.bytes.islower($self, /)B.islower() -> bool
+
+Return True if all cased characters in B are lowercase and there is
+at least one cased character in B, False otherwise.bytes.isspace($self, /)B.isspace() -> bool
+
+Return True if all characters in B are whitespace
+and there is at least one character in B, False otherwise.bytes.istitle($self, /)B.istitle() -> bool
+
+Return True if B is a titlecased string and there is at least one
+character in B, i.e. uppercase characters may only follow uncased
+characters and lowercase characters only cased ones. Return False
+otherwise.bytes.isupper($self, /)B.isupper() -> bool
+
+Return True if all cased characters in B are uppercase and there is
+at least one cased character in B, False otherwise.bytes.join($self, iterable_of_bytes, /)Concatenate any number of bytes objects.
+
+The bytes whose method is called is inserted in between each pair.
+
+The result is returned as a new bytes object.
+
+Example: b'.'.join([b'ab', b'pq', b'rs']) -> b'ab.pq.rs'.bytes.ljust($self, width, fillchar=b' ', /)Return a left-justified string of length width.
+
+Padding is done using the specified fill character.bytes.lower($self, /)B.lower() -> copy of B
+
+Return a copy of B with all ASCII characters converted to lowercase.bytes.lstrip($self, bytes=None, /)Strip leading bytes contained in the argument.
+
+If the argument is omitted or None, strip leading  ASCII whitespace.bytes.maketrans(frm, to, /)Return a translation table usable for the bytes or bytearray translate method.
+
+The returned table will be one where each byte in frm is mapped to
+the byte at the same position in to.
+
+The bytes objects frm and to must be of the same length.bytes.partition($self, sep, /)Partition the bytes into three parts using the given separator.
+
+This will search for the separator sep in the bytes.  If the
+separator is found, returns a 3-tuple containing the part before the
+separator, the separator itself, and the part after it.
+
+If the separator is not found, returns a 3-tuple containing the
+original bytes object and two empty bytes objects.bytes.removeprefix($self, prefix, /)Return a bytes object with the given prefix string removed if present.
+
+If the bytes starts with the prefix string, return
+bytes[len(prefix):].  Otherwise, return a copy of the original
+bytes.bytes.removesuffix($self, suffix, /)Return a bytes object with the given suffix string removed if present.
+
+If the bytes ends with the suffix string and that suffix is not
+empty, return bytes[:-len(prefix)].  Otherwise, return a copy of the
+original bytes.bytes.replace($self, old, new, count=-1, /)Return a copy with all occurrences of substring old replaced by new.
+
+  count
+    Maximum number of occurrences to replace.
+    -1 (the default value) means replace all occurrences.
+
+If the optional argument count is given, only the first count occurrences are
+replaced.bytes.rfind($self, sub[, start[, end]], /)Return the highest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start,end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.
+
+Return -1 on failure.bytes.rindex($self, sub[, start[, end]], /)Return the highest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start,end].
+
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.
+
+Raise ValueError if the subsection is not found.bytes.rjust($self, width, fillchar=b' ', /)Return a right-justified string of length width.
+
+Padding is done using the specified fill character.bytes.rpartition($self, sep, /)Partition the bytes into three parts using the given separator.
+
+This will search for the separator sep in the bytes, starting at the
+end.  If the separator is found, returns a 3-tuple containing the
+part before the separator, the separator itself, and the part after
+it.
+
+If the separator is not found, returns a 3-tuple containing two
+empty bytes objects and the original bytes object.bytes.rsplit($self, /, sep=None, maxsplit=-1)Return a list of the sections in the bytes, using sep as the delimiter.
+
+  sep
+    The delimiter according which to split the bytes.
+    None (the default value) means split on ASCII whitespace
+    characters (space, tab, return, newline, formfeed, vertical tab).
+  maxsplit
+    Maximum number of splits to do.
+    -1 (the default value) means no limit.
+
+Splitting is done starting at the end of the bytes and working to
+the front.bytes.rstrip($self, bytes=None, /)Strip trailing bytes contained in the argument.
+
+If the argument is omitted or None, strip trailing ASCII whitespace.bytes.split($self, /, sep=None, maxsplit=-1)Return a list of the sections in the bytes, using sep as the delimiter.
+
+  sep
+    The delimiter according which to split the bytes.
+    None (the default value) means split on ASCII whitespace
+    characters (space, tab, return, newline, formfeed, vertical tab).
+  maxsplit
+    Maximum number of splits to do.
+    -1 (the default value) means no limit.bytes.splitlines($self, /, keepends=False)Return a list of the lines in the bytes, breaking at line boundaries.
+
+Line breaks are not included in the resulting list unless keepends
+is given and true.bytes.startswith($self, prefix[, start[, end]], /)Return True if the bytes starts with the specified prefix, False otherwise.
+
+  prefix
+    A bytes or a tuple of bytes to try.
+  start
+    Optional start position. Default: start of the bytes.
+  end
+    Optional stop position. Default: end of the bytes.bytes.strip($self, bytes=None, /)Strip leading and trailing bytes contained in the argument.
+
+If the argument is omitted or None, strip leading and trailing ASCII
+whitespace.bytes.swapcase($self, /)B.swapcase() -> copy of B
+
+Return a copy of B with uppercase ASCII characters converted
+to lowercase ASCII and vice versa.bytes.title($self, /)B.title() -> copy of B
+
+Return a titlecased version of B, i.e. ASCII words start with
+uppercase characters, all remaining cased characters have lowercase.bytes.translate($self, table, /, delete=b'')Return a copy with each character mapped by the given translation table.
+
+  table
+    Translation table, which must be a bytes object of length 256.
+
+All characters occurring in the optional argument delete are
+removed.  The remaining characters are mapped through the given
+translation table.bytes.upper($self, /)B.upper() -> copy of B
+
+Return a copy of B with all ASCII characters converted to uppercase.bytes.zfill($self, width, /)Pad a numeric string with zeros on the left, to fill a field of the given width.
+
+The original string is never truncated.callable($module, obj, /)Return whether the object is callable (i.e., some kind of function).
+
+Note that classes are callable, as are instances of classes with a
+__call__() method.chr($module, i, /)Return a Unicode string of one character with ordinal i; 0 <= i <= 0x10ffff.classmethod(function, /)Convert a function to be a class method.
+
+A class method receives the class as implicit first argument,
+just like an instance method receives the instance.
+To declare a class method, use this idiom:
+
+  class C:
+      @classmethod
+      def f(cls, arg1, arg2, argN):
+          ...
+
+It can be called either on the class (e.g. C.f()) or on an instance
+(e.g. C().f()).  The instance is ignored except for its class.
+If a class method is called for a derived class, the derived class
+object is passed as the implied first argument.
+
+Class methods are different than C++ or Java static methods.
+If you want those, see the staticmethod builtin.classmethod.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.classmethod.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.classmethod.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.classmethod.__repr__($self, /)Return repr(self).compile($module, /, source, filename, mode, flags=0,
+        dont_inherit=False, optimize=-1, *, _feature_version=-1)Compile source into a code object that can be executed by exec() or eval().
+
+The source code may represent a Python module, statement or
+expression.
+The filename will be used for run-time error messages.
+The mode must be 'exec' to compile a module, 'single' to compile a
+single (interactive) statement, or 'eval' to compile an expression.
+The flags argument, if present, controls which future statements
+influence the compilation of the code.
+The dont_inherit argument, if true, stops the compilation inheriting
+the effects of any future statements in effect in the code calling
+compile; if absent or false these statements do influence the
+compilation, in addition to any features explicitly specified.complex(real=0, imag=0)Create a complex number from a string or numbers.
+
+If a string is given, parse it as a complex number.
+If a single number is given, convert it to a complex number.
+If the 'real' or 'imag' arguments are given, create a complex number
+with the specified real and imaginary components.complex.__abs__($self, /)abs(self)complex.__add__($self, value, /)Return self+value.complex.__bool__($self, /)True if self else Falsecomplex.__complex__($self, /)Convert this value to exact type complex.complex.__eq__($self, value, /)Return self==value.complex.__format__($self, format_spec, /)Convert to a string according to format_spec.complex.__ge__($self, value, /)Return self>=value.complex.__getattribute__($self, name, /)Return getattr(self, name).complex.__gt__($self, value, /)Return self>value.complex.__hash__($self, /)Return hash(self).complex.__le__($self, value, /)Return self<=value.complex.__lt__($self, value, /)Return self<value.complex.__mul__($self, value, /)Return self*value.complex.__ne__($self, value, /)Return self!=value.complex.__neg__($self, /)-selfcomplex.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.complex.__pos__($self, /)+selfcomplex.__pow__($self, value, mod=None, /)Return pow(self, value, mod).complex.__radd__($self, value, /)Return value+self.complex.__repr__($self, /)Return repr(self).complex.__rmul__($self, value, /)Return value*self.complex.__rpow__($self, value, mod=None, /)Return pow(value, self, mod).complex.__rsub__($self, value, /)Return value-self.complex.__rtruediv__($self, value, /)Return value/self.complex.__sub__($self, value, /)Return self-value.complex.__truediv__($self, value, /)Return self/value.complex.conjugate($self, /)Return the complex conjugate of its argument. (3-4j).conjugate() == 3+4j.delattr($module, obj, name, /)Deletes the named attribute from the given object.
+
+delattr(x, 'y') is equivalent to ``del x.y``dictdict() -> new empty dictionary
+dict(mapping) -> new dictionary initialized from a mapping object's
+    (key, value) pairs
+dict(iterable) -> new dictionary initialized as if via:
+    d = {}
+    for k, v in iterable:
+        d[k] = v
+dict(**kwargs) -> new dictionary initialized with the name=value pairs
+    in the keyword argument list.  For example:  dict(one=1, two=2)dict.__class_getitem__($type, object, /)dicts are generic over two types, signifying (respectively) the types of their keys and valuesdict.__contains__($self, key, /)True if the dictionary has the specified key, else False.dict.__delitem__($self, key, /)Delete self[key].dict.__eq__($self, value, /)Return self==value.dict.__ge__($self, value, /)Return self>=value.dict.__getattribute__($self, name, /)Return getattr(self, name).dict.__getitem__($self, key, /)Return self[key].dict.__gt__($self, value, /)Return self>value.dict.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.dict.__ior__($self, value, /)Return self|=value.dict.__iter__($self, /)Implement iter(self).dict.__le__($self, value, /)Return self<=value.dict.__len__($self, /)Return len(self).dict.__lt__($self, value, /)Return self<value.dict.__ne__($self, value, /)Return self!=value.dict.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.dict.__or__($self, value, /)Return self|value.dict.__repr__($self, /)Return repr(self).dict.__reversed__($self, /)Return a reverse iterator over the dict keys.dict.__ror__($self, value, /)Return value|self.dict.__setitem__($self, key, value, /)Set self[key] to value.dict.__sizeof__($self, /)Return the size of the dict in memory, in bytes.dict.clear($self, /)Remove all items from the dict.dict.copy($self, /)Return a shallow copy of the dict.dict.fromkeys($type, iterable, value=None, /)Create a new dictionary with keys from iterable and values set to value.dict.get($self, key, default=None, /)Return the value for key if key is in the dictionary, else default.dict.items($self, /)Return a set-like object providing a view on the dict's items.dict.keys($self, /)Return a set-like object providing a view on the dict's keys.dict.pop($self, key, default=<unrepresentable>, /)D.pop(k[,d]) -> v, remove specified key and return the corresponding value.
+
+If the key is not found, return the default if given; otherwise,
+raise a KeyError.dict.popitem($self, /)Remove and return a (key, value) pair as a 2-tuple.
+
+Pairs are returned in LIFO (last-in, first-out) order.
+Raises KeyError if the dict is empty.dict.setdefault($self, key, default=None, /)Insert key with a value of default if key is not in the dictionary.
+
+Return the value for key if key is in the dictionary, else default.dict.updateD.update([E, ]**F) -> None.  Update D from mapping/iterable E and F.
+If E is present and has a .keys() method, then does:  for k in E.keys(): D[k] = E[k]
+If E is present and lacks a .keys() method, then does:  for k, v in E: D[k] = v
+In either case, this is followed by: for k in F:  D[k] = F[k]dict.values($self, /)Return an object providing a view on the dict's values.dirdir([object]) -> list of strings
+
+If called without an argument, return the names in the current scope.
+Else, return an alphabetized list of names comprising (some of) the
+attributes of the given object, and of attributes reachable from it.
+If the object supplies a method named __dir__, it will be used;
+otherwise the default dir() logic is used and returns:
+  for a module object: the module's attributes.
+  for a class object:  its attributes, and recursively the attributes
+    of its bases.
+  for any other object: its attributes, its class's attributes, and
+    recursively the attributes of its class's base classes.divmod($module, x, y, /)Return the tuple (x//y, x%y).  Invariant: div*y + mod == x.enumerate(iterable, start=0)Return an enumerate object.
+
+  iterable
+    an object supporting iteration
+
+The enumerate object yields pairs containing a count (from start, which
+defaults to zero) and a value yielded by the iterable argument.
+
+enumerate is useful for obtaining an indexed list:
+    (0, seq[0]), (1, seq[1]), (2, seq[2]), ...enumerate.__class_getitem__($type, object, /)'enumerate' objects are generic over the type of their valuesenumerate.__getattribute__($self, name, /)Return getattr(self, name).enumerate.__iter__($self, /)Implement iter(self).enumerate.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.enumerate.__next__($self, /)Implement next(self).enumerate.__reduce__($self, /)Return state information for pickling.eval($module, source, /, globals=None, locals=None)Evaluate the given source in the context of globals and locals.
+
+The source may be a string representing a Python expression
+or a code object as returned by compile().
+The globals must be a dictionary and locals can be any mapping,
+defaulting to the current globals and locals.
+If only globals is given, locals defaults to it.exec($module, source, /, globals=None, locals=None, *, closure=None)Execute the given source in the context of globals and locals.
+
+The source may be a string representing one or more Python statements
+or a code object as returned by compile().
+The globals must be a dictionary and locals can be any mapping,
+defaulting to the current globals and locals.
+If only globals is given, locals defaults to it.
+The closure must be a tuple of cellvars, and can only be used
+when source is a code object requiring exactly that many cellvars.filter(function, iterable, /)Return an iterator yielding those items of iterable for which
+function(item) is true.  If function is None, return the items that
+are true.filter.__getattribute__($self, name, /)Return getattr(self, name).filter.__iter__($self, /)Implement iter(self).filter.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.filter.__next__($self, /)Implement next(self).filter.__reduce__($self, /)Return state information for pickling.float(x=0, /)Convert a string or number to a floating-point number, if possible.float.__abs__($self, /)abs(self)float.__add__($self, value, /)Return self+value.float.__bool__($self, /)True if self else Falsefloat.__ceil__($self, /)Return the ceiling as an Integral.float.__divmod__($self, value, /)Return divmod(self, value).float.__eq__($self, value, /)Return self==value.float.__float__($self, /)float(self)float.__floor__($self, /)Return the floor as an Integral.float.__floordiv__($self, value, /)Return self//value.float.__format__($self, format_spec, /)Formats the float according to format_spec.float.__ge__($self, value, /)Return self>=value.float.__getformat__($type, typestr, /)You probably don't want to use this function.
+
+  typestr
+    Must be 'double' or 'float'.
+
+It exists mainly to be used in Python's test suite.
+
+This function returns whichever of 'unknown', 'IEEE, big-endian' or
+'IEEE, little-endian' best describes the format of floating-point
+numbers used by the C type named by typestr.float.__gt__($self, value, /)Return self>value.float.__hash__($self, /)Return hash(self).float.__int__($self, /)int(self)float.__le__($self, value, /)Return self<=value.float.__lt__($self, value, /)Return self<value.float.__mod__($self, value, /)Return self%value.float.__mul__($self, value, /)Return self*value.float.__ne__($self, value, /)Return self!=value.float.__neg__($self, /)-selffloat.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.float.__pos__($self, /)+selffloat.__pow__($self, value, mod=None, /)Return pow(self, value, mod).float.__radd__($self, value, /)Return value+self.float.__rdivmod__($self, value, /)Return divmod(value, self).float.__repr__($self, /)Return repr(self).float.__rfloordiv__($self, value, /)Return value//self.float.__rmod__($self, value, /)Return value%self.float.__rmul__($self, value, /)Return value*self.float.__round__($self, ndigits=None, /)Return the Integral closest to x, rounding half toward even.
+
+When an argument is passed, work like built-in round(x, ndigits).float.__rpow__($self, value, mod=None, /)Return pow(value, self, mod).float.__rsub__($self, value, /)Return value-self.float.__rtruediv__($self, value, /)Return value/self.float.__sub__($self, value, /)Return self-value.float.__truediv__($self, value, /)Return self/value.float.__trunc__($self, /)Return the Integral closest to x between 0 and x.float.as_integer_ratio($self, /)Return a pair of integers, whose ratio is exactly equal to the original float.
+
+The ratio is in lowest terms and has a positive denominator.  Raise
+OverflowError on infinities and a ValueError on NaNs.
+
+>>> (10.0).as_integer_ratio()
+(10, 1)
+>>> (0.0).as_integer_ratio()
+(0, 1)
+>>> (-.25).as_integer_ratio()
+(-1, 4)float.conjugate($self, /)Return self, the complex conjugate of any float.float.fromhex($type, string, /)Create a floating-point number from a hexadecimal string.
+
+>>> float.fromhex('0x1.ffffp10')
+2047.984375
+>>> float.fromhex('-0x1p-1074')
+-5e-324float.hex($self, /)Return a hexadecimal representation of a floating-point number.
+
+>>> (-0.1).hex()
+'-0x1.999999999999ap-4'
+>>> 3.14159.hex()
+'0x1.921f9f01b866ep+1'float.is_integer($self, /)Return True if the float is an integer.format($module, value, format_spec='', /)Return type(value).__format__(value, format_spec)
+
+Many built-in types implement format_spec according to the
+Format Specification Mini-language. See help('FORMATTING').
+
+If type(value) does not supply a method named __format__
+and format_spec is empty, then str(value) is returned.
+See also help('SPECIALMETHODS').frozenset(iterable=(), /)Build an immutable unordered collection of unique elements.frozenset.__and__($self, value, /)Return self&value.frozenset.__class_getitem__($type, object, /)frozensets are generic over the type of their elementsfrozenset.__contains__($self, object, /)x.__contains__(y) <==> y in x.frozenset.__eq__($self, value, /)Return self==value.frozenset.__ge__($self, value, /)Return self>=value.frozenset.__gt__($self, value, /)Return self>value.frozenset.__hash__($self, /)Return hash(self).frozenset.__iter__($self, /)Implement iter(self).frozenset.__le__($self, value, /)Return self<=value.frozenset.__len__($self, /)Return len(self).frozenset.__lt__($self, value, /)Return self<value.frozenset.__ne__($self, value, /)Return self!=value.frozenset.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.frozenset.__or__($self, value, /)Return self|value.frozenset.__rand__($self, value, /)Return value&self.frozenset.__reduce__($self, /)Return state information for pickling.frozenset.__repr__($self, /)Return repr(self).frozenset.__ror__($self, value, /)Return value|self.frozenset.__rsub__($self, value, /)Return value-self.frozenset.__rxor__($self, value, /)Return value^self.frozenset.__sizeof__($self, /)S.__sizeof__() -> size of S in memory, in bytes.frozenset.__sub__($self, value, /)Return self-value.frozenset.__xor__($self, value, /)Return self^value.frozenset.copy($self, /)Return a shallow copy of a set.frozenset.difference($self, /, *others)Return a new set with elements in the set that are not in the others.frozenset.intersection($self, /, *others)Return a new set with elements common to the set and all others.frozenset.isdisjoint($self, other, /)Return True if two sets have a null intersection.frozenset.issubset($self, other, /)Report whether another set contains this set.frozenset.issuperset($self, other, /)Report whether this set contains another set.frozenset.symmetric_difference($self, other, /)Return a new set with elements in either the set or other but not both.frozenset.union($self, /, *others)Return a new set with elements from the set and all others.getattrgetattr(object, name[, default]) -> value
+
+Get a named attribute from an object.
+
+getattr(x, 'y') is equivalent to x.y.
+When a default argument is given, it is returned when the attribute
+doesn't exist; without it, an exception is raised in that case.globals($module, /)Return the dictionary containing the current scope's global variables.
+
+NOTE: Updates to this dictionary *will* affect name lookups in the
+current global scope and vice-versa.hasattr($module, obj, name, /)Return whether the object has an attribute with the given name.
+
+This is done by calling getattr(obj, name) and catching AttributeError.hash($module, obj, /)Return the hash value for the given object.
+
+Two objects that compare equal must also have the same hash value, but the
+reverse is not necessarily true.hex($module, number, /)Return the hexadecimal representation of an integer.
+
+   >>> hex(12648430)
+   '0xc0ffee'id($module, obj, /)Return the identity of an object.
+
+This is guaranteed to be unique among simultaneously existing objects.
+(CPython uses the object's memory address.)input($module, prompt='', /)Read a string from standard input.  The trailing newline is stripped.
+
+The prompt string, if given, is printed to standard output without a
+trailing newline before reading input.
+
+If the user hits EOF (*nix: Ctrl-D, Windows: Ctrl-Z+Return), raise
+EOFError.
+On *nix systems, readline is used if available.intint([x]) -> integer
+int(x, base=10) -> integer
+
+Convert a number or string to an integer, or return 0 if no arguments
+are given.  If x is a number, return x.__int__().  For floating-point
+numbers, this truncates towards zero.
+
+If x is not a number or if base is given, then x must be a string,
+bytes, or bytearray instance representing an integer literal in the
+given base.  The literal can be preceded by '+' or '-' and be surrounded
+by whitespace.  The base defaults to 10.  Valid bases are 0 and 2-36.
+Base 0 means to interpret the base from the string as an integer
+iteral.
+>>> int('0b100', base=0)
+4int.__abs__($self, /)abs(self)int.__add__($self, value, /)Return self+value.int.__and__($self, value, /)Return self&value.int.__bool__($self, /)True if self else Falseint.__ceil__($self, /)Ceiling of an Integral returns itself.int.__divmod__($self, value, /)Return divmod(self, value).int.__eq__($self, value, /)Return self==value.int.__float__($self, /)float(self)int.__floor__($self, /)Flooring an Integral returns itself.int.__floordiv__($self, value, /)Return self//value.int.__format__($self, format_spec, /)Convert to a string according to format_spec.int.__ge__($self, value, /)Return self>=value.int.__getattribute__($self, name, /)Return getattr(self, name).int.__gt__($self, value, /)Return self>value.int.__hash__($self, /)Return hash(self).int.__index__($self, /)Return self converted to an integer, if self is suitable for use as an index into a list.int.__int__($self, /)int(self)int.__invert__($self, /)~selfint.__le__($self, value, /)Return self<=value.int.__lshift__($self, value, /)Return self<<value.int.__lt__($self, value, /)Return self<value.int.__mod__($self, value, /)Return self%value.int.__mul__($self, value, /)Return self*value.int.__ne__($self, value, /)Return self!=value.int.__neg__($self, /)-selfint.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.int.__or__($self, value, /)Return self|value.int.__pos__($self, /)+selfint.__pow__($self, value, mod=None, /)Return pow(self, value, mod).int.__radd__($self, value, /)Return value+self.int.__rand__($self, value, /)Return value&self.int.__rdivmod__($self, value, /)Return divmod(value, self).int.__repr__($self, /)Return repr(self).int.__rfloordiv__($self, value, /)Return value//self.int.__rlshift__($self, value, /)Return value<<self.int.__rmod__($self, value, /)Return value%self.int.__rmul__($self, value, /)Return value*self.int.__ror__($self, value, /)Return value|self.int.__round__($self, ndigits=<unrepresentable>, /)Rounding an Integral returns itself.
+
+Rounding with an ndigits argument also returns an integer.int.__rpow__($self, value, mod=None, /)Return pow(value, self, mod).int.__rrshift__($self, value, /)Return value>>self.int.__rshift__($self, value, /)Return self>>value.int.__rsub__($self, value, /)Return value-self.int.__rtruediv__($self, value, /)Return value/self.int.__rxor__($self, value, /)Return value^self.int.__sizeof__($self, /)Returns size in memory, in bytes.int.__sub__($self, value, /)Return self-value.int.__truediv__($self, value, /)Return self/value.int.__trunc__($self, /)Truncating an Integral returns itself.int.__xor__($self, value, /)Return self^value.int.as_integer_ratio($self, /)Return a pair of integers, whose ratio is equal to the original int.
+
+The ratio is in lowest terms and has a positive denominator.
+
+>>> (10).as_integer_ratio()
+(10, 1)
+>>> (-10).as_integer_ratio()
+(-10, 1)
+>>> (0).as_integer_ratio()
+(0, 1)int.bit_count($self, /)Number of ones in the binary representation of the absolute value of self.
+
+Also known as the population count.
+
+>>> bin(13)
+'0b1101'
+>>> (13).bit_count()
+3int.bit_length($self, /)Number of bits necessary to represent self in binary.
+
+>>> bin(37)
+'0b100101'
+>>> (37).bit_length()
+6int.conjugate($self, /)Returns self, the complex conjugate of any int.int.from_bytes($type, /, bytes, byteorder='big', *, signed=False)Return the integer represented by the given array of bytes.
+
+  bytes
+    Holds the array of bytes to convert.  The argument must either
+    support the buffer protocol or be an iterable object producing
+    bytes.  Bytes and bytearray are examples of built-in objects that
+    support the buffer protocol.
+  byteorder
+    The byte order used to represent the integer.  If byteorder is
+    'big', the most significant byte is at the beginning of the byte
+    array.  If byteorder is 'little', the most significant byte is at
+    the end of the byte array.  To request the native byte order of
+    the host system, use sys.byteorder as the byte order value.
+    Default is to use 'big'.
+  signed
+    Indicates whether two's complement is used to represent the
+    integer.int.is_integer($self, /)Returns True. Exists for duck type compatibility with float.is_integer.int.to_bytes($self, /, length=1, byteorder='big', *, signed=False)Return an array of bytes representing an integer.
+
+  length
+    Length of bytes object to use.  An OverflowError is raised if
+    the integer is not representable with the given number of bytes.
+    Default is length 1.
+  byteorder
+    The byte order used to represent the integer.  If byteorder is
+    'big', the most significant byte is at the beginning of the byte
+    array.  If byteorder is 'little', the most significant byte is at
+    the end of the byte array.  To request the native byte order of
+    the host system, use sys.byteorder as the byte order value.
+    Default is to use 'big'.
+  signed
+    Determines whether two's complement is used to represent the
+    integer.  If signed is False and a negative integer is given,
+    an OverflowError is raised.isinstance($module, obj, class_or_tuple, /)Return whether an object is an instance of a class or of a subclass thereof.
+
+A tuple, as in ``isinstance(x, (A, B, ...))``, may be given as the
+target to check against.  This is equivalent to ``isinstance(x, A) or
+isinstance(x, B) or ...`` etc.issubclass($module, cls, class_or_tuple, /)Return whether 'cls' is derived from another class or is the same class.
+
+A tuple, as in ``issubclass(x, (A, B, ...))``, may be given as the
+target to check against.  This is equivalent to ``issubclass(x, A) or
+issubclass(x, B) or ...``.iteriter(iterable) -> iterator
+iter(callable, sentinel) -> iterator
+
+Get an iterator from an object.  In the first form, the argument must
+supply its own iterator, or be a sequence.
+In the second form, the callable is called until it returns the
+sentinel.len($module, obj, /)Return the number of items in a container.list(iterable=(), /)Built-in mutable sequence.
+
+If no argument is given, the constructor creates a new empty list.
+The argument must be an iterable if specified.list.__add__($self, value, /)Return self+value.list.__class_getitem__($type, object, /)lists are generic over the type of their contentslist.__contains__($self, key, /)Return bool(key in self).list.__delitem__($self, key, /)Delete self[key].list.__eq__($self, value, /)Return self==value.list.__ge__($self, value, /)Return self>=value.list.__getattribute__($self, name, /)Return getattr(self, name).list.__getitem__($self, index, /)Return self[index].list.__gt__($self, value, /)Return self>value.list.__iadd__($self, value, /)Implement self+=value.list.__imul__($self, value, /)Implement self*=value.list.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.list.__iter__($self, /)Implement iter(self).list.__le__($self, value, /)Return self<=value.list.__len__($self, /)Return len(self).list.__lt__($self, value, /)Return self<value.list.__mul__($self, value, /)Return self*value.list.__ne__($self, value, /)Return self!=value.list.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.list.__repr__($self, /)Return repr(self).list.__reversed__($self, /)Return a reverse iterator over the list.list.__rmul__($self, value, /)Return value*self.list.__setitem__($self, key, value, /)Set self[key] to value.list.__sizeof__($self, /)Return the size of the list in memory, in bytes.list.append($self, object, /)Append object to the end of the list.list.clear($self, /)Remove all items from list.list.copy($self, /)Return a shallow copy of the list.list.count($self, value, /)Return number of occurrences of value.list.extend($self, iterable, /)Extend list by appending elements from the iterable.list.index($self, value, start=0, stop=sys.maxsize, /)Return first index of value.
+
+Raises ValueError if the value is not present.list.insert($self, index, object, /)Insert object before index.list.pop($self, index=-1, /)Remove and return item at index (default last).
+
+Raises IndexError if list is empty or index is out of range.list.remove($self, value, /)Remove first occurrence of value.
+
+Raises ValueError if the value is not present.list.reverse($self, /)Reverse *IN PLACE*.list.sort($self, /, *, key=None, reverse=False)Sort the list in ascending order and return None.
+
+The sort is in-place (i.e. the list itself is modified) and stable
+(i.e. the order of two equal elements is maintained).
+
+If a key function is given, apply it once to each list item and sort
+them, ascending or descending, according to their function values.
+
+The reverse flag can be set to sort in descending order.locals($module, /)Return a dictionary containing the current scope's local variables.
+
+NOTE: Whether or not updates to this dictionary will affect name
+lookups in the local scope and vice-versa is *implementation
+dependent* and not covered by any backwards compatibility
+guarantees.map(function, iterable, /, *iterables)Make an iterator that computes the function using arguments from
+each of the iterables.  Stops when the shortest iterable is exhausted.map.__getattribute__($self, name, /)Return getattr(self, name).map.__iter__($self, /)Implement iter(self).map.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.map.__next__($self, /)Implement next(self).map.__reduce__($self, /)Return state information for pickling.maxmax(iterable, *[, default=obj, key=func]) -> value
+max(arg1, arg2, *args, *[, key=func]) -> value
+
+With a single iterable argument, return its biggest item. The
+default keyword-only argument specifies an object to return if
+the provided iterable is empty.
+With two or more positional arguments, return the largest argument.memoryview(object)Create a new memoryview object which references the given object.memoryview.__buffer__($self, flags, /)Return a buffer object that exposes the underlying memory of the object.memoryview.__delitem__($self, key, /)Delete self[key].memoryview.__eq__($self, value, /)Return self==value.memoryview.__exit__($self, /, *exc_info)Release the underlying buffer exposed by the memoryview object.memoryview.__ge__($self, value, /)Return self>=value.memoryview.__getattribute__($self, name, /)Return getattr(self, name).memoryview.__getitem__($self, key, /)Return self[key].memoryview.__gt__($self, value, /)Return self>value.memoryview.__hash__($self, /)Return hash(self).memoryview.__iter__($self, /)Implement iter(self).memoryview.__le__($self, value, /)Return self<=value.memoryview.__len__($self, /)Return len(self).memoryview.__lt__($self, value, /)Return self<value.memoryview.__ne__($self, value, /)Return self!=value.memoryview.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.memoryview.__release_buffer__($self, buffer, /)Release the buffer object that exposes the underlying memory of the object.memoryview.__repr__($self, /)Return repr(self).memoryview.__setitem__($self, key, value, /)Set self[key] to value.memoryview._from_flags($type, /, object, flags)Create a new memoryview object which references the given object.memoryview.cast($self, /, format, shape=<unrepresentable>)Cast a memoryview to a new format or shape.memoryview.hex($self, /, sep=<unrepresentable>, bytes_per_sep=1)Return the data in the buffer as a str of hexadecimal numbers.
+
+  sep
+    An optional single character or byte to separate hex bytes.
+  bytes_per_sep
+    How many bytes between separators.  Positive values count from
+    the right, negative values count from the left.
+
+Example:
+>>> value = memoryview(b'\xb9\x01\xef')
+>>> value.hex()
+'b901ef'
+>>> value.hex(':')
+'b9:01:ef'
+>>> value.hex(':', 2)
+'b9:01ef'
+>>> value.hex(':', -2)
+'b901:ef'memoryview.release($self, /)Release the underlying buffer exposed by the memoryview object.memoryview.tobytes($self, /, order='C')Return the data in the buffer as a byte string.
+
+Order can be {'C', 'F', 'A'}.  When order is 'C' or 'F', the data of
+the original array is converted to C or Fortran order.  For
+contiguous views, 'A' returns an exact copy of the physical memory.
+In particular, in-memory Fortran order is preserved.  For
+non-contiguous views, the data is converted to C first.  order=None
+is the same as order='C'.memoryview.tolist($self, /)Return the data in the buffer as a list of elements.memoryview.toreadonly($self, /)Return a readonly version of the memoryview.minmin(iterable, *[, default=obj, key=func]) -> value
+min(arg1, arg2, *args, *[, key=func]) -> value
+
+With a single iterable argument, return its smallest item. The
+default keyword-only argument specifies an object to return if
+the provided iterable is empty.
+With two or more positional arguments, return the smallest argument.nextnext(iterator[, default])
+
+Return the next item from the iterator.  If default is given and the
+iterator is exhausted, it is returned instead of raising StopIteration.object()The base class of the class hierarchy.
+
+When called, it accepts no arguments and returns a new featureless
+instance that has no instance attributes and cannot be given any.
+object.__delattr__($self, name, /)Implement delattr(self, name).object.__dir__($self, /)Default dir() implementation.object.__eq__($self, value, /)Return self==value.object.__format__($self, format_spec, /)Default object formatter.
+
+Return str(self) if format_spec is empty. Raise TypeError otherwise.object.__ge__($self, value, /)Return self>=value.object.__getattribute__($self, name, /)Return getattr(self, name).object.__getstate__($self, /)Helper for pickle.object.__gt__($self, value, /)Return self>value.object.__hash__($self, /)Return hash(self).object.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.object.__init_subclass__($type, /)This method is called when a class is subclassed.
+
+The default implementation does nothing. It may be
+overridden to extend subclasses.
+object.__le__($self, value, /)Return self<=value.object.__lt__($self, value, /)Return self<value.object.__ne__($self, value, /)Return self!=value.object.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.object.__reduce__($self, /)Helper for pickle.object.__reduce_ex__($self, protocol, /)Helper for pickle.object.__repr__($self, /)Return repr(self).object.__setattr__($self, name, value, /)Implement setattr(self, name, value).object.__sizeof__($self, /)Size of object in memory, in bytes.object.__str__($self, /)Return str(self).object.__subclasshook__($type, object, /)Abstract classes can override this to customize issubclass().
+
+This is invoked early on by abc.ABCMeta.__subclasscheck__().
+It should return True, False or NotImplemented.  If it returns
+NotImplemented, the normal algorithm is used.  Otherwise, it
+overrides the normal algorithm (and the outcome is cached).
+oct($module, number, /)Return the octal representation of an integer.
+
+   >>> oct(342391)
+   '0o1234567'open($module, /, file, mode='r', buffering=-1, encoding=None,
+     errors=None, newline=None, closefd=True, opener=None)Open file and return a stream.  Raise OSError upon failure.
+
+file is either a text or byte string giving the name (and the path
+if the file isn't in the current working directory) of the file to
+be opened or an integer file descriptor of the file to be
+wrapped.  (If a file descriptor is given, it is closed when the
+returned I/O object is closed, unless closefd is set to False.)
+
+mode is an optional string that specifies the mode in which the file
+is opened.  It defaults to 'r' which means open for reading in text
+mode.  Other common values are 'w' for writing (truncating the file if
+it already exists), 'x' for creating and writing to a new file, and
+'a' for appending (which on some Unix systems, means that all writes
+append to the end of the file regardless of the current seek position).
+In text mode, if encoding is not specified the encoding used is platform
+dependent: locale.getencoding() is called to get the current locale
+encoding.  (For reading and writing raw bytes use binary mode and leave
+encoding unspecified.)  The available modes are:
+
+========= ==========================================================
+Character Meaning
+--------- ----------------------------------------------------------
+'r'       open for reading (default)
+'w'       open for writing, truncating the file first
+'x'       create a new file and open it for writing
+'a'       open for writing, appending to the end of the file if it
+          exists
+'b'       binary mode
+'t'       text mode (default)
+'+'       open a disk file for updating (reading and writing)
+========= ==========================================================
+
+The default mode is 'rt' (open for reading text).  For binary random
+access, the mode 'w+b' opens and truncates the file to 0 bytes, while
+'r+b' opens the file without truncation.  The 'x' mode implies 'w' and
+raises an `FileExistsError` if the file already exists.
+
+Python distinguishes between files opened in binary and text modes,
+even when the underlying operating system doesn't.  Files opened in
+binary mode (appending 'b' to the mode argument) return contents as
+bytes objects without any decoding.  In text mode (the default, or when
+'t' is appended to the mode argument), the contents of the file are
+returned as strings, the bytes having been first decoded using a
+platform-dependent encoding or using the specified encoding if given.
+
+buffering is an optional integer used to set the buffering policy.
+Pass 0 to switch buffering off (only allowed in binary mode), 1 to
+select line buffering (only usable in text mode), and an integer > 1 to
+indicate the size of a fixed-size chunk buffer.   When no buffering
+argument is given, the default buffering policy works as follows:
+
+* Binary files are buffered in fixed-size chunks; the size of the buffer
+  is chosen using a heuristic trying to determine the underlying
+  device's "block size" and falling back on `io.DEFAULT_BUFFER_SIZE`.
+  On many systems, the buffer will typically be 4096 or 8192 bytes
+  long.
+
+* "Interactive" text files (files for which isatty() returns True)
+  use line buffering.  Other text files use the policy described above
+  for binary files.
+
+encoding is the name of the encoding used to decode or encode the
+file.  This should only be used in text mode.  The default encoding is
+platform dependent, but any encoding supported by Python can be
+passed.  See the codecs module for the list of supported encodings.
+
+errors is an optional string that specifies how encoding errors are to
+be handled---this argument should not be used in binary mode.  Pass
+'strict' to raise a ValueError exception if there is an encoding error
+(the default of None has the same effect), or pass 'ignore' to ignore
+errors.  (Note that ignoring encoding errors can lead to data loss.)
+See the documentation for codecs.register or run 'help(codecs.Codec)'
+for a list of the permitted encoding error strings.
+
+newline controls how universal newlines works (it only applies to text
+mode).  It can be None, '', '\n', '\r', and '\r\n'.  It works as
+follows:
+
+* On input, if newline is None, universal newlines mode is enabled.
+  Lines in the input can end in '\n', '\r', or '\r\n', and these are
+  translated into '\n' before being returned to the caller.  If it is
+  '', universal newline mode is enabled, but line endings are returned
+  to the caller untranslated.  If it has any of the other legal values,
+  input lines are only terminated by the given string, and the line
+  ending is returned to the caller untranslated.
+
+* On output, if newline is None, any '\n' characters written are
+  translated to the system default line separator, os.linesep.  If
+  newline is '' or '\n', no translation takes place.  If newline is any
+  of the other legal values, any '\n' characters written are translated
+  to the given string.
+
+If closefd is False, the underlying file descriptor will be kept open
+when the file is closed.  This does not work when a file name is given
+and must be True in that case.
+
+A custom opener can be used by passing a callable as *opener*.  The
+underlying file descriptor for the file object is then obtained by
+calling *opener* with (*file*, *flags*).  *opener* must return an open
+file descriptor (passing os.open as *opener* results in functionality
+similar to passing None).
+
+open() returns a file object whose type depends on the mode, and
+through which the standard file operations such as reading and writing
+are performed.  When open() is used to open a file in a text mode ('w',
+'r', 'wt', 'rt', etc.), it returns a TextIOWrapper.  When used to open
+a file in a binary mode, the returned class varies: in read binary
+mode, it returns a BufferedReader; in write binary and append binary
+modes, it returns a BufferedWriter, and in read/write mode, it returns
+a BufferedRandom.
+
+It is also possible to use a string or bytearray as a file for both
+reading and writing.  For strings StringIO can be used like a file
+opened in a text mode, and for bytes a BytesIO can be used like a file
+opened in a binary mode.ord($module, character, /)Return the ordinal value of a character.
+
+If the argument is a one-character string, return the Unicode code
+point of that character.
+
+If the argument is a bytes or bytearray object of length 1, return its
+single byte value.pow($module, /, base, exp, mod=None)Equivalent to base**exp with 2 arguments or base**exp % mod with 3 arguments
+
+Some types, such as ints, are able to use a more efficient algorithm
+when invoked using the three argument form.print($module, /, *args, sep=' ', end='\n', file=None, flush=False)Prints the values to a stream, or to sys.stdout by default.
+
+  sep
+    string inserted between values, default a space.
+  end
+    string appended after the last value, default a newline.
+  file
+    a file-like object (stream); defaults to the current sys.stdout.
+  flush
+    whether to forcibly flush the stream.property(fget=None, fset=None, fdel=None, doc=None)Property attribute.
+
+  fget
+    function to be used for getting an attribute value
+  fset
+    function to be used for setting an attribute value
+  fdel
+    function to be used for del'ing an attribute
+  doc
+    docstring
+
+Typical use is to define a managed attribute x:
+
+class C(object):
+    def getx(self): return self._x
+    def setx(self, value): self._x = value
+    def delx(self): del self._x
+    x = property(getx, setx, delx, "I'm the 'x' property.")
+
+Decorators make defining new properties or modifying existing ones easy:
+
+class C(object):
+    @property
+    def x(self):
+        "I am the 'x' property."
+        return self._x
+    @x.setter
+    def x(self, value):
+        self._x = value
+    @x.deleter
+    def x(self):
+        del self._xproperty.__delete__($self, instance, /)Delete an attribute of instance.property.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.property.__getattribute__($self, name, /)Return getattr(self, name).property.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.property.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.property.__set__($self, instance, value, /)Set an attribute of instance to value.property.__set_name__($self, owner, name, /)Method to set name of a property.property.deleter($self, object, /)Descriptor to obtain a copy of the property with a different deleter.property.getter($self, object, /)Descriptor to obtain a copy of the property with a different getter.property.setter($self, object, /)Descriptor to obtain a copy of the property with a different setter.rangerange(stop) -> range object
+range(start, stop[, step]) -> range object
+
+Return an object that produces a sequence of integers from start (inclusive)
+to stop (exclusive) by step.  range(i, j) produces i, i+1, i+2, ..., j-1.
+start defaults to 0, and stop is omitted!  range(4) produces 0, 1, 2, 3.
+These are exactly the valid indices for a list of 4 elements.
+When step is given, it specifies the increment (or decrement).range.__bool__($self, /)True if self else Falserange.__contains__($self, key, /)Return bool(key in self).range.__eq__($self, value, /)Return self==value.range.__ge__($self, value, /)Return self>=value.range.__getattribute__($self, name, /)Return getattr(self, name).range.__getitem__($self, key, /)Return self[key].range.__gt__($self, value, /)Return self>value.range.__hash__($self, /)Return hash(self).range.__iter__($self, /)Implement iter(self).range.__le__($self, value, /)Return self<=value.range.__len__($self, /)Return len(self).range.__lt__($self, value, /)Return self<value.range.__ne__($self, value, /)Return self!=value.range.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.range.__repr__($self, /)Return repr(self).range.__reversed__($self, /)Return a reverse iterator.range.count($self, object, /)rangeobject.count(value) -> integer -- return number of occurrences of valuerange.index($self, object, /)rangeobject.index(value) -> integer -- return index of value.
+Raise ValueError if the value is not present.repr($module, obj, /)Return the canonical string representation of the object.
+
+For many object types, including most builtins, eval(repr(obj)) == obj.reversed(sequence, /)Return a reverse iterator over the values of the given sequence.reversed.__getattribute__($self, name, /)Return getattr(self, name).reversed.__iter__($self, /)Implement iter(self).reversed.__length_hint__($self, /)Private method returning an estimate of len(list(it)).reversed.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.reversed.__next__($self, /)Implement next(self).reversed.__reduce__($self, /)Return state information for pickling.reversed.__setstate__($self, object, /)Set state information for unpickling.round($module, /, number, ndigits=None)Round a number to a given precision in decimal digits.
+
+The return value is an integer if ndigits is omitted or None.
+Otherwise the return value has the same type as the number.  ndigits
+may be negative.set(iterable=(), /)Build an unordered collection of unique elements.set.__and__($self, value, /)Return self&value.set.__class_getitem__($type, object, /)sets are generic over the type of their elementsset.__contains__($self, object, /)x.__contains__(y) <==> y in x.set.__eq__($self, value, /)Return self==value.set.__ge__($self, value, /)Return self>=value.set.__getattribute__($self, name, /)Return getattr(self, name).set.__gt__($self, value, /)Return self>value.set.__iand__($self, value, /)Return self&=value.set.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.set.__ior__($self, value, /)Return self|=value.set.__isub__($self, value, /)Return self-=value.set.__iter__($self, /)Implement iter(self).set.__ixor__($self, value, /)Return self^=value.set.__le__($self, value, /)Return self<=value.set.__len__($self, /)Return len(self).set.__lt__($self, value, /)Return self<value.set.__ne__($self, value, /)Return self!=value.set.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.set.__or__($self, value, /)Return self|value.set.__rand__($self, value, /)Return value&self.set.__reduce__($self, /)Return state information for pickling.set.__repr__($self, /)Return repr(self).set.__ror__($self, value, /)Return value|self.set.__rsub__($self, value, /)Return value-self.set.__rxor__($self, value, /)Return value^self.set.__sizeof__($self, /)S.__sizeof__() -> size of S in memory, in bytes.set.__sub__($self, value, /)Return self-value.set.__xor__($self, value, /)Return self^value.set.add($self, object, /)Add an element to a set.
+
+This has no effect if the element is already present.set.clear($self, /)Remove all elements from this set.set.copy($self, /)Return a shallow copy of a set.set.difference($self, /, *others)Return a new set with elements in the set that are not in the others.set.difference_update($self, /, *others)Update the set, removing elements found in others.set.discard($self, object, /)Remove an element from a set if it is a member.
+
+Unlike set.remove(), the discard() method does not raise
+an exception when an element is missing from the set.set.intersection($self, /, *others)Return a new set with elements common to the set and all others.set.intersection_update($self, /, *others)Update the set, keeping only elements found in it and all others.set.isdisjoint($self, other, /)Return True if two sets have a null intersection.set.issubset($self, other, /)Report whether another set contains this set.set.issuperset($self, other, /)Report whether this set contains another set.set.pop($self, /)Remove and return an arbitrary set element.
+
+Raises KeyError if the set is empty.set.remove($self, object, /)Remove an element from a set; it must be a member.
+
+If the element is not a member, raise a KeyError.set.symmetric_difference($self, other, /)Return a new set with elements in either the set or other but not both.set.symmetric_difference_update($self, other, /)Update the set, keeping only elements found in either set, but not in both.set.union($self, /, *others)Return a new set with elements from the set and all others.set.update($self, /, *others)Update the set, adding elements from all others.setattr($module, obj, name, value, /)Sets the named attribute on the given object to the specified value.
+
+setattr(x, 'y', v) is equivalent to ``x.y = v``sliceslice(stop)
+slice(start, stop[, step])
+
+Create a slice object.
+
+This is used for extended slicing (e.g. a[0:10:2]).slice.__eq__($self, value, /)Return self==value.slice.__ge__($self, value, /)Return self>=value.slice.__getattribute__($self, name, /)Return getattr(self, name).slice.__gt__($self, value, /)Return self>value.slice.__hash__($self, /)Return hash(self).slice.__le__($self, value, /)Return self<=value.slice.__lt__($self, value, /)Return self<value.slice.__ne__($self, value, /)Return self!=value.slice.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.slice.__reduce__($self, /)Return state information for pickling.slice.__repr__($self, /)Return repr(self).slice.indices($self, object, /)S.indices(len) -> (start, stop, stride)
+
+Assuming a sequence of length len, calculate the start and stop
+indices, and the stride length of the extended slice described by
+S. Out of bounds indices are clipped in a manner consistent with the
+handling of normal slices.sorted($module, iterable, /, *, key=None, reverse=False)Return a new list containing all items from the iterable in ascending order.
+
+A custom key function can be supplied to customize the sort order, and the
+reverse flag can be set to request the result in descending order.staticmethod(function, /)Convert a function to be a static method.
+
+A static method does not receive an implicit first argument.
+To declare a static method, use this idiom:
+
+     class C:
+         @staticmethod
+         def f(arg1, arg2, argN):
+             ...
+
+It can be called either on the class (e.g. C.f()) or on an instance
+(e.g. C().f()). Both the class and the instance are ignored, and
+neither is passed implicitly as the first argument to the method.
+
+Static methods in Python are similar to those found in Java or C++.
+For a more advanced concept, see the classmethod builtin.staticmethod.__call__($self, /, *args, **kwargs)Call self as a function.staticmethod.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.staticmethod.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.staticmethod.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.staticmethod.__repr__($self, /)Return repr(self).strstr(object='') -> str
+str(bytes_or_buffer[, encoding[, errors]]) -> str
+
+Create a new string object from the given object. If encoding or
+errors is specified, then the object must expose a data buffer
+that will be decoded using the given encoding and error handler.
+Otherwise, returns the result of object.__str__() (if defined)
+or repr(object).
+encoding defaults to 'utf-8'.
+errors defaults to 'strict'.str.__add__($self, value, /)Return self+value.str.__contains__($self, key, /)Return bool(key in self).str.__eq__($self, value, /)Return self==value.str.__format__($self, format_spec, /)Return a formatted version of the string as described by format_spec.str.__ge__($self, value, /)Return self>=value.str.__getitem__($self, key, /)Return self[key].str.__gt__($self, value, /)Return self>value.str.__hash__($self, /)Return hash(self).str.__iter__($self, /)Implement iter(self).str.__le__($self, value, /)Return self<=value.str.__len__($self, /)Return len(self).str.__lt__($self, value, /)Return self<value.str.__mod__($self, value, /)Return self%value.str.__mul__($self, value, /)Return self*value.str.__ne__($self, value, /)Return self!=value.str.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.str.__repr__($self, /)Return repr(self).str.__rmod__($self, value, /)Return value%self.str.__rmul__($self, value, /)Return value*self.str.__sizeof__($self, /)Return the size of the string in memory, in bytes.str.__str__($self, /)Return str(self).str.capitalize($self, /)Return a capitalized version of the string.
+
+More specifically, make the first character have upper case and the
+rest lower case.str.casefold($self, /)Return a version of the string suitable for caseless comparisons.str.center($self, width, fillchar=' ', /)Return a centered string of length width.
+
+Padding is done using the specified fill character (default is
+a space).str.count($self, sub[, start[, end]], /)Return the number of non-overlapping occurrences of substring sub in string S[start:end].
+
+Optional arguments start and end are interpreted as in slice
+notation.str.encode($self, /, encoding='utf-8', errors='strict')Encode the string using the codec registered for encoding.
+
+  encoding
+    The encoding in which to encode the string.
+  errors
+    The error handling scheme to use for encoding errors.
+    The default is 'strict' meaning that encoding errors raise a
+    UnicodeEncodeError.  Other possible values are 'ignore', 'replace'
+    and 'xmlcharrefreplace' as well as any other name registered with
+    codecs.register_error that can handle UnicodeEncodeErrors.str.endswith($self, suffix[, start[, end]], /)Return True if the string ends with the specified suffix, False otherwise.
+
+  suffix
+    A string or a tuple of strings to try.
+  start
+    Optional start position. Default: start of the string.
+  end
+    Optional stop position. Default: end of the string.str.expandtabs($self, /, tabsize=8)Return a copy where all tab characters are expanded using spaces.
+
+If tabsize is not given, a tab size of 8 characters is assumed.str.find($self, sub[, start[, end]], /)Return the lowest index in S where substring sub is found, such that sub is contained within S[start:end].
+
+Optional arguments start and end are interpreted as in slice
+notation.  Return -1 on failure.str.format($self, /, *args, **kwargs)Return a formatted version of the string, using substitutions from args and kwargs.
+The substitutions are identified by braces ('{' and '}').str.format_map($self, mapping, /)Return a formatted version of the string, using substitutions from mapping.
+The substitutions are identified by braces ('{' and '}').str.index($self, sub[, start[, end]], /)Return the lowest index in S where substring sub is found, such that sub is contained within S[start:end].
+
+Optional arguments start and end are interpreted as in slice
+notation.  Raises ValueError when the substring is not found.str.isalnum($self, /)Return True if the string is an alpha-numeric string, False otherwise.
+
+A string is alpha-numeric if all characters in the string are
+alpha-numeric and there is at least one character in the string.str.isalpha($self, /)Return True if the string is an alphabetic string, False otherwise.
+
+A string is alphabetic if all characters in the string are
+alphabetic and there is at least one character in the string.str.isascii($self, /)Return True if all characters in the string are ASCII, False otherwise.
+
+ASCII characters have code points in the range U+0000-U+007F.
+Empty string is ASCII too.str.isdecimal($self, /)Return True if the string is a decimal string, False otherwise.
+
+A string is a decimal string if all characters in the string are
+decimal and there is at least one character in the string.str.isdigit($self, /)Return True if the string is a digit string, False otherwise.
+
+A string is a digit string if all characters in the string are
+digits and there is at least one character in the string.str.isidentifier($self, /)Return True if the string is a valid Python identifier, False otherwise.
+
+Call keyword.iskeyword(s) to test whether string s is a reserved
+identifier, such as "def" or "class".str.islower($self, /)Return True if the string is a lowercase string, False otherwise.
+
+A string is lowercase if all cased characters in the string are
+lowercase and there is at least one cased character in the string.str.isnumeric($self, /)Return True if the string is a numeric string, False otherwise.
+
+A string is numeric if all characters in the string are numeric and
+there is at least one character in the string.str.isprintable($self, /)Return True if all characters in the string are printable, False otherwise.
+
+A character is printable if repr() may use it in its output.str.isspace($self, /)Return True if the string is a whitespace string, False otherwise.
+
+A string is whitespace if all characters in the string are
+whitespace and there is at least one character in the string.str.istitle($self, /)Return True if the string is a title-cased string, False otherwise.
+
+In a title-cased string, upper- and title-case characters may only
+follow uncased characters and lowercase characters only cased ones.str.isupper($self, /)Return True if the string is an uppercase string, False otherwise.
+
+A string is uppercase if all cased characters in the string are
+uppercase and there is at least one cased character in the string.str.join($self, iterable, /)Concatenate any number of strings.
+
+The string whose method is called is inserted in between each given
+string.  The result is returned as a new string.
+
+Example: '.'.join(['ab', 'pq', 'rs']) -> 'ab.pq.rs'str.ljust($self, width, fillchar=' ', /)Return a left-justified string of length width.
+
+Padding is done using the specified fill character (default is
+a space).str.lower($self, /)Return a copy of the string converted to lowercase.str.lstrip($self, chars=None, /)Return a copy of the string with leading whitespace removed.
+
+If chars is given and not None, remove characters in chars instead.str.maketrans(x, y=<unrepresentable>, z=<unrepresentable>, /)Return a translation table usable for str.translate().
+
+If there is only one argument, it must be a dictionary mapping
+Unicode ordinals (integers) or characters to Unicode ordinals,
+strings or None.  Character keys will be then converted to ordinals.
+If there are two arguments, they must be strings of equal length,
+and in the resulting dictionary, each character in x will be mapped
+to the character at the same position in y.  If there is a third
+argument, it must be a string, whose characters will be mapped to
+None in the result.str.partition($self, sep, /)Partition the string into three parts using the given separator.
+
+This will search for the separator in the string.  If the separator
+is found, returns a 3-tuple containing the part before the
+separator, the separator itself, and the part after it.
+
+If the separator is not found, returns a 3-tuple containing
+the original string and two empty strings.str.removeprefix($self, prefix, /)Return a str with the given prefix string removed if present.
+
+If the string starts with the prefix string, return
+string[len(prefix):].  Otherwise, return a copy of the original
+string.str.removesuffix($self, suffix, /)Return a str with the given suffix string removed if present.
+
+If the string ends with the suffix string and that suffix is not
+empty, return string[:-len(suffix)].  Otherwise, return a copy of
+the original string.str.replace($self, old, new, /, count=-1)Return a copy with all occurrences of substring old replaced by new.
+
+  count
+    Maximum number of occurrences to replace.
+    -1 (the default value) means replace all occurrences.
+
+If the optional argument count is given, only the first count occurrences are
+replaced.str.rfind($self, sub[, start[, end]], /)Return the highest index in S where substring sub is found, such that sub is contained within S[start:end].
+
+Optional arguments start and end are interpreted as in slice
+notation.  Return -1 on failure.str.rindex($self, sub[, start[, end]], /)Return the highest index in S where substring sub is found, such that sub is contained within S[start:end].
+
+Optional arguments start and end are interpreted as in slice
+notation.  Raises ValueError when the substring is not found.str.rjust($self, width, fillchar=' ', /)Return a right-justified string of length width.
+
+Padding is done using the specified fill character (default is
+a space).str.rpartition($self, sep, /)Partition the string into three parts using the given separator.
+
+This will search for the separator in the string, starting at the
+end.  If the separator is found, returns a 3-tuple containing the
+part before the separator, the separator itself, and the part after
+it.
+
+If the separator is not found, returns a 3-tuple containing two
+empty strings and the original string.str.rsplit($self, /, sep=None, maxsplit=-1)Return a list of the substrings in the string, using sep as the separator string.
+
+  sep
+    The separator used to split the string.
+
+    When set to None (the default value), will split on any
+    whitespace character (including \n \r \t \f and spaces) and
+    will discard empty strings from the result.
+  maxsplit
+    Maximum number of splits.
+    -1 (the default value) means no limit.
+
+Splitting starts at the end of the string and works to the front.str.rstrip($self, chars=None, /)Return a copy of the string with trailing whitespace removed.
+
+If chars is given and not None, remove characters in chars instead.str.split($self, /, sep=None, maxsplit=-1)Return a list of the substrings in the string, using sep as the separator string.
+
+  sep
+    The separator used to split the string.
+
+    When set to None (the default value), will split on any
+    whitespace character (including \n \r \t \f and spaces) and
+    will discard empty strings from the result.
+  maxsplit
+    Maximum number of splits.
+    -1 (the default value) means no limit.
+
+Splitting starts at the front of the string and works to the end.
+
+Note, str.split() is mainly useful for data that has been
+intentionally delimited.  With natural text that includes
+punctuation, consider using the regular expression module.str.splitlines($self, /, keepends=False)Return a list of the lines in the string, breaking at line boundaries.
+
+Line breaks are not included in the resulting list unless keepends
+is given and true.str.startswith($self, prefix[, start[, end]], /)Return True if the string starts with the specified prefix, False otherwise.
+
+  prefix
+    A string or a tuple of strings to try.
+  start
+    Optional start position. Default: start of the string.
+  end
+    Optional stop position. Default: end of the string.str.strip($self, chars=None, /)Return a copy of the string with leading and trailing whitespace removed.
+
+If chars is given and not None, remove characters in chars instead.str.swapcase($self, /)Convert uppercase characters to lowercase and lowercase characters to uppercase.str.title($self, /)Return a version of the string where each word is titlecased.
+
+More specifically, words start with uppercased characters and all
+remaining cased characters have lower case.str.translate($self, table, /)Replace each character in the string using the given translation table.
+
+  table
+    Translation table, which must be a mapping of Unicode ordinals
+    to Unicode ordinals, strings, or None.
+
+The table must implement lookup/indexing via __getitem__, for
+instance a dictionary or list.  If this operation raises
+LookupError, the character is left untouched.  Characters mapped to
+None are deleted.str.upper($self, /)Return a copy of the string converted to uppercase.str.zfill($self, width, /)Pad a numeric string with zeros on the left, to fill a field of the given width.
+
+The string is never truncated.sum($module, iterable, /, start=0)Return the sum of a 'start' value (default: 0) plus an iterable of numbers
+
+When the iterable is empty, return the start value.
+This function is intended specifically for use with numeric values and
+may reject non-numeric types.supersuper() -> same as super(__class__, <first argument>)
+super(type) -> unbound super object
+super(type, obj) -> bound super object; requires isinstance(obj, type)
+super(type, type2) -> bound super object; requires
+    issubclass(type2, type)
+Typical use to call a cooperative superclass method:
+class C(B):
+    def meth(self, arg):
+        super().meth(arg)
+This works for class methods too:
+class C(B):
+    @classmethod
+    def cmeth(cls, arg):
+        super().cmeth(arg)
+super.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.super.__getattribute__($self, name, /)Return getattr(self, name).super.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.super.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.super.__repr__($self, /)Return repr(self).tuple(iterable=(), /)Built-in immutable sequence.
+
+If no argument is given, the constructor returns an empty tuple.
+If iterable is specified the tuple is initialized from iterable's items.
+
+If the argument is a tuple, the return value is the same object.tuple.__add__($self, value, /)Return self+value.tuple.__class_getitem__($type, object, /)Tuples are generic over the types of their contents.
+
+For example, use ``tuple[int, str]`` for a pair whose first element
+is an int and second element is a string.
+
+Tuples also support the form ``tuple[T, ...]`` to indicate
+an arbitrary length tuple of elements of type T.tuple.__contains__($self, key, /)Return bool(key in self).tuple.__eq__($self, value, /)Return self==value.tuple.__ge__($self, value, /)Return self>=value.tuple.__getattribute__($self, name, /)Return getattr(self, name).tuple.__getitem__($self, key, /)Return self[key].tuple.__gt__($self, value, /)Return self>value.tuple.__hash__($self, /)Return hash(self).tuple.__iter__($self, /)Implement iter(self).tuple.__le__($self, value, /)Return self<=value.tuple.__len__($self, /)Return len(self).tuple.__lt__($self, value, /)Return self<value.tuple.__mul__($self, value, /)Return self*value.tuple.__ne__($self, value, /)Return self!=value.tuple.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.tuple.__repr__($self, /)Return repr(self).tuple.__rmul__($self, value, /)Return value*self.tuple.count($self, value, /)Return number of occurrences of value.tuple.index($self, value, start=0, stop=sys.maxsize, /)Return first index of value.
+
+Raises ValueError if the value is not present.typetype(object) -> the object's type
+type(name, bases, dict, **kwds) -> a new typetype.__call__($self, /, *args, **kwargs)Call self as a function.type.__delattr__($self, name, /)Implement delattr(self, name).type.__dir__($self, /)Specialized __dir__ implementation for types.type.__getattribute__($self, name, /)Return getattr(self, name).type.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.type.__instancecheck__($self, instance, /)Check if an object is an instance.type.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.type.__or__($self, value, /)Return self|value.type.__prepare__($cls, name, bases, /, **kwds)Create the namespace for the class statementtype.__repr__($self, /)Return repr(self).type.__ror__($self, value, /)Return value|self.type.__setattr__($self, name, value, /)Implement setattr(self, name, value).type.__sizeof__($self, /)Return memory consumption of the type object.type.__subclasscheck__($self, subclass, /)Check if a class is a subclass.type.__subclasses__($self, /)Return a list of immediate subclasses.type.mro($self, /)Return a type's method resolution order.varsvars([object]) -> dictionary
+
+Without arguments, equivalent to locals().
+With an argument, equivalent to object.__dict__.zip(*iterables, strict=False)The zip object yields n-length tuples, where n is the number of
+iterables passed as positional arguments to zip().  The i-th element
+in every tuple comes from the i-th iterable argument to zip().  This
+continues until the shortest argument is exhausted.
+
+If strict is true and one of the arguments is exhausted before the
+others, raise a ValueError.
+
+   >>> list(zip('abcdefg', range(3), range(4)))
+   [('a', 0, 0), ('b', 1, 1), ('c', 2, 2)]zip.__getattribute__($self, name, /)Return getattr(self, name).zip.__iter__($self, /)Implement iter(self).zip.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.zip.__next__($self, /)Implement next(self).zip.__reduce__($self, /)Return state information for pickling.zip.__setstate__($self, object, /)Set state information for unpickling.NoneType()The type of the None singleton.NoneType.__bool__($self, /)True if self else FalseNoneType.__eq__($self, value, /)Return self==value.NoneType.__ge__($self, value, /)Return self>=value.NoneType.__gt__($self, value, /)Return self>value.NoneType.__hash__($self, /)Return hash(self).NoneType.__le__($self, value, /)Return self<=value.NoneType.__lt__($self, value, /)Return self<value.NoneType.__ne__($self, value, /)Return self!=value.NoneType.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.NoneType.__repr__($self, /)Return repr(self).NotImplementedType()The type of the NotImplemented singleton.NotImplementedType.__bool__($self, /)True if self else FalseNotImplementedType.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.NotImplementedType.__repr__($self, /)Return repr(self).ellipsis()The type of the Ellipsis singleton.ellipsis.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.ellipsis.__repr__($self, /)Return repr(self).function(code, globals, name=None, argdefs=None, closure=None,
+         kwdefaults=None)Create a function object.
+
+  code
+    a code object
+  globals
+    the globals dictionary
+  name
+    a string that overrides the name from the code object
+  argdefs
+    a tuple that specifies the default argument values
+  closure
+    a tuple that supplies the bindings for free variables
+  kwdefaults
+    a dictionary that specifies the default keyword argument valuesfunction.__call__($self, /, *args, **kwargs)Call self as a function.function.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.function.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.function.__repr__($self, /)Return repr(self).code(argcount, posonlyargcount, kwonlyargcount, nlocals, stacksize,
+     flags, codestring, constants, names, varnames, filename, name,
+     qualname, firstlineno, linetable, exceptiontable, freevars=(),
+     cellvars=(), /)Create a code object.  Not for the faint of heart.code.__eq__($self, value, /)Return self==value.code.__ge__($self, value, /)Return self>=value.code.__gt__($self, value, /)Return self>value.code.__hash__($self, /)Return hash(self).code.__le__($self, value, /)Return self<=value.code.__lt__($self, value, /)Return self<value.code.__ne__($self, value, /)Return self!=value.code.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.code.__replace__($self, /, **changes)The same as replace().code.__repr__($self, /)Return repr(self).code._varname_from_oparg($self, /, oparg)(internal-only) Return the local variable name for the given oparg.
+
+WARNING: this method is for internal use only and may change or go
+away.code.replace($self, /, **changes)Return a copy of the code object with new values for the specified fields.generator.__class_getitem__($type, object, /)generators are generic over the types of their yield, send, and return valuesgenerator.__del__($self, /)Called when the instance is about to be destroyed.generator.__iter__($self, /)Implement iter(self).generator.__next__($self, /)Implement next(self).generator.__repr__($self, /)Return repr(self).generator.__sizeof__($self, /)gen.__sizeof__() -> size of gen in memory, in bytesgenerator.close($self, /)close() -> raise GeneratorExit inside generator.generator.send($self, object, /)send(value) -> send 'value' into generator,
+return next yielded value or raise StopIteration.generator.throwthrow(value)
+throw(type[,value[,tb]])
+
+Raise exception in generator, return next yielded value or raise
+StopIteration.
+the (type, val, tb) signature is deprecated, 
+and may be removed in a future version of Python.coroutine.__await__($self, /)Return an iterator to be used in await expression.coroutine.__class_getitem__($type, object, /)coroutines are generic over the types of their yield, send, and return valuescoroutine.__del__($self, /)Called when the instance is about to be destroyed.coroutine.__repr__($self, /)Return repr(self).coroutine.__sizeof__($self, /)gen.__sizeof__() -> size of gen in memory, in bytescoroutine.close($self, /)close() -> raise GeneratorExit inside coroutine.coroutine.send($self, object, /)send(arg) -> send 'arg' into coroutine,
+return next iterated value or raise StopIteration.coroutine.throwthrow(value)
+throw(type[,value[,traceback]])
+
+Raise exception in coroutine, return next iterated value or raise
+StopIteration.
+the (type, val, tb) signature is deprecated, 
+and may be removed in a future version of Python.async_generator.__aiter__($self, /)Return an awaitable, that resolves in asynchronous iterator.async_generator.__anext__($self, /)Return a value or raise StopAsyncIteration.async_generator.__class_getitem__($type, object, /)async generators are generic over the types of their yield and send valuesasync_generator.__del__($self, /)Called when the instance is about to be destroyed.async_generator.__repr__($self, /)Return repr(self).async_generator.__sizeof__($self, /)gen.__sizeof__() -> size of gen in memory, in bytesasync_generator.aclose($self, /)aclose() -> raise GeneratorExit inside generator.async_generator.asend($self, object, /)asend(v) -> send 'v' in generator.async_generator.athrowathrow(value)
+athrow(type[,value[,tb]])
+
+raise exception in generator.
+the (type, val, tb) signature is deprecated, 
+and may be removed in a future version of Python.method(function, instance, /)Create a bound instance method object.method.__call__($self, /, *args, **kwargs)Call self as a function.method.__eq__($self, value, /)Return self==value.method.__ge__($self, value, /)Return self>=value.method.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.method.__getattribute__($self, name, /)Return getattr(self, name).method.__gt__($self, value, /)Return self>value.method.__hash__($self, /)Return hash(self).method.__le__($self, value, /)Return self<=value.method.__lt__($self, value, /)Return self<value.method.__ne__($self, value, /)Return self!=value.method.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.method.__repr__($self, /)Return repr(self).builtin_function_or_method.__call__($self, /, *args, **kwargs)Call self as a function.builtin_function_or_method.__eq__($self, value, /)Return self==value.builtin_function_or_method.__ge__($self, value, /)Return self>=value.builtin_function_or_method.__gt__($self, value, /)Return self>value.builtin_function_or_method.__hash__($self, /)Return hash(self).builtin_function_or_method.__le__($self, value, /)Return self<=value.builtin_function_or_method.__lt__($self, value, /)Return self<value.builtin_function_or_method.__ne__($self, value, /)Return self!=value.builtin_function_or_method.__repr__($self, /)Return repr(self).SimpleNamespace(mapping_or_iterable=(), /, **kwargs)A simple attribute-based namespace.SimpleNamespace.__eq__($self, value, /)Return self==value.SimpleNamespace.__ge__($self, value, /)Return self>=value.SimpleNamespace.__gt__($self, value, /)Return self>value.SimpleNamespace.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.SimpleNamespace.__le__($self, value, /)Return self<=value.SimpleNamespace.__lt__($self, value, /)Return self<value.SimpleNamespace.__ne__($self, value, /)Return self!=value.SimpleNamespace.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.SimpleNamespace.__reduce__($self, /)Return state information for picklingSimpleNamespace.__replace__($self, /, **changes)Return a copy of the namespace object with new values for the specified attributes.SimpleNamespace.__repr__($self, /)Return repr(self).mappingproxy(mapping)Read-only proxy of a mapping.mappingproxy.__class_getitem__($type, object, /)mappingproxy objects are generic over two types, signifying (respectively) the types of their keys and valuesmappingproxy.__contains__($self, key, /)Return bool(key in self).mappingproxy.__eq__($self, value, /)Return self==value.mappingproxy.__ge__($self, value, /)Return self>=value.mappingproxy.__getitem__($self, key, /)Return self[key].mappingproxy.__gt__($self, value, /)Return self>value.mappingproxy.__hash__($self, /)Return hash(self).mappingproxy.__ior__($self, value, /)Return self|=value.mappingproxy.__iter__($self, /)Implement iter(self).mappingproxy.__le__($self, value, /)Return self<=value.mappingproxy.__len__($self, /)Return len(self).mappingproxy.__lt__($self, value, /)Return self<value.mappingproxy.__ne__($self, value, /)Return self!=value.mappingproxy.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.mappingproxy.__or__($self, value, /)Return self|value.mappingproxy.__repr__($self, /)Return repr(self).mappingproxy.__reversed__($self, /)D.__reversed__() -> reverse iteratormappingproxy.__ror__($self, value, /)Return value|self.mappingproxy.__str__($self, /)Return str(self).mappingproxy.copy($self, /)D.copy() -> a shallow copy of Dmappingproxy.get($self, key, default=None, /)Return the value for key if key is in the mapping, else default.mappingproxy.items($self, /)D.items() -> a set-like object providing a view on D's itemsmappingproxy.keys($self, /)D.keys() -> a set-like object providing a view on D's keysmappingproxy.values($self, /)D.values() -> an object providing a view on D's valuesmodule(name, doc=None)Create a module object.
+
+The name must be a string; the optional doc argument can have any type.module.__dir__($self, /)__dir__() -> list
+specialized dir() implementationmodule.__getattribute__($self, name, /)Return getattr(self, name).module.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.module.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.module.__repr__($self, /)Return repr(self).cell([contents])Create a new cell object.
+
+  contents
+    the contents of the cell. If not specified, the cell will be empty,
+    and further attempts to access its cell_contents attribute will
+    raise a ValueError.cell.__eq__($self, value, /)Return self==value.cell.__ge__($self, value, /)Return self>=value.cell.__gt__($self, value, /)Return self>value.cell.__le__($self, value, /)Return self<=value.cell.__lt__($self, value, /)Return self<value.cell.__ne__($self, value, /)Return self!=value.cell.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.cell.__repr__($self, /)Return repr(self).traceback(tb_next, tb_frame, tb_lasti, tb_lineno)Create a new traceback object.traceback.__new__($type, *args, **kwargs)Create and return a new object.  See help(type) for accurate signature.frame.__repr__($self, /)Return repr(self).frame.__sizeof__($self, /)F.__sizeof__() -> size of F in memory, in bytesframe.clear($self, /)F.clear(): clear most references held by the framewrapper_descriptor.__call__($self, /, *args, **kwargs)Call self as a function.wrapper_descriptor.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.wrapper_descriptor.__repr__($self, /)Return repr(self).method_descriptor.__call__($self, /, *args, **kwargs)Call self as a function.method_descriptor.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.method_descriptor.__repr__($self, /)Return repr(self).classmethod_descriptor.__call__($self, /, *args, **kwargs)Call self as a function.classmethod_descriptor.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.classmethod_descriptor.__repr__($self, /)Return repr(self).method-wrapper.__call__($self, /, *args, **kwargs)Call self as a function.method-wrapper.__eq__($self, value, /)Return self==value.method-wrapper.__ge__($self, value, /)Return self>=value.method-wrapper.__gt__($self, value, /)Return self>value.method-wrapper.__hash__($self, /)Return hash(self).method-wrapper.__le__($self, value, /)Return self<=value.method-wrapper.__lt__($self, value, /)Return self<value.method-wrapper.__ne__($self, value, /)Return self!=value.method-wrapper.__repr__($self, /)Return repr(self).getset_descriptor.__delete__($self, instance, /)Delete an attribute of instance.getset_descriptor.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.getset_descriptor.__repr__($self, /)Return repr(self).getset_descriptor.__set__($self, instance, value, /)Set an attribute of instance to value.member_descriptor.__delete__($self, instance, /)Delete an attribute of instance.member_descriptor.__get__($self, instance, owner=None, /)Return an attribute of instance, which is of type owner.member_descriptor.__repr__($self, /)Return repr(self).member_descriptor.__set__($self, instance, value, /)Set an attribute of instance to value.math.acos($module, x, /)Return the arc cosine (measured in radians) of x.
+
+The result is between 0 and pi.math.acosh($module, x, /)Return the inverse hyperbolic cosine of x.math.asin($module, x, /)Return the arc sine (measured in radians) of x.
+
+The result is between -pi/2 and pi/2.math.asinh($module, x, /)Return the inverse hyperbolic sine of x.math.atan($module, x, /)Return the arc tangent (measured in radians) of x.
+
+The result is between -pi/2 and pi/2.math.atan2($module, y, x, /)Return the arc tangent (measured in radians) of y/x.
+
+Unlike atan(y/x), the signs of both x and y are considered.math.atanh($module, x, /)Return the inverse hyperbolic tangent of x.math.cbrt($module, x, /)Return the cube root of x.math.ceil($module, x, /)Return the ceiling of x as an Integral.
+
+This is the smallest integer >= x.math.comb($module, n, k, /)Number of ways to choose k items from n items without repetition and without order.
+
+Evaluates to n! / (k! * (n - k)!) when k <= n and evaluates
+to zero when k > n.
+
+Also called the binomial coefficient because it is equivalent
+to the coefficient of k-th term in polynomial expansion of the
+expression (1 + x)**n.
+
+Raises TypeError if either of the arguments are not integers.
+Raises ValueError if either of the arguments are negative.math.copysign($module, x, y, /)Return a float with the magnitude (absolute value) of x but the sign of y.
+
+On platforms that support signed zeros, copysign(1.0, -0.0)
+returns -1.0.
+math.cos($module, x, /)Return the cosine of x (measured in radians).math.cosh($module, x, /)Return the hyperbolic cosine of x.math.degrees($module, x, /)Convert angle x from radians to degrees.math.dist($module, p, q, /)Return the Euclidean distance between two points p and q.
+
+The points should be specified as sequences (or iterables) of
+coordinates.  Both inputs must have the same dimension.
+
+Roughly equivalent to:
+    sqrt(sum((px - qx) ** 2.0 for px, qx in zip(p, q)))math.erf($module, x, /)Error function at x.math.erfc($module, x, /)Complementary error function at x.math.exp($module, x, /)Return e raised to the power of x.math.exp2($module, x, /)Return 2 raised to the power of x.math.expm1($module, x, /)Return exp(x)-1.
+
+This function avoids the loss of precision involved in the direct evaluation of exp(x)-1 for small x.math.fabs($module, x, /)Return the absolute value of the float x.math.factorial($module, n, /)Find n!.math.floor($module, x, /)Return the floor of x as an Integral.
+
+This is the largest integer <= x.math.fma($module, x, y, z, /)Fused multiply-add operation.
+
+Compute (x * y) + z with a single round.math.fmod($module, x, y, /)Return fmod(x, y), according to platform C.
+
+x % y may differ.math.frexp($module, x, /)Return the mantissa and exponent of x, as pair (m, e).
+
+If x is a finite nonzero number, then m is a float with
+0.5 <= abs(m) < 1.0 and an integer e is such that
+x == m * 2**e exactly.  Else, return (x, 0).math.fsum($module, seq, /)Return an accurate floating-point sum of values in the iterable seq.
+
+Assumes IEEE-754 floating-point arithmetic.math.gamma($module, x, /)Gamma function at x.math.gcd($module, *integers)Greatest Common Divisor.math.hypothypot(*coordinates) -> value
+
+Multidimensional Euclidean distance from the origin to a point.
+
+Roughly equivalent to:
+    sqrt(sum(x**2 for x in coordinates))
+
+For a two dimensional point (x, y), gives the hypotenuse
+using the Pythagorean theorem:  sqrt(x*x + y*y).
+
+For example, the hypotenuse of a 3/4/5 right triangle is:
+
+    >>> hypot(3.0, 4.0)
+    5.0
+math.isclose($module, /, a, b, *, rel_tol=1e-09, abs_tol=0.0)Determine whether two floating-point numbers are close in value.
+
+  rel_tol
+    maximum difference for being considered "close", relative to the
+    magnitude of the input values
+  abs_tol
+    maximum difference for being considered "close", regardless of the
+    magnitude of the input values
+
+Return True if a is close in value to b, and False otherwise.
+
+For the values to be considered close, the difference between them
+must be smaller than at least one of the tolerances.
+
+-inf, inf and NaN behave similarly to the IEEE 754 Standard.  That
+is, NaN is not close to anything, even itself.  inf and -inf are
+only close to themselves.math.isfinite($module, x, /)Return True if x is neither an infinity nor a NaN, and False otherwise.math.isinf($module, x, /)Return True if x is a positive or negative infinity, and False otherwise.math.isnan($module, x, /)Return True if x is a NaN (not a number), and False otherwise.math.isqrt($module, n, /)Return the integer part of the square root of the input.math.lcm($module, *integers)Least Common Multiple.math.ldexp($module, x, i, /)Return x * (2**i).
+
+This is essentially the inverse of frexp().math.lgamma($module, x, /)Natural logarithm of absolute value of Gamma function at x.math.loglog(x, [base=math.e])
+Return the logarithm of x to the given base.
+
+If the base is not specified, returns the natural logarithm (base e) of x.math.log10($module, x, /)Return the base 10 logarithm of x.math.log1p($module, x, /)Return the natural logarithm of 1+x (base e).
+
+The result is computed in a way which is accurate for x near zero.math.log2($module, x, /)Return the base 2 logarithm of x.math.modf($module, x, /)Return the fractional and integer parts of x.
+
+Both results carry the sign of x and are floats.math.nextafter($module, x, y, /, *, steps=None)Return the floating-point value the given number of steps after x towards y.
+
+If steps is not specified or is None, it defaults to 1.
+
+Raises a TypeError, if x or y is not a double, or if steps is not
+an integer.  Raises ValueError if steps is negative.math.perm($module, n, k=None, /)Number of ways to choose k items from n items without repetition and with order.
+
+Evaluates to n! / (n - k)! when k <= n and evaluates
+to zero when k > n.
+
+If k is not specified or is None, then k defaults to n
+and the function returns n!.
+
+Raises TypeError if either of the arguments are not integers.
+Raises ValueError if either of the arguments are negative.math.pow($module, x, y, /)Return x**y (x to the power of y).math.prod($module, iterable, /, *, start=1)Calculate the product of all the elements in the input iterable.
+
+The default start value for the product is 1.
+
+When the iterable is empty, return the start value.  This function is
+intended specifically for use with numeric values and may reject
+non-numeric types.math.radians($module, x, /)Convert angle x from degrees to radians.math.remainder($module, x, y, /)Difference between x and the closest integer multiple of y.
+
+Return x - n*y where n*y is the closest integer multiple of y.
+In the case where x is exactly halfway between two multiples of
+y, the nearest even value of n is used. The result is always exact.math.sin($module, x, /)Return the sine of x (measured in radians).math.sinh($module, x, /)Return the hyperbolic sine of x.math.sqrt($module, x, /)Return the square root of x.math.sumprod($module, p, q, /)Return the sum of products of values from two iterables p and q.
+
+Roughly equivalent to:
+
+    sum(itertools.starmap(operator.mul, zip(p, q, strict=True)))
+
+For float and mixed int/float inputs, the intermediate products
+and sums are computed with extended precision.math.tan($module, x, /)Return the tangent of x (measured in radians).math.tanh($module, x, /)Return the hyperbolic tangent of x.math.trunc($module, x, /)Truncates the Real x to the nearest Integral toward 0.
+
+Uses the __trunc__ magic method.math.ulp($module, x, /)Return the value of the least significant bit of the float x.time.asctimeasctime([time_tuple]) -> string
+
+Convert a time tuple to a string, e.g. 'Sat Jun 06 16:26:11 1998'.
+When the time tuple is not present, current time as returned by localtime()
+is used.time.clock_getresclock_getres(clk_id) -> floating-point number
+
+Return the resolution (precision) of the specified clock clk_id.time.clock_gettime($module, clk_id, /)Return the time of the specified clock clk_id as a float.time.clock_gettime_ns($module, clk_id, /)Return the time of the specified clock clk_id as nanoseconds (int).time.clock_settimeclock_settime(clk_id, time)
+
+Set the time of the specified clock clk_id.time.clock_settime_nsclock_settime_ns(clk_id, time)
+
+Set the time of the specified clock clk_id with nanoseconds.time.ctimectime([seconds]) -> string
+
+Convert a time in seconds since the Epoch to a string in local time.
+This is equivalent to asctime(localtime(seconds)). When 'seconds' is not
+passed in, convert the current time instead.time.get_clock_infoget_clock_info(name: str) -> dict
+
+Get information of the specified clock.time.gmtimegmtime([seconds]) -> (tm_year, tm_mon, tm_mday, tm_hour, tm_min,
+                       tm_sec, tm_wday, tm_yday, tm_isdst)
+
+Convert seconds since the Epoch to a time tuple expressing UTC (a.k.a.
+GMT).  When 'seconds' is not passed in, convert the current time instead.
+
+If the platform supports the tm_gmtoff and tm_zone, they are available as
+attributes only.time.localtimelocaltime([seconds]) -> (tm_year,tm_mon,tm_mday,tm_hour,tm_min,
+                          tm_sec,tm_wday,tm_yday,tm_isdst)
+
+Convert seconds since the Epoch to a time tuple expressing local time.
+When 'seconds' is not passed in, convert the current time instead.time.mktime($self, object, /)mktime(time_tuple) -> floating-point number
+
+Convert a time tuple in local time to seconds since the Epoch.
+Note that mktime(gmtime(0)) will not generally return zero for most
+time zones; instead the returned value will either be equal to that
+of the timezone or altzone attributes on the time module.time.monotonic($self, /)monotonic() -> float
+
+Monotonic clock, cannot go backward.time.monotonic_ns($self, /)monotonic_ns() -> int
+
+Monotonic clock, cannot go backward, as nanoseconds.time.perf_counter($self, /)perf_counter() -> float
+
+Performance counter for benchmarking.time.perf_counter_ns($self, /)perf_counter_ns() -> int
+
+Performance counter for benchmarking as nanoseconds.time.process_time($self, /)process_time() -> float
+
+Process time for profiling: sum of the kernel and user-space CPU time.time.process_time_ns($self, /)process_time() -> int
+
+Process time for profiling as nanoseconds:
+sum of the kernel and user-space CPU time.time.pthread_getcpuclockidpthread_getcpuclockid(thread_id) -> int
+
+Return the clk_id of a thread's CPU time clock.time.sleep($self, object, /)sleep(seconds)
+
+Delay execution for a given number of seconds.  The argument may be
+a floating-point number for subsecond precision.time.strftimestrftime(format[, time_tuple]) -> string
+
+Convert a time tuple to a string according to a format specification.
+See the library reference manual for formatting codes. When the time tuple
+is not present, current time as returned by localtime() is used.
+
+Commonly used format codes:
+
+%Y  Year with century as a decimal number.
+%m  Month as a decimal number [01,12].
+%d  Day of the month as a decimal number [01,31].
+%H  Hour (24-hour clock) as a decimal number [00,23].
+%M  Minute as a decimal number [00,59].
+%S  Second as a decimal number [00,61].
+%z  Time zone offset from UTC.
+%a  Locale's abbreviated weekday name.
+%A  Locale's full weekday name.
+%b  Locale's abbreviated month name.
+%B  Locale's full month name.
+%c  Locale's appropriate date and time representation.
+%I  Hour (12-hour clock) as a decimal number [01,12].
+%p  Locale's equivalent of either AM or PM.
+
+Other codes may be available on your platform.  See documentation for
+the C library strftime function.
+time.strptimestrptime(string[, format]) -> struct_time
+
+Parse a string to a time tuple according to a format specification.
+See the library reference manual for formatting codes (same as
+strftime()).
+
+Commonly used format codes:
+
+%Y  Year with century as a decimal number.
+%m  Month as a decimal number [01,12].
+%d  Day of the month as a decimal number [01,31].
+%H  Hour (24-hour clock) as a decimal number [00,23].
+%M  Minute as a decimal number [00,59].
+%S  Second as a decimal number [00,61].
+%z  Time zone offset from UTC.
+%a  Locale's abbreviated weekday name.
+%A  Locale's full weekday name.
+%b  Locale's abbreviated month name.
+%B  Locale's full month name.
+%c  Locale's appropriate date and time representation.
+%I  Hour (12-hour clock) as a decimal number [01,12].
+%p  Locale's equivalent of either AM or PM.
+
+Other codes may be available on your platform.  See documentation for
+the C library strftime function.
+time.thread_time($self, /)thread_time() -> float
+
+Thread time for profiling: sum of the kernel and user-space CPU time.time.thread_time_ns($self, /)thread_time() -> int
+
+Thread time for profiling as nanoseconds:
+sum of the kernel and user-space CPU time.time.time($self, /)time() -> floating-point number
+
+Return the current time in seconds since the Epoch.
+Fractions of a second may be present if the system clock provides them.time.time_ns($self, /)time_ns() -> int
+
+Return the current time in nanoseconds since the Epoch.time.tzset($self, /)tzset()
+
+Initialize, or reinitialize, the local timezone to the value stored in
+os.environ['TZ']. The TZ environment variable should be specified in
+standard Unix timezone format as documented in the tzset man page
+(eg. 'US/Eastern', 'Europe/Amsterdam'). Unknown timezones will silently
+fall back to UTC. If the TZ environment variable is not set, the local
+timezone is set to the systems best guess of wallclock time.
+Changing the TZ environment variable without calling tzset *may* change
+the local timezone used by methods such as localtime, but this behaviour
+should not be relied on.sys.__breakpointhook__($module, /, *args, **kwargs)This hook function is called by built-in breakpoint().
+sys.__displayhook__($module, object, /)Print an object to sys.stdout and also save it in builtins._sys.__excepthook__($module, exctype, value, traceback, /)Handle an exception by displaying it with a traceback on sys.stderr.sys.__unraisablehook__($module, unraisable, /)Handle an unraisable exception.
+
+The unraisable argument has the following attributes:
+
+* exc_type: Exception type.
+* exc_value: Exception value, can be None.
+* exc_traceback: Exception traceback, can be None.
+* err_msg: Error message, can be None.
+* object: Object causing the exception, can be None.sys._baserepl($module, /)Private function for getting the base REPLsys._clear_internal_caches($module, /)Clear all internal performance-related caches.sys._clear_type_cache($module, /)Clear the internal type lookup cache.sys._current_exceptions($module, /)Return a dict mapping each thread's identifier to its current raised exception.
+
+This function should be used for specialized purposes only.sys._current_frames($module, /)Return a dict mapping each thread's thread id to its current stack frame.
+
+This function should be used for specialized purposes only.sys._debugmallocstats($module, /)Print summary info to stderr about the state of pymalloc's structures.
+
+In Py_DEBUG mode, also perform some expensive internal consistency
+checks.sys._get_cpu_count_config($module, /)Private function for getting PyConfig.cpu_countsys._getframe($module, depth=0, /)Return a frame object from the call stack.
+
+If optional integer depth is given, return the frame object that many
+calls below the top of the stack.  If that is deeper than the call
+stack, ValueError is raised.  The default for depth is zero, returning
+the frame at the top of the call stack.
+
+This function should be used for internal and specialized purposes
+only.sys._getframemodulename($module, /, depth=0)Return the name of the module for a calling frame.
+
+The default depth returns the module containing the call to this API.
+A more typical use in a library will pass a depth of 1 to get the user's
+module rather than the library module.
+
+If no frame, module, or name can be found, returns None.sys._is_gil_enabled($module, /)Return True if the GIL is currently enabled and False otherwise.sys._is_interned($module, string, /)Return True if the given string is "interned".sys._setprofileallthreads($module, function, /)Set the profiling function in all running threads belonging to the current interpreter.
+
+It will be called on each function call and return.  See the profiler
+chapter in the library manual.sys._settraceallthreads($module, function, /)Set the global debug tracing function in all running threads belonging to the current interpreter.
+
+It will be called on each function call. See the debugger chapter
+in the library manual.sys.activate_stack_trampoline($module, backend, /)Activate stack profiler trampoline *backend*.sys.addaudithook($module, /, hook)Adds a new audit hook callback.sys.audit($module, event, /, *args)Passes the event to any audit hooks that are attached.sys.breakpointhook($module, /, *args, **kwargs)This hook function is called by built-in breakpoint().
+sys.call_tracing($module, func, args, /)Call func(*args), while tracing is enabled.
+
+The tracing state is saved, and restored afterwards.  This is intended
+to be called from a debugger from a checkpoint, to recursively debug
+some other code.sys.deactivate_stack_trampoline($module, /)Deactivate the current stack profiler trampoline backend.
+
+If no stack profiler is activated, this function has no effect.sys.displayhook($module, object, /)Print an object to sys.stdout and also save it in builtins._sys.exc_info($module, /)Return current exception information: (type, value, traceback).
+
+Return information about the most recent exception caught by an except
+clause in the current stack frame or in an older stack frame.sys.excepthook($module, exctype, value, traceback, /)Handle an exception by displaying it with a traceback on sys.stderr.sys.exception($module, /)Return the current exception.
+
+Return the most recent exception caught by an except clause
+in the current stack frame or in an older stack frame, or None
+if no such exception exists.sys.exit($module, status=None, /)Exit the interpreter by raising SystemExit(status).
+
+If the status is omitted or None, it defaults to zero (i.e., success).
+If the status is an integer, it will be used as the system exit status.
+If it is another kind of object, it will be printed and the system
+exit status will be one (i.e., failure).sys.get_asyncgen_hooks($module, /)Return the installed asynchronous generators hooks.
+
+This returns a namedtuple of the form (firstiter, finalizer).sys.get_coroutine_origin_tracking_depth($module, /)Check status of origin tracking for coroutine objects in this thread.sys.get_int_max_str_digits($module, /)Return the maximum string digits limit for non-binary int<->str conversions.sys.getallocatedblocks($module, /)Return the number of memory blocks currently allocated.sys.getdefaultencoding($module, /)Return the current default encoding used by the Unicode implementation.sys.getdlopenflags($module, /)Return the current value of the flags that are used for dlopen calls.
+
+The flag constants are defined in the os module.sys.getfilesystemencodeerrors($module, /)Return the error mode used Unicode to OS filename conversion.sys.getfilesystemencoding($module, /)Return the encoding used to convert Unicode filenames to OS filenames.sys.getprofile($module, /)Return the profiling function set with sys.setprofile.
+
+See the profiler chapter in the library manual.sys.getrecursionlimit($module, /)Return the current value of the recursion limit.
+
+The recursion limit is the maximum depth of the Python interpreter
+stack.  This limit prevents infinite recursion from causing an overflow
+of the C stack and crashing Python.sys.getrefcount($module, object, /)Return the reference count of object.
+
+The count returned is generally one higher than you might expect,
+because it includes the (temporary) reference as an argument to
+getrefcount().sys.getsizeofgetsizeof(object [, default]) -> int
+
+Return the size of object in bytes.sys.getswitchinterval($module, /)Return the current thread switch interval; see sys.setswitchinterval().sys.gettrace($module, /)Return the global debug tracing function set with sys.settrace.
+
+See the debugger chapter in the library manual.sys.getunicodeinternedsize($module, /, *, _only_immortal=False)Return the number of elements of the unicode interned dictionarysys.intern($module, string, /)``Intern'' the given string.
+
+This enters the string in the (global) table of interned strings whose
+purpose is to speed up dictionary lookups. Return the string itself or
+the previously interned string object with the same value.sys.is_finalizing($module, /)Return True if Python is exiting.sys.is_stack_trampoline_active($module, /)Return *True* if a stack profiler trampoline is active.sys.set_asyncgen_hooksset_asyncgen_hooks([firstiter] [, finalizer])
+
+Set a finalizer for async generators objects.sys.set_coroutine_origin_tracking_depth($module, /, depth)Enable or disable origin tracking for coroutine objects in this thread.
+
+Coroutine objects will track 'depth' frames of traceback information
+about where they came from, available in their cr_origin attribute.
+
+Set a depth of 0 to disable.sys.set_int_max_str_digits($module, /, maxdigits)Set the maximum string digits limit for non-binary int<->str conversions.sys.setdlopenflags($module, flags, /)Set the flags used by the interpreter for dlopen calls.
+
+This is used, for example, when the interpreter loads extension
+modules. Among other things, this will enable a lazy resolving of
+symbols when importing a module, if called as sys.setdlopenflags(0).
+To share symbols across extension modules, call as
+sys.setdlopenflags(os.RTLD_GLOBAL).  Symbolic names for the flag
+modules can be found in the os module (RTLD_xxx constants, e.g.
+os.RTLD_LAZY).sys.setprofile($module, function, /)Set the profiling function.
+
+It will be called on each function call and return.  See the profiler
+chapter in the library manual.sys.setrecursionlimit($module, limit, /)Set the maximum depth of the Python interpreter stack to n.
+
+This limit prevents infinite recursion from causing an overflow of the C
+stack and crashing Python.  The highest possible limit is platform-
+dependent.sys.setswitchinterval($module, interval, /)Set the ideal thread switching delay inside the Python interpreter.
+
+The actual frequency of switching threads can be lower if the
+interpreter executes long sequences of uninterruptible code
+(this is implementation-specific and workload-dependent).
+
+The parameter must represent the desired switching delay in seconds
+A typical value is 0.005 (5 milliseconds).sys.settrace($module, function, /)Set the global debug tracing function.
+
+It will be called on each function call.  See the debugger chapter
+in the library manual.sys.unraisablehook($module, unraisable, /)Handle an unraisable exception.
+
+The unraisable argument has the following attributes:
+
+* exc_type: Exception type.
+* exc_value: Exception value, can be None.
+* exc_traceback: Exception traceback, can be None.
+* err_msg: Error message, can be None.
+* object: Object causing the exception, can be None.

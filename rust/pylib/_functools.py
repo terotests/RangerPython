@@ -4,8 +4,9 @@
 
 
 class _BuiltinFunction:
-    def __init__(self, f):
+    def __init__(self, f, text_signature=None):
         self._f = f
+        self.__text_signature__ = text_signature
         self.__name__ = f.__name__
         self.__qualname__ = f.__name__
         self.__doc__ = f.__doc__
@@ -168,5 +169,5 @@ and keywords."""
 _repr_running = []
 
 
-cmp_to_key = _BuiltinFunction(cmp_to_key)
+cmp_to_key = _BuiltinFunction(cmp_to_key, "($module, /, mycmp)")
 reduce = _BuiltinFunction(reduce)

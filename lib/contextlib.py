@@ -168,9 +168,9 @@ class _GeneratorContextManager(ContextDecorator, AbstractContextManager):
 
 
 def contextmanager(func):
+    from functools import wraps
+
+    @wraps(func)
     def helper(*args, **kwds):
         return _GeneratorContextManager(func, args, kwds)
-    helper.__name__ = getattr(func, "__name__", "helper")
-    helper.__doc__ = getattr(func, "__doc__", None)
-    helper.__wrapped__ = func
     return helper

@@ -332,6 +332,8 @@ pub struct Vm {
     pub bare_reraise: bool,
     /// classes of native objects (traceback, frame...), by name
     pub classes: HashMap<&'static str, Rc<Class>>,
+    /// how the interpreter was started (sys.executable, sys.flags)
+    pub host: crate::process::Host,
 }
 
 impl Vm {
@@ -364,6 +366,7 @@ impl Vm {
             bare_reraise: false,
             echo: false,
             search_path: vec![],
+            host: Default::default(),
         };
         crate::builtins::install(&mut vm);
         let fc = vm.t.function.clone();
@@ -602,6 +605,26 @@ impl Vm {
                     let raw = self.class_of(&v).lookup(&name).unwrap_or(f);
                     self.unraisable(e, &raw);
                 }
+            }
+        }
+    }
+
+    /// What CPython does to __main__ when the interpreter exits: the names
+    /// that start with an underscore are set to None, then the others but
+    /// __builtins__, and the objects that lose their last reference are
+    /// finalized.
+    pub fn finalize(&mut self) {
+        self.run_finalizers();
+        let g = self.main_globals.clone();
+        for underscore in [true, false] {
+            let keys = g.borrow().keys();
+            for k in keys {
+                let Value::Str(s) = &k else { continue };
+                if underscore != (s.s.starts_with('_') && !s.s.starts_with("__")) || &*s.s == "__builtins__" {
+                    continue;
+                }
+                g.borrow_mut().set_str(s.clone(), Value::None);
+                self.run_finalizers();
             }
         }
     }

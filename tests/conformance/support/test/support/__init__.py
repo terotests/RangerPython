@@ -8,7 +8,7 @@
 import sys
 import unittest
 
-# CPython leaves it 1 unless regrtest lowers it
+# as in CPython when it is not run by regrtest
 verbose = 1
 is_jython = False
 is_android = False
@@ -17,11 +17,14 @@ is_wasi = False
 is_s390x = False
 skip_on_s390x = unittest.skipIf(is_s390x, "skipped on s390x")
 is_apple_mobile = False
-has_subprocess_support = False
+# a child interpreter is started through sys.executable, which a runtime
+# that cannot start processes leaves empty
+has_subprocess_support = bool(sys.executable)
 Py_DEBUG = False
 Py_TRACE_REFS = False
-MISSING_C_DOCSTRINGS = True
-HAVE_DOCSTRINGS = False
+# built-in functions and types carry CPython's docstrings and text signatures
+MISSING_C_DOCSTRINGS = False
+HAVE_DOCSTRINGS = True
 MAX_Py_ssize_t = sys.maxsize
 NHASHBITS = 61
 SHORT_TIMEOUT = 30.0
@@ -82,8 +85,12 @@ def __getattr__(name):
     return _Missing(name)
 
 
-def _skipper(reason):
+def _skipper(reason, skip=True):
     def decorator(*args, **kwargs):
+        if not skip:
+            if len(args) == 1 and not kwargs and callable(args[0]):
+                return args[0]
+            return lambda f: f
         if len(args) == 1 and not kwargs and callable(args[0]):
             return unittest.skip(reason)(args[0])
         return unittest.skip(reason)
@@ -95,12 +102,29 @@ def cpython_only(f):
     return f
 refcount_test = unittest.skip("reference counts")
 bigaddrspacetest = unittest.skip("big address space")
-requires_subprocess = _skipper("no subprocesses")
+requires_subprocess = _skipper("no subprocesses", not has_subprocess_support)
 requires_fork = _skipper("no fork")
-# as CPython's on any platform but macOS (sys.platform is "linux" here)
-requires_mac_ver = lambda *version: (lambda f: f)
-requires_resource = _skipper("resource not enabled")
-requires_docstrings = unittest.skip("no docstrings")
+# a macOS version only matters on macOS
+requires_mac_ver = _skipper("not macOS", sys.platform == "darwin")
+# as regrtest without -u: the resources ('cpu' among them) are not used, as
+# their tests would take longer than a file's time budget on this runtime
+use_resources = ()
+
+
+def is_resource_enabled(resource):
+    return use_resources is None or resource in use_resources
+
+
+def requires_resource(resource):
+    if is_resource_enabled(resource):
+        return lambda f: f
+    return unittest.skip("resource %r is not enabled" % resource)
+
+
+def requires(resource, msg=None):
+    if not is_resource_enabled(resource):
+        raise ResourceDenied(msg or "Use of the %r resource not enabled" % resource)
+requires_docstrings = lambda f: f
 no_tracing = lambda f: f
 suppress_immortalization = lambda *a, **k: (lambda f: f) if not (len(a) == 1 and callable(a[0])) else a[0]
 skip_if_pgo_task = lambda f: f
@@ -338,7 +362,22 @@ def check_disallow_instantiation(testcase, tp, *args, **kwds):
 
 
 def check__all__(test_case, module, name_of_module=None, extra=(), not_exported=()):
-    raise unittest.SkipTest("check__all__ needs module introspection")
+    # as CPython's: the public names defined in the module are its __all__
+    import types
+    if name_of_module is None:
+        name_of_module = (module.__name__, )
+    elif isinstance(name_of_module, str):
+        name_of_module = (name_of_module, )
+    expected = set(extra)
+    for name in dir(module):
+        if name.startswith('_') or name in not_exported:
+            continue
+        obj = getattr(module, name)
+        if (getattr(obj, '__module__', None) in name_of_module or
+                (not hasattr(obj, '__module__') and
+                 not isinstance(obj, types.ModuleType))):
+            expected.add(name)
+    test_case.assertCountEqual(module.__all__, expected)
 
 
 def findfile(filename, subdir=None):
