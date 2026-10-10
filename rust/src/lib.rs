@@ -18,6 +18,7 @@ pub mod code;
 pub mod compile;
 pub mod format;
 pub mod fs;
+pub mod gc;
 pub mod lexer;
 pub mod lower;
 pub mod mathmod;

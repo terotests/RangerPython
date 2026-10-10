@@ -65,7 +65,9 @@ impl Vm {
 
     pub fn native_obj(&mut self, class: &'static str, kind: ObjKind) -> Value {
         let c = self.native_class(class);
-        Value::Obj(Rc::new(NativeObj { class: c, kind: RefCell::new(kind) }))
+        let o = Rc::new(NativeObj { class: c, gc: Default::default(), kind: RefCell::new(kind) });
+        crate::gc::track_obj(&o);
+        Value::Obj(o)
     }
 
     pub fn frame_obj(&mut self, f: &Frame, line: u32) -> Value {

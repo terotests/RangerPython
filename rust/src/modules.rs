@@ -43,7 +43,7 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_struct" => struct_module(),
         "_unicodedata" => unicodedata_module(),
         "_rpyweak" => weak_module(),
-        "_rpygc" => gc_module(),
+        "_rpygc" => crate::gc::gc_module(),
         "_rpyitertools" => itertools_module(),
         "_rpycollections" => collections_module(vm),
         "_rpyinternal" => internal_module(),
@@ -95,47 +95,6 @@ fn weak_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
     }
     Ok(a[0].clone())
-}
-
-// -------------------------------------------------------------------------
-// gc introspection: memory is reference counted, so only what CPython's
-// collector would report about an object is kept
-
-fn gc_module() -> Value {
-    let (d, m) = module("_rpygc");
-    put_fns(&d, &[("_rpygc.is_tracked", gc_is_tracked)]);
-    m
-}
-
-fn gc_is_tracked(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 1)?;
-    Ok(Value::Bool(gc_tracked(vm, &a[0])))
-}
-
-/// whether CPython's collector tracks `v` once a collection has run: a
-/// tuple or dict is untracked while it holds only what cannot be tracked
-fn gc_tracked(vm: &Vm, v: &Value) -> bool {
-    let may = |x: &Value| match x {
-        Value::Tuple(_) => gc_tracked(vm, x),
-        _ => gc_type(vm, x),
-    };
-    match v {
-        Value::Tuple(t) => t.iter().any(may),
-        Value::Dict(d) => d.borrow().iter().any(|e| may(&e.key) || may(&e.value)),
-        _ => gc_type(vm, v),
-    }
-}
-
-/// whether `v`'s type takes part in garbage collection at all: atoms,
-/// static types and bare object() instances do not
-fn gc_type(vm: &Vm, v: &Value) -> bool {
-    match v {
-        Value::Undef | Value::None | Value::NotImplemented | Value::Ellipsis | Value::Bool(_) | Value::Int(_) | Value::Big(_) | Value::Float(_) | Value::Complex(_) => false,
-        Value::Str(_) | Value::Bytes(_) | Value::ByteArray(_) | Value::Range(_) | Value::BigRange(_) | Value::Code(_) => false,
-        Value::Class(c) => c.dict.borrow().get_s("__module__").is_some(),
-        Value::Instance(i) => !Rc::ptr_eq(&i.class.borrow(), &vm.t.object),
-        _ => true,
-    }
 }
 
 // -------------------------------------------------------------------------
@@ -212,7 +171,7 @@ fn tg_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         Value::Class(c) => c.clone(),
         _ => tuplegetter_class(vm),
     };
-    Ok(Value::Obj(Rc::new(NativeObj { class, kind: RefCell::new(ObjKind::TupleGetter(i as usize, a[2].clone())) })))
+    Ok(Value::Obj(Rc::new(NativeObj { class, gc: Default::default(), kind: RefCell::new(ObjKind::TupleGetter(i as usize, a[2].clone())) })))
 }
 
 /// the field read by a _tuplegetter `d` from tuple `obj`
@@ -291,6 +250,7 @@ fn it_reuse(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let key = PyStr::new("_result".to_string());
     let mut d = inst.dict.borrow_mut();
     if let Some(Value::Tuple(t)) = d.get_str_mut(&key) {
+        crate::gc::retrack(t);
         if let Some(v) = Rc::get_mut(t) {
             if v.len() == items.len() {
                 *v = items;
@@ -307,7 +267,7 @@ fn it_reuse(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 // standard streams and files
 
 fn stream(vm: &mut Vm, name: &str) -> Value {
-    Value::Obj(Rc::new(NativeObj { class: vm.t.file.clone(), kind: RefCell::new(ObjKind::Other(Value::str(name))) }))
+    Value::Obj(Rc::new(NativeObj { class: vm.t.file.clone(), gc: Default::default(), kind: RefCell::new(ObjKind::Other(Value::str(name))) }))
 }
 
 pub fn is_std_stream(v: &Value) -> bool {
@@ -431,7 +391,7 @@ pub fn open_file(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         return Err(vm.value_error(format!("invalid mode: '{}'", mode)));
     };
     let kind = ObjKind::File { path: file.clone(), mode, buf, pos, closed: false, writable, binary };
-    Ok(Value::Obj(Rc::new(NativeObj { class: vm.t.file.clone(), kind: RefCell::new(kind) })))
+    Ok(Value::Obj(Rc::new(NativeObj { class: vm.t.file.clone(), gc: Default::default(), kind: RefCell::new(kind) })))
 }
 
 fn parent(p: &str) -> String {
@@ -958,8 +918,10 @@ fn sys_module(vm: &mut Vm) -> Value {
         imp.set_s("name", Value::str("rangerpython"));
         imp.set_s("cache_tag", Value::None);
         let ns = vm.namespace_class();
-        let inst = Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(imp)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()) };
-        b.set_s("implementation", Value::Instance(Rc::new(inst)));
+        let inst = Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(imp)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()), gc: Default::default() };
+        let inst = Rc::new(inst);
+        crate::gc::track_inst(&inst);
+        b.set_s("implementation", Value::Instance(inst));
     }
     put_fns(
         &d,
@@ -2404,7 +2366,7 @@ fn rng_of(vm: &mut Vm, v: &Value) -> PyResult<Rc<NativeObj>> {
 
 fn r_new(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     let r = Random::new();
-    Ok(Value::Obj(Rc::new(NativeObj { class: vm.t.obj.clone(), kind: RefCell::new(ObjKind::Rng(Box::new(r))) })))
+    Ok(Value::Obj(Rc::new(NativeObj { class: vm.t.obj.clone(), gc: Default::default(), kind: RefCell::new(ObjKind::Rng(Box::new(r))) })))
 }
 
 fn r_seed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {

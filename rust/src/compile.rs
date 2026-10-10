@@ -1718,6 +1718,7 @@ impl<'a> Compiler<'a> {
             self.emit(Op::BuildTuple(vals.len() as u32));
             let pk = self.const_val(Value::Obj(Rc::new(NativeObj {
                 class: crate::vm::obj_class(),
+                gc: Default::default(),
                 kind: std::cell::RefCell::new(ObjKind::MatchPat(Rc::new(c.pat.clone()))),
             })));
             self.emit(Op::MatchPattern(pk));

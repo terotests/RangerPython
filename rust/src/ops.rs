@@ -1552,6 +1552,9 @@ impl Vm {
         match (a, op) {
             (Value::List(l), BinOp::Add) => {
                 let items = self.to_vec(b)?;
+                if let Some(x) = items.iter().find(|x| x.holds_refs()) {
+                    crate::gc::list_store(l, x);
+                }
                 l.borrow_mut().extend(items);
                 return Ok(a.clone());
             }
@@ -2379,6 +2382,7 @@ impl Vm {
     }
 
     pub fn dict_set(&mut self, d: &Rc<RefCell<Dict>>, k: Value, v: Value) -> PyResult<()> {
+        crate::gc::dict_store(d, &k, &v);
         if let Value::Str(s) = &k {
             if !d.borrow().str_clash(s) {
                 let s = s.clone();
@@ -2408,6 +2412,7 @@ impl Vm {
     }
 
     pub fn set_add_h(&mut self, s: &Rc<RefCell<Dict>>, h: u64, k: Value) -> PyResult<()> {
+        crate::gc::set_store(s, &k);
         let (_, i) = self.dict_find_h(s, h, &k)?;
         if i.is_none() {
             s.borrow_mut().push_new(h, k, Value::None);
@@ -3315,6 +3320,7 @@ pub fn immutable_type(c: &Class) -> bool {
 /// iterator holds the only reference to it, as CPython does
 fn reuse_tuple(last: &mut Option<Rc<Vec<Value>>>, items: Vec<Value>) -> Value {
     if let Some(t) = last {
+        crate::gc::retrack(t);
         if let Some(v) = Rc::get_mut(t) {
             *v = items;
             return Value::Tuple(t.clone());

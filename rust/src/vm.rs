@@ -90,7 +90,9 @@ impl Drop for Generator {
             code: self.code.clone(),
             frame_obj: None,
         };
-        crate::value::PENDING_DEL.with(|p| p.borrow_mut().push(Value::Gen(Rc::new(RefCell::new(g)))));
+        let g = Rc::new(RefCell::new(g));
+        crate::gc::track(crate::gc::Tracked::Gen(Rc::downgrade(&g)));
+        crate::value::PENDING_DEL.with(|p| p.borrow_mut().push(Value::Gen(g)));
         crate::value::HAS_PENDING_DEL.with(|h| h.set(true));
     }
 }
@@ -428,8 +430,10 @@ impl Vm {
     }
 
     pub fn new_exc(&mut self, cls: &Rc<Class>, args: Vec<Value>) -> Value {
-        let inst = Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(Value::tuple(args)), extra: RefCell::new(Dict::new()) };
-        let v = Value::Instance(Rc::new(inst));
+        let inst = Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(Value::tuple(args)), extra: RefCell::new(Dict::new()), gc: Default::default() };
+        let inst = Rc::new(inst);
+        crate::gc::track_inst(&inst);
+        let v = Value::Instance(inst);
         crate::builtins::exc_init_native(self, &v);
         v
     }
@@ -538,7 +542,7 @@ impl Vm {
         // code compiled with PyCF_ALLOW_TOP_LEVEL_AWAIT gives a coroutine to await
         if code.coroutine && !code.generator {
             let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: code.name.clone(), qualname: code.qualname.clone(), coroutine: true, handled: vec![], code: code.clone(), frame_obj: None };
-            return Ok(Value::Gen(Rc::new(RefCell::new(g))));
+            return Ok(crate::gc::new_gen(g));
         }
         match self.run_frame(&mut f)? {
             Exit::Return(v) | Exit::Yield(v) => Ok(v),
@@ -584,6 +588,9 @@ impl Vm {
     /// runs __del__ of the instances whose last reference went away
     pub fn run_finalizers(&mut self) {
         crate::value::HAS_PENDING_DEL.with(|h| h.set(false));
+        if crate::gc::due() {
+            crate::gc::collect(self);
+        }
         loop {
             let v = crate::value::PENDING_DEL.with(|p| p.borrow_mut().pop());
             let v = match v {
@@ -643,7 +650,9 @@ impl Vm {
         d.set_s("err_msg", Value::None);
         d.set_s("object", obj.clone());
         let ns = self.namespace_class();
-        let args = Value::Instance(Rc::new(Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(d)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()) }));
+        let args = Rc::new(Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(d)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()), gc: Default::default() });
+        crate::gc::track_inst(&args);
+        let args = Value::Instance(args);
         let r = match hook {
             Some(h) => self.call_vec(&h, vec![args], &[]).map(|_| ()).map_err(|_| ()),
             None => Err(()),
@@ -1030,6 +1039,7 @@ impl Vm {
                     let obj = Self::pop(f);
                     let v = Self::pop(f);
                     if let (Value::List(l), Value::Int(i)) = (&obj, &idx) {
+                        crate::gc::list_store(l, &v);
                         let mut lb = l.borrow_mut();
                         let n = lb.len() as i64;
                         let j = if *i < 0 { *i + n } else { *i };
@@ -1947,7 +1957,7 @@ impl Vm {
     pub fn make_function(&mut self, code: Rc<Code>, globals: Rc<RefCell<Dict>>, defaults: Vec<Value>, kwdefaults: Vec<(Name, Value)>, closure: Vec<Cellv>) -> Value {
         let name = code.name.clone();
         let qualname = code.qualname.clone();
-        Value::Func(Rc::new(Function {
+        let f = Rc::new(Function {
             code: RefCell::new(code),
             globals,
             defaults: RefCell::new(defaults),
@@ -1957,7 +1967,10 @@ impl Vm {
             qualname: RefCell::new(qualname),
             dict: RefCell::new(None),
             annotations: RefCell::new(Value::Undef),
-        }))
+            gc: Default::default(),
+        });
+        crate::gc::track_func(&f);
+        Value::Func(f)
     }
 
     #[inline]
@@ -2108,7 +2121,7 @@ impl Vm {
         let f = Frame { code: code.clone(), ip: 0, stack: locals, cells, blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         if code.generator || code.coroutine {
             let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator, handled: vec![], code: code.clone(), frame_obj: None };
-            let g = Value::Gen(Rc::new(RefCell::new(g)));
+            let g = crate::gc::new_gen(g);
             if code.coroutine && code.generator {
                 // an async generator: pylib/_asyncgen.py drives the generator
                 let g0 = self.main_globals.clone();
@@ -2511,7 +2524,9 @@ impl Vm {
             Builtin::BaseException => Value::tuple(vec![]),
             _ => Value::Undef,
         };
-        Value::Instance(Rc::new(Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(base), extra: RefCell::new(Dict::new()) }))
+        let inst = Rc::new(Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(base), extra: RefCell::new(Dict::new()), gc: Default::default() });
+        crate::gc::track_inst(&inst);
+        Value::Instance(inst)
     }
 
     /// C3 linearisation

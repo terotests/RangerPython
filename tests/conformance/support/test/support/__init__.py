@@ -162,7 +162,10 @@ def impl_detail(msg=None, **guards):
 
 
 def gc_collect():
-    pass
+    import gc
+    gc.collect()
+    gc.collect()
+    gc.collect()
 
 
 def get_c_recursion_limit():

@@ -175,6 +175,7 @@ pub struct Function {
     pub qualname: RefCell<Rc<PyStr>>,
     pub dict: RefCell<Option<Rc<RefCell<Dict>>>>,
     pub annotations: RefCell<Value>,
+    pub gc: crate::gc::Slot,
 }
 
 pub struct Class {
@@ -249,6 +250,7 @@ pub struct Instance {
     /// values kept outside __dict__: __slots__ members, and an exception's
     /// __traceback__, __cause__, __context__ and __suppress_context__
     pub extra: RefCell<Dict>,
+    pub gc: crate::gc::Slot,
 }
 
 thread_local! {
@@ -259,6 +261,7 @@ thread_local! {
 
 impl Drop for Instance {
     fn drop(&mut self) {
+        crate::gc::untrack(&self.gc);
         if !self.class.get_mut().has_del.get() {
             return;
         }
@@ -274,8 +277,11 @@ impl Drop for Instance {
             dict: std::mem::replace(&mut self.dict, Rc::new(RefCell::new(Dict::new()))),
             base: RefCell::new(std::mem::replace(self.base.get_mut(), Value::Undef)),
             extra: RefCell::new(extra),
+            gc: Default::default(),
         };
-        let v = Value::Instance(Rc::new(inst));
+        let inst = Rc::new(inst);
+        crate::gc::track_inst(&inst);
+        let v = Value::Instance(inst);
         let _ = PENDING_DEL.try_with(|p| {
             if let Ok(mut p) = p.try_borrow_mut() {
                 p.push(v);
@@ -293,6 +299,7 @@ pub struct Module {
 /// Objects implemented natively: files, StringIO, regex patterns...
 pub struct NativeObj {
     pub class: Rc<Class>,
+    pub gc: crate::gc::Slot,
     pub kind: RefCell<ObjKind>,
 }
 
@@ -1023,6 +1030,7 @@ impl Class {
             immutable: Cell::new(false),
             slots: RefCell::new(None),
         });
+        crate::gc::track(crate::gc::Tracked::Class(Rc::downgrade(&c)));
         c
     }
     pub fn name(&self) -> String {

@@ -413,6 +413,9 @@ pub fn seq_setitem(vm: &mut Vm, obj: &Value, idx: &Value, v: Value) -> PyResult<
                     Err(e) if vm.exc_is(&e, "TypeError") && vm.iter(&v).is_err() => return Err(vm.type_error("must assign iterable to extended slice")),
                     Err(e) => return Err(e),
                 };
+                if let Some(x) = items.iter().find(|x| x.holds_refs()) {
+                    crate::gc::list_store(l, x);
+                }
                 let n = l.borrow().len();
                 let (a, b, st) = slice_indices(vm, sl, n)?;
                 if st == 1 {
@@ -432,6 +435,7 @@ pub fn seq_setitem(vm: &mut Vm, obj: &Value, idx: &Value, v: Value) -> PyResult<
             }
             let n = l.borrow().len();
             let i = norm_index(vm, idx, n, "list assignment")?;
+            crate::gc::list_store(l, &v);
             l.borrow_mut()[i] = v;
             Ok(())
         }

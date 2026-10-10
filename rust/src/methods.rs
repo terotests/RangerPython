@@ -763,7 +763,9 @@ fn cell_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     if a.len() > 2 {
         return Err(vm.type_error(format!("cell expected at most 1 argument, got {}", a.len() - 1)));
     }
-    Ok(Value::Cell(Rc::new(RefCell::new(a.get(1).cloned().unwrap_or(Value::Undef)))))
+    let c = Rc::new(RefCell::new(a.get(1).cloned().unwrap_or(Value::Undef)));
+    crate::gc::track(crate::gc::Tracked::Cell(Rc::downgrade(&c)));
+    Ok(Value::Cell(c))
 }
 
 /// types.FunctionType(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None)
@@ -2184,6 +2186,7 @@ fn list_append(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         return Err(vm.type_error(format!("list.append() takes exactly one argument ({} given)", a.len().saturating_sub(1))));
     }
     let l = list_of(vm, &a[0], "append")?;
+    crate::gc::list_store(&l, &a[1]);
     l.borrow_mut().push(a[1].clone());
     Ok(Value::None)
 }
@@ -2193,6 +2196,9 @@ fn list_extend(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     margs(vm, "list.extend", a, 1, 1)?;
     let l = list_of(vm, &a[0], "extend")?;
     let items = vm.to_vec(&a[1])?;
+    if let Some(x) = items.iter().find(|x| x.holds_refs()) {
+        crate::gc::list_store(&l, x);
+    }
     l.borrow_mut().extend(items);
     Ok(Value::None)
 }
@@ -2205,6 +2211,7 @@ fn list_insert(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let i = vm.to_index(&a[1])?;
     let n = l.borrow().len() as i64;
     let i = if i < 0 { (i + n).max(0) } else { i.min(n) };
+    crate::gc::list_store(&l, &a[2]);
     l.borrow_mut().insert(i as usize, a[2].clone());
     Ok(Value::None)
 }
@@ -3728,7 +3735,9 @@ pub fn mappingproxy_class(vm: &mut Vm) -> Rc<Class> {
 
 pub fn mappingproxy(vm: &mut Vm, mapping: Value) -> Value {
     let c = mappingproxy_class(vm);
-    Value::Obj(Rc::new(NativeObj { class: c, kind: RefCell::new(ObjKind::Other(mapping)) }))
+    let o = Rc::new(NativeObj { class: c, gc: Default::default(), kind: RefCell::new(ObjKind::Other(mapping)) });
+    crate::gc::track_obj(&o);
+    Value::Obj(o)
 }
 
 /// the mapping behind a mappingproxy
