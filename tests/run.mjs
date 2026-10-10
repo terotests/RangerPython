@@ -79,6 +79,7 @@ const targets = [["js", runJs]];
 if (args.has("--python")) targets.push(["python", (n) => runCli("python3", [path.join(REPO, "build/python/pyrun.py")], n)]);
 if (args.has("--go")) targets.push(["go", (n) => runCli(path.join(REPO, "build/go/pyrun"), [], n)]);
 if (args.has("--rust")) targets.push(["rust", (n) => runCli(path.join(REPO, "build/rust/pyrun"), [], n)]);
+if (args.has("--rpy")) targets.push(["rpy", (n) => runCli(path.join(REPO, "rust/target/release/rpy"), [], n)]);
 
 let failed = 0;
 for (const [target, run] of targets) {

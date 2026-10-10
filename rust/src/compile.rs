@@ -82,9 +82,18 @@ fn key<T>(r: &T) -> usize {
 struct Collector<'a> {
     st: &'a mut SymTable,
     cur: usize,
+    /// enclosing class names, for private name mangling
+    cls: Vec<String>,
 }
 
 impl<'a> Collector<'a> {
+    fn mg(&self, n: &Name) -> Name {
+        match self.cls.last() {
+            Some(c) => mangle_attr(c, n),
+            None => n.clone(),
+        }
+    }
+
     fn sc(&mut self) -> &mut Scope {
         &mut self.st.scopes[self.cur]
     }
@@ -105,7 +114,7 @@ impl<'a> Collector<'a> {
     fn target(&mut self, e: &Expr) -> CResult<()> {
         match e {
             Expr::Name(n) => {
-                let n = n.clone();
+                let n = self.mg(n);
                 self.sc().assign(&n);
             }
             Expr::Tuple(items) | Expr::List(items) => {
@@ -130,6 +139,13 @@ impl<'a> Collector<'a> {
                 self.expr(d)?;
             }
         }
+        if !self.st.future_annotations {
+            for a in p.args.iter().chain(p.vararg.iter()).chain(p.kwonly.iter()).chain(p.kwarg.iter()) {
+                if let Some(e) = &a.annotation {
+                    self.expr(e)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -138,17 +154,20 @@ impl<'a> Collector<'a> {
             self.expr(d)?;
         }
         self.params(&f.params)?;
+        if let (Some(r), false) = (&f.returns, self.st.future_annotations) {
+            self.expr(r)?;
+        }
         let id = self.new_scope(ScopeKind::Function, Rc::as_ptr(f) as usize);
         let save = self.cur;
         self.cur = id;
         let p = &f.params;
-        let mut names: Vec<Name> = p.args.iter().map(|a| a.name.clone()).collect();
+        let mut names: Vec<Name> = p.args.iter().map(|a| self.mg(&a.name)).collect();
         if let Some(v) = &p.vararg {
-            names.push(v.name.clone());
+            names.push(self.mg(&v.name));
         }
-        names.extend(p.kwonly.iter().map(|a| a.name.clone()));
+        names.extend(p.kwonly.iter().map(|a| self.mg(&a.name)));
         if let Some(v) = &p.kwarg {
-            names.push(v.name.clone());
+            names.push(self.mg(&v.name));
         }
         self.sc().params = names;
         self.stmts(&f.body)?;
@@ -211,7 +230,7 @@ impl<'a> Collector<'a> {
             }
             StmtKind::FuncDef(f) => {
                 self.func(f)?;
-                let n = f.name.clone();
+                let n = self.mg(&f.name);
                 self.sc().assign(&n);
             }
             StmtKind::ClassDef(c) => {
@@ -226,13 +245,16 @@ impl<'a> Collector<'a> {
                 let id = self.new_scope(ScopeKind::Class, Rc::as_ptr(c) as usize);
                 let save = self.cur;
                 self.cur = id;
+                self.cls.push(c.name.to_string());
                 self.stmts(&c.body)?;
+                self.cls.pop();
                 self.cur = save;
-                let n = c.name.clone();
+                let n = self.mg(&c.name);
                 self.sc().assign(&n);
             }
             StmtKind::Global(ns) => {
                 for n in ns {
+                    let n = &self.mg(n);
                     if self.sc().assigned.contains(n) || self.sc().used.contains(n) {
                         return Err(CompileError { msg: format!("name '{}' is used prior to global declaration", n), line: s.line });
                     }
@@ -244,7 +266,8 @@ impl<'a> Collector<'a> {
                     return Err(CompileError { msg: "nonlocal declaration not allowed at module level".into(), line: s.line });
                 }
                 for n in ns {
-                    self.sc().nonlocals.insert(n.clone());
+                    let n = self.mg(n);
+                    self.sc().nonlocals.insert(n);
                 }
             }
             StmtKind::Del(ts) => {
@@ -395,7 +418,7 @@ impl<'a> Collector<'a> {
     fn expr(&mut self, e: &Expr) -> CResult<()> {
         match e {
             Expr::Name(n) => {
-                let n = n.clone();
+                let n = self.mg(n);
                 if &*n == "super" {
                     self.sc().used.insert(Rc::from("__class__"));
                 }
@@ -503,7 +526,7 @@ impl SymTable {
     fn build(body: &[Stmt]) -> CResult<SymTable> {
         let mut st = SymTable { scopes: vec![Scope::new(ScopeKind::Module, None)], by_node: HashMap::new(), future_annotations: false };
         {
-            let mut c = Collector { st: &mut st, cur: 0 };
+            let mut c = Collector { st: &mut st, cur: 0, cls: vec![] };
             c.stmts(body)?;
         }
         st.resolve()?;
@@ -526,6 +549,8 @@ impl SymTable {
                         }
                         return true;
                     }
+                    // a class body passes the variable on to its methods
+                    path.push(pi);
                 }
                 ScopeKind::Function => {
                     if s.globals.contains(n) {
@@ -806,6 +831,7 @@ impl<'a> Compiler<'a> {
     // ------------------------------------------------------------- names
 
     fn load_name(&mut self, n: &Name) {
+        let n = &mangle_attr(&self.class_name(), n);
         let scope = self.u().scope;
         let s = &self.st.scopes[scope];
         match s.kind {
@@ -842,6 +868,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn store_name(&mut self, n: &Name) {
+        let n = &mangle_attr(&self.class_name(), n);
         let scope = self.u().scope;
         let s = &self.st.scopes[scope];
         match s.kind {
@@ -878,6 +905,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn del_name(&mut self, n: &Name) {
+        let n = &mangle_attr(&self.class_name(), n);
         let scope = self.u().scope;
         let kind = self.st.scopes[scope].kind;
         let is_global = self.st.scopes[scope].globals.contains(n);
@@ -1500,8 +1528,22 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn annotation(&mut self, a: &'a Expr) -> CResult<()> {
+        if self.st.future_annotations {
+            let k = self.const_str(&unparse(a));
+            self.emit(Op::LoadConst(k));
+            Ok(())
+        } else {
+            self.expr(a)
+        }
+    }
+
     fn child_qualname(&self, name: &str) -> String {
         let u = self.units.last().unwrap();
+        // the hidden function of a PEP 695 definition does not show
+        if let Some(pre) = u.qualname.strip_suffix(&format!("<generic parameters of {}>", name)) {
+            return format!("{}{}", pre, name);
+        }
         match u.kind {
             ScopeKind::Module => name.to_string(),
             ScopeKind::Class => format!("{}.{}", u.qualname, name),
@@ -1547,6 +1589,28 @@ impl<'a> Compiler<'a> {
             self.emit(Op::BuildMap(kwd.len() as u32));
             flags |= 2;
         }
+        // annotations are evaluated when the function is defined (3.13)
+        let mut anns: Vec<(&Name, &'a Expr)> = vec![];
+        for p in f.params.args.iter().chain(f.params.vararg.iter()).chain(f.params.kwonly.iter()).chain(f.params.kwarg.iter()) {
+            if let Some(a) = &p.annotation {
+                anns.push((&p.name, a));
+            }
+        }
+        if !anns.is_empty() || f.returns.is_some() {
+            let n = anns.len() + f.returns.is_some() as usize;
+            for (name, a) in anns {
+                let k = self.const_str(name);
+                self.emit(Op::LoadConst(k));
+                self.annotation(a)?;
+            }
+            if let Some(r) = &f.returns {
+                let k = self.const_str("return");
+                self.emit(Op::LoadConst(k));
+                self.annotation(r)?;
+            }
+            self.emit(Op::BuildMap(n as u32));
+            flags |= 4;
+        }
         let scope = self.st.by_node[&(Rc::as_ptr(f) as usize)];
         let qual = self.child_qualname(&f.name);
         self.push_unit(scope, qual);
@@ -1569,6 +1633,9 @@ impl<'a> Compiler<'a> {
         }
         let mut code = self.pop_unit(&f.name, f.line, Some(&f.params), doc);
         code.coroutine = f.is_async;
+        if f.is_async {
+            code.simple = false;
+        }
         self.emit_closure_and_make(code, flags)
     }
 
@@ -1751,10 +1818,7 @@ impl<'a> Compiler<'a> {
 
     fn expr(&mut self, e: &'a Expr) -> CResult<()> {
         match e {
-            Expr::Name(n) => {
-                let n2 = mangle(&self.class_name(), n);
-                self.load_name(&Rc::from(n2.as_str()));
-            }
+            Expr::Name(n) => self.load_name(n),
             Expr::Const(c) => {
                 let k = self.constant(c);
                 self.emit(Op::LoadConst(k));
@@ -2000,7 +2064,7 @@ impl<'a> Compiler<'a> {
             }
             Expr::Await(v) => {
                 self.expr(v)?;
-                self.emit(Op::GetIter);
+                self.emit(Op::GetAwaitable);
                 let k = self.const_val(Value::None);
                 self.emit(Op::LoadConst(k));
                 self.emit(Op::YieldFrom);

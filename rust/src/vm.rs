@@ -271,6 +271,10 @@ pub struct Vm {
     pub frames: Vec<*mut Frame>,
     /// value stacks of finished frames, reused by the next calls
     pub stack_pool: Vec<Vec<Value>>,
+    /// write output to the process's stdout/stderr as it comes
+    pub echo: bool,
+    /// folders imports look in after /
+    pub search_path: Vec<String>,
 }
 
 impl Vm {
@@ -298,6 +302,8 @@ impl Vm {
             last_return: None,
             frames: Vec::with_capacity(64),
             stack_pool: Vec::new(),
+            echo: false,
+            search_path: vec![],
         };
         crate::builtins::install(&mut vm);
         let g = vm.main_globals.clone();
@@ -306,6 +312,24 @@ impl Vm {
         g.borrow_mut().set_s("__builtins__", Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() })));
         g.borrow_mut().set_s("__doc__", Value::None);
         vm
+    }
+
+    pub fn write_out(&mut self, s: &str) {
+        if self.echo {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(s.as_bytes());
+        } else {
+            self.out.push_str(s);
+        }
+    }
+
+    pub fn write_err(&mut self, s: &str) {
+        if self.echo {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(s.as_bytes());
+        } else {
+            self.err_out.push_str(s);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1010,6 +1034,27 @@ impl Vm {
                     let it = self.iter(&v)?;
                     f.stack.push(it);
                 }
+                Op::GetAwaitable => {
+                    let v = Self::pop(f);
+                    let it = match &v {
+                        Value::Gen(_) => v,
+                        _ => match self.lookup_special(&v, &ps("__await__")) {
+                            Some(m) => {
+                                let r = self.call_vec(&m, vec![], &[])?;
+                                if !matches!(r, Value::Gen(_) | Value::Iter(_)) && self.lookup_special(&r, &self.n.next.clone()).is_none() {
+                                    let tn = self.type_name(&r);
+                                    return Err(self.type_error(format!("__await__() returned non-iterator of type '{}'", tn)));
+                                }
+                                r
+                            }
+                            None => {
+                                let tn = self.type_name(&v);
+                                return Err(self.type_error(format!("'{}' object can't be awaited", tn)));
+                            }
+                        },
+                    };
+                    f.stack.push(it);
+                }
                 Op::ForIter(t) => {
                     let it = f.stack.last().unwrap().clone();
                     // fast paths for the common iterators
@@ -1190,6 +1235,7 @@ impl Vm {
                     } else {
                         vec![]
                     };
+                    let annotations = if flags & 4 != 0 { Self::pop(f) } else { Value::Undef };
                     let kwdefaults = if flags & 2 != 0 {
                         match Self::pop(f) {
                             Value::Dict(d) => d.borrow().iter().map(|e| (Rc::from(e.key.as_str().unwrap()), e.value.clone())).collect(),
@@ -1211,6 +1257,9 @@ impl Vm {
                         _ => unreachable!(),
                     };
                     let func = self.make_function(c, f.globals.clone(), defaults, kwdefaults, closure);
+                    if let (Value::Func(fu), false) = (&func, annotations.is_undef()) {
+                        *fu.annotations.borrow_mut() = annotations;
+                    }
                     f.stack.push(func);
                 }
                 Op::LoadClosure(i) => f.stack.push(Value::Cell(f.cells[i as usize].clone())),
@@ -1898,7 +1947,7 @@ impl Vm {
         }
         let new = cls.lookup(&self.n.new);
         let obj = match &new {
-            Some(Value::Native(n)) if n.name == "object.__new__" => self.new_instance(cls),
+            Some(Value::Native(n)) if n.name == "object.__new__" && cls.dict.borrow().get_s("__abstractmethods__").is_none() => self.new_instance(cls),
             Some(f @ (Value::StaticMethod(_) | Value::Native(_) | Value::Func(_))) => {
                 let f = match f {
                     Value::StaticMethod(inner) => (**inner).clone(),
@@ -2083,7 +2132,7 @@ impl Vm {
             match b {
                 Value::Class(_) => bases_v.push(b.clone()),
                 other => {
-                    let me = self.lookup_special(other, &self.n.mro_entries.clone());
+                    let me = self.getattr_opt(other, &self.n.mro_entries.clone())?;
                     match me {
                         Some(f) => {
                             let r = self.call_vec(&f, vec![Value::tuple(orig_bases.clone())], &[])?;
@@ -2322,9 +2371,13 @@ impl Vm {
 
     fn find_source(&mut self, name: &str) -> Option<(String, String, bool)> {
         let path = name.replace('.', "/");
-        for (cand, pkg) in [(format!("/{}.py", path), false), (format!("/{}/__init__.py", path), true)] {
-            if let Some(s) = self.fs.read(&cand) {
-                return Some((s, cand, pkg));
+        let mut dirs = vec![String::new()];
+        dirs.extend(self.search_path.iter().map(|d| d.trim_end_matches('/').to_string()));
+        for d in dirs {
+            for (cand, pkg) in [(format!("{}/{}.py", d, path), false), (format!("{}/{}/__init__.py", d, path), true)] {
+                if let Some(s) = self.fs.read(&cand) {
+                    return Some((s, cand, pkg));
+                }
             }
         }
         for (cand, pkg) in [(format!("{}.py", path), false), (format!("{}/__init__.py", path), true)] {

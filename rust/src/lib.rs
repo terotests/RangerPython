@@ -70,6 +70,10 @@ pub struct Runtime {
     pub fs: fs::Fs,
     pub argv: Vec<String>,
     pub max_steps: u64,
+    /// stream output to the process's stdout/stderr instead of collecting it
+    pub echo: bool,
+    /// folders imports look in after /
+    pub search_path: Vec<String>,
 }
 
 impl Default for Runtime {
@@ -80,7 +84,7 @@ impl Default for Runtime {
 
 impl Runtime {
     pub fn new() -> Runtime {
-        Runtime { fs: fs::Fs::new(), argv: vec![], max_steps: 0 }
+        Runtime { fs: fs::Fs::new(), argv: vec![], max_steps: 0, echo: false, search_path: vec![] }
     }
 
     pub fn write_file(&mut self, path: &str, text: &str) {
@@ -105,6 +109,8 @@ impl Runtime {
         let mut vm = vm::Vm::new(fs);
         vm.argv = self.argv.clone();
         vm.max_steps = self.max_steps;
+        vm.echo = self.echo;
+        vm.search_path = self.search_path.clone();
         let globals = vm.main_globals.clone();
         globals.borrow_mut().set_s("__file__", Value::str(filename));
         let r = vm.run_source(source, filename, globals);
@@ -137,8 +143,8 @@ fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
             Some(Value::Int(_)) | Some(Value::Bool(_)) => {}
             Some(v) => {
                 let s = vm.str_of(v).unwrap_or_default();
-                vm.err_out.push_str(&s);
-                vm.err_out.push('\n');
+                vm.write_err(&s);
+                vm.write_err("\n");
             }
         }
         res.ok = false;
@@ -188,6 +194,13 @@ fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
     }
     if run >= 3 {
         lines.push(format!("  [Previous line repeated {} more time{}]", run - 2, if run - 2 == 1 { "" } else { "s" }));
+    }
+    if cls.is_subclass(&vm.exc_class("SyntaxError")) {
+        let attr = |vm: &mut vm::Vm, n: &str| vm.getattr(exc, &builtins::ps(n)).ok();
+        if let (Some(Value::Str(f)), Some(Value::Int(l))) = (attr(vm, "filename"), attr(vm, "lineno")) {
+            lines.push(format!("  File \"{}\", line {}", f.s, l));
+            entries.push((f.s.clone(), l, String::new()));
+        }
     }
     res.error_line = entries.last().map(|e| e.1 as u32).unwrap_or(0);
     let mut name = cls.name().to_string();

@@ -253,13 +253,13 @@ impl Vm {
                 Ok(None)
             }
             Value::Func(f) => {
-                if let Some(v) = crate::builtins::func_attr(self, f, &name.s) {
-                    return Ok(Some(v));
-                }
                 if let Some(d) = &*f.dict.borrow() {
                     if let Some(v) = d.borrow().get_str(name) {
                         return Ok(Some(v.clone()));
                     }
+                }
+                if let Some(v) = crate::builtins::func_attr(self, f, &name.s) {
+                    return Ok(Some(v));
                 }
                 self.type_attr(obj, name)
             }
@@ -412,8 +412,11 @@ impl Vm {
     }
 
     fn super_getattr(&mut self, start: &Rc<Class>, obj: &Value, name: &Rc<PyStr>) -> PyResult<Option<Value>> {
+        // super(C, cls) walks cls's own MRO; super(Meta, cls) inside a
+        // metaclass walks type(cls)'s and binds like an instance
+        let class_mode = matches!(obj, Value::Class(c) if c.is_subclass(start));
         let ocls = match obj {
-            Value::Class(c) => c.clone(),
+            Value::Class(c) if class_mode => c.clone(),
             other => self.class_of(other),
         };
         let mro = ocls.mro.borrow().clone();
@@ -423,7 +426,7 @@ impl Vm {
             if let Some(v) = v {
                 return Ok(Some(match v {
                     Value::Func(_) | Value::Native(_) => match obj {
-                        Value::Class(_) if &*name.s != "__new__" => v,
+                        Value::Class(_) if class_mode && &*name.s != "__new__" => v,
                         _ => {
                             if &*name.s == "__new__" {
                                 v
@@ -1918,7 +1921,7 @@ impl Vm {
                 if let Some(f) = self.lookup_special(v, &self.n.iter.clone()) {
                     if let Value::Method(m) = &f {
                         if let Value::Native(n) = &m.1 {
-                            if n.name.ends_with(".__iter__") {
+                            if n.name.ends_with(".__iter__") && matches!(v, Value::Instance(_)) {
                                 let b = self.base_of(v);
                                 if !matches!(b, Value::Instance(_)) {
                                     return self.iter(&b);
@@ -1933,9 +1936,11 @@ impl Vm {
                     }
                     return Ok(r);
                 }
-                let b = self.base_of(v);
-                if !matches!(b, Value::Instance(_)) {
-                    return self.iter(&b);
+                if matches!(v, Value::Instance(_)) {
+                    let b = self.base_of(v);
+                    if !matches!(b, Value::Instance(_)) {
+                        return self.iter(&b);
+                    }
                 }
                 if self.lookup_special(v, &self.n.getitem.clone()).is_some() {
                     Iter::Seq(v.clone(), 0)

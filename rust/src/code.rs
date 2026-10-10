@@ -66,6 +66,8 @@ pub enum Op {
     ListToTuple,
     FormatValue(u8, bool),
     GetIter,
+    /// the iterator `await x` drives: x itself for a coroutine, else x.__await__()
+    GetAwaitable,
     ForIter(u32),
     Unpack(u32),
     UnpackEx(u16, u16),

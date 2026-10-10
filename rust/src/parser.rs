@@ -15,11 +15,21 @@ type PResult<T> = Result<T, SyntaxError>;
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    /// PEP 695 type parameters of the def or class just parsed
+    tparams: Option<Vec<TypeParam>>,
+}
+
+/// `T`, `T: bound`, `T = default`, `*Ts` (kind 1) or `**P` (kind 2)
+struct TypeParam {
+    kind: u8,
+    name: Name,
+    bound: Option<Expr>,
+    default: Option<Expr>,
 }
 
 pub fn parse_module(src: &str) -> PResult<Vec<Stmt>> {
     let toks = tokenize(src).map_err(|e| SyntaxError { msg: e.msg, line: e.line })?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser { toks, pos: 0, tparams: None };
     let mut body = Vec::new();
     while !p.at_eof() {
         if p.eat_tok(&Tok::Newline) {
@@ -32,7 +42,7 @@ pub fn parse_module(src: &str) -> PResult<Vec<Stmt>> {
 
 pub fn parse_expression(src: &str) -> PResult<Expr> {
     let toks = tokenize(src.trim()).map_err(|e| SyntaxError { msg: e.msg, line: e.line })?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser { toks, pos: 0, tparams: None };
     let e = p.expressions()?;
     while p.eat_tok(&Tok::Newline) {}
     if !p.at_eof() {
@@ -190,20 +200,20 @@ impl Parser {
                 "def" => {
                     self.advance();
                     let f = self.funcdef(vec![], line, false)?;
-                    out.push(Stmt { line, kind: StmtKind::FuncDef(Rc::new(f)) });
+                    self.push_func(out, f, line);
                     return Ok(());
                 }
                 "class" => {
                     self.advance();
                     let c = self.classdef(vec![], line)?;
-                    out.push(Stmt { line, kind: StmtKind::ClassDef(Rc::new(c)) });
+                    self.push_class(out, c, line);
                     return Ok(());
                 }
                 "async" => {
                     self.advance();
                     if self.eat_kw("def") {
                         let f = self.funcdef(vec![], line, true)?;
-                        out.push(Stmt { line, kind: StmtKind::FuncDef(Rc::new(f)) });
+                        self.push_func(out, f, line);
                         return Ok(());
                     }
                     if self.eat_kw("for") {
@@ -237,10 +247,10 @@ impl Parser {
             let is_async = self.eat_kw("async");
             if self.eat_kw("def") {
                 let f = self.funcdef(decos, line, is_async)?;
-                out.push(Stmt { line, kind: StmtKind::FuncDef(Rc::new(f)) });
+                self.push_func(out, f, line);
             } else if self.eat_kw("class") {
                 let c = self.classdef(decos, line)?;
-                out.push(Stmt { line, kind: StmtKind::ClassDef(Rc::new(c)) });
+                self.push_class(out, c, line);
             } else {
                 return Err(self.err("invalid syntax"));
             }
@@ -381,29 +391,65 @@ impl Parser {
         false
     }
 
-    fn funcdef(&mut self, decorators: Vec<Expr>, line: u32, is_async: bool) -> PResult<FuncDef> {
-        let name = self.name()?;
-        if self.at_op("[") {
-            // PEP 695 type parameters: skipped
-            let mut depth = 0;
-            loop {
-                if self.at_op("[") {
-                    depth += 1;
-                } else if self.at_op("]") {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.advance();
-                        break;
-                    }
-                }
-                self.advance();
+    fn type_params(&mut self) -> PResult<Vec<TypeParam>> {
+        self.expect_op("[")?;
+        let mut out = vec![];
+        while !self.eat_op("]") {
+            let kind = if self.eat_op("**") {
+                2
+            } else if self.eat_op("*") {
+                1
+            } else {
+                0
+            };
+            let name = self.name()?;
+            let bound = if kind == 0 && self.eat_op(":") { Some(self.expression()?) } else { None };
+            let default = if self.eat_op("=") { Some(self.expression()?) } else { None };
+            out.push(TypeParam { kind, name, bound, default });
+            if !self.eat_op(",") {
+                self.expect_op("]")?;
+                break;
             }
         }
+        Ok(out)
+    }
+
+    fn push_func(&mut self, out: &mut Vec<Stmt>, mut f: FuncDef, line: u32) {
+        match self.tparams.take() {
+            None => out.push(Stmt { line, kind: StmtKind::FuncDef(Rc::new(f)) }),
+            Some(tps) => {
+                let decos = std::mem::take(&mut f.decorators);
+                let name = f.name.clone();
+                let body = generic_body(&name, &tps, Stmt { line, kind: StmtKind::FuncDef(Rc::new(f)) }, line);
+                generic_wrap(out, &name, tps, body, decos, line);
+            }
+        }
+    }
+
+    fn push_class(&mut self, out: &mut Vec<Stmt>, mut c: ClassDef, line: u32) {
+        match self.tparams.take() {
+            None => out.push(Stmt { line, kind: StmtKind::ClassDef(Rc::new(c)) }),
+            Some(tps) => {
+                let decos = std::mem::take(&mut c.decorators);
+                let name = c.name.clone();
+                let plain: Vec<Expr> = tps.iter().map(|t| if t.kind == 1 { Expr::Starred(Box::new(Expr::Name(t.name.clone()))) } else { Expr::Name(t.name.clone()) }).collect();
+                let idx = if plain.len() == 1 { plain.into_iter().next().unwrap() } else { Expr::Tuple(plain) };
+                c.bases.push(Arg::Pos(Expr::Subscript(Box::new(typing_attr("Generic")), Box::new(idx))));
+                let body = generic_body(&name, &tps, Stmt { line, kind: StmtKind::ClassDef(Rc::new(c)) }, line);
+                generic_wrap(out, &name, tps, body, decos, line);
+            }
+        }
+    }
+
+    fn funcdef(&mut self, decorators: Vec<Expr>, line: u32, is_async: bool) -> PResult<FuncDef> {
+        let name = self.name()?;
+        let tparams = if self.at_op("[") { Some(self.type_params()?) } else { None };
         self.expect_op("(")?;
         let params = self.params(")", true)?;
         self.expect_op(")")?;
         let returns = if self.eat_op("->") { Some(self.expression()?) } else { None };
         let body = self.block()?;
+        self.tparams = tparams;
         Ok(FuncDef { name, params, body, decorators, returns, is_lambda: false, is_async, line })
     }
 
@@ -457,21 +503,7 @@ impl Parser {
 
     fn classdef(&mut self, decorators: Vec<Expr>, line: u32) -> PResult<ClassDef> {
         let name = self.name()?;
-        if self.at_op("[") {
-            let mut depth = 0;
-            loop {
-                if self.at_op("[") {
-                    depth += 1;
-                } else if self.at_op("]") {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.advance();
-                        break;
-                    }
-                }
-                self.advance();
-            }
-        }
+        let tparams = if self.at_op("[") { Some(self.type_params()?) } else { None };
         let bases = if self.eat_op("(") {
             let a = self.call_args()?;
             self.expect_op(")")?;
@@ -480,6 +512,7 @@ impl Parser {
             vec![]
         };
         let body = self.block()?;
+        self.tparams = tparams;
         Ok(ClassDef { name, bases, body, decorators, line })
     }
 
@@ -592,15 +625,20 @@ impl Parser {
                     // `type X = ...` (PEP 695)
                     if matches!(self.peek_at(1), Tok::Name(_)) && matches!(self.peek_at(2), Tok::Op("=") | Tok::Op("[")) {
                         self.advance();
+                        let line = self.line();
                         let name = self.name()?;
-                        if self.at_op("[") {
-                            while !self.eat_op("]") {
-                                self.advance();
-                            }
-                        }
+                        let tps = if self.at_op("[") { self.type_params()? } else { vec![] };
                         self.expect_op("=")?;
                         let v = self.expression()?;
-                        return Ok(StmtKind::Assign(vec![Expr::Name(name)], v));
+                        let mut args = vec![Arg::Pos(str_const(&name)), Arg::Pos(v)];
+                        if tps.is_empty() {
+                            return Ok(StmtKind::Assign(vec![Expr::Name(name)], call(typing_attr("TypeAliasType"), args)));
+                        }
+                        args.push(Arg::Kw(Rc::from("type_params"), Expr::Tuple(tps.iter().map(|t| Expr::Name(t.name.clone())).collect())));
+                        let ret = Stmt { line, kind: StmtKind::Return(Some(call(typing_attr("TypeAliasType"), args))) };
+                        let mut out = vec![];
+                        generic_wrap(&mut out, &name, tps, vec![ret], vec![], line);
+                        return Ok(StmtKind::If(Expr::Const(Const::True), out, vec![]));
                     }
                 }
                 _ => {}
@@ -1476,6 +1514,22 @@ impl Parser {
         };
         while i < cs.len() {
             let c = cs[i];
+            if c == '\\' && i + 2 < cs.len() && cs[i + 1] == 'N' && cs[i + 2] == '{' {
+                while i < cs.len() && cs[i] != '}' {
+                    raw_lit.push(cs[i]);
+                    i += 1;
+                }
+                if i < cs.len() {
+                    raw_lit.push(cs[i]);
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '\\' && i + 1 < cs.len() && cs[i + 1] == '\\' {
+                raw_lit.push_str("\\\\");
+                i += 2;
+                continue;
+            }
             if c == '{' {
                 if i + 1 < cs.len() && cs[i + 1] == '{' {
                     raw_lit.push('{');
@@ -1486,9 +1540,15 @@ impl Parser {
                 // find the end of the expression
                 let (expr_src, conv, spec_src, debug, ni) = split_field(&cs, i + 1).ok_or(SyntaxError { msg: "f-string: expecting '}'".into(), line })?;
                 i = ni;
+                // a debug field's source comes as "expr\0spaces after ="
+                let (expr_src, after_eq) = match expr_src.split_once('\0') {
+                    Some((a, b)) => (a.to_string(), b.to_string()),
+                    None => (expr_src, String::new()),
+                };
                 if debug {
                     lit.push_str(&expr_src);
                     lit.push('=');
+                    lit.push_str(&after_eq);
                 }
                 if !lit.is_empty() {
                     parts.push(Expr::Const(Const::Str(Rc::from(lit.as_str()))));
@@ -1582,6 +1642,11 @@ fn split_field(cs: &[char], mut i: usize) -> Option<(String, char, Option<String
                 // self-documenting expression
                 let mut j = i + 1;
                 let mut conv = '\0';
+                while j < cs.len() && cs[j].is_whitespace() {
+                    j += 1;
+                }
+                let ws: String = cs[i + 1..j].iter().collect();
+                let expr = format!("{}\0{}", expr, ws);
                 if j < cs.len() && cs[j] == '!' {
                     conv = cs[j + 1];
                     j += 2;
@@ -1596,7 +1661,10 @@ fn split_field(cs: &[char], mut i: usize) -> Option<(String, char, Option<String
             }
             if c == '!' && i + 1 < cs.len() && cs[i + 1] != '=' {
                 let conv = cs[i + 1];
-                let j = i + 2;
+                let mut j = i + 2;
+                while j < cs.len() && cs[j].is_whitespace() {
+                    j += 1;
+                }
                 if j < cs.len() && cs[j] == '}' {
                     return Some((expr, conv, None, false, j + 1));
                 }
@@ -1622,6 +1690,20 @@ fn read_spec(cs: &[char], mut i: usize) -> Option<(String, usize)> {
     let mut s = String::new();
     while i < cs.len() {
         let c = cs[i];
+        if depth > 0 && (c == '\'' || c == '"') {
+            // a string inside a nested replacement field
+            s.push(c);
+            i += 1;
+            while i < cs.len() && cs[i] != c {
+                s.push(cs[i]);
+                i += 1;
+            }
+            if i < cs.len() {
+                s.push(c);
+                i += 1;
+            }
+            continue;
+        }
         if c == '{' {
             depth += 1;
         } else if c == '}' {
@@ -1659,4 +1741,60 @@ pub fn is_keyword(s: &str) -> bool {
             | "except" | "finally" | "for" | "from" | "global" | "if" | "import" | "in" | "is" | "lambda" | "nonlocal" | "not" | "or" | "pass"
             | "raise" | "return" | "try" | "while" | "with" | "yield"
     )
+}
+
+fn str_const(s: &str) -> Expr {
+    Expr::Const(Const::Str(Rc::from(s)))
+}
+
+fn call(func: Expr, args: Vec<Arg>) -> Expr {
+    Expr::Call { func: Box::new(func), args }
+}
+
+/// typing.NAME, through __import__ so no name is bound
+fn typing_attr(name: &str) -> Expr {
+    let m = call(Expr::Name(Rc::from("__import__")), vec![Arg::Pos(str_const("typing"))]);
+    Expr::Attr(Box::new(m), Rc::from(name))
+}
+
+/// the definition, then NAME.__type_params__ = (T, ...) and return NAME
+fn generic_body(name: &Name, tps: &[TypeParam], def: Stmt, line: u32) -> Vec<Stmt> {
+    let tuple = Expr::Tuple(tps.iter().map(|t| Expr::Name(t.name.clone())).collect());
+    vec![
+        def,
+        Stmt { line, kind: StmtKind::Assign(vec![Expr::Attr(Box::new(Expr::Name(name.clone())), Rc::from("__type_params__"))], tuple) },
+        Stmt { line, kind: StmtKind::Return(Some(Expr::Name(name.clone()))) },
+    ]
+}
+
+/// PEP 695: the type parameters become the parameters of a hidden function
+/// that is called with new TypeVars; its result, decorated, is bound to NAME
+fn generic_wrap(out: &mut Vec<Stmt>, name: &Name, tps: Vec<TypeParam>, body: Vec<Stmt>, decos: Vec<Expr>, line: u32) {
+    let wname: Name = Rc::from(format!("<generic parameters of {}>", name).as_str());
+    let mut params = Params::default();
+    let mut vars = vec![];
+    for t in tps {
+        params.args.push(Param { name: t.name.clone(), default: None, annotation: None });
+        let cls = match t.kind {
+            1 => "TypeVarTuple",
+            2 => "ParamSpec",
+            _ => "TypeVar",
+        };
+        let mut args = vec![Arg::Pos(str_const(&t.name)), Arg::Kw(Rc::from("infer_variance"), Expr::Const(Const::True))];
+        if let Some(b) = t.bound {
+            args.push(Arg::Kw(Rc::from("bound"), b));
+        }
+        if let Some(d) = t.default {
+            args.push(Arg::Kw(Rc::from("default"), d));
+        }
+        vars.push(Arg::Pos(call(typing_attr(cls), args)));
+    }
+    let wrapper = FuncDef { name: wname.clone(), params, body, decorators: vec![], returns: None, is_lambda: false, is_async: false, line };
+    out.push(Stmt { line, kind: StmtKind::FuncDef(Rc::new(wrapper)) });
+    let mut v = call(Expr::Name(wname.clone()), vars);
+    for d in decos.into_iter().rev() {
+        v = call(d, vec![Arg::Pos(v)]);
+    }
+    out.push(Stmt { line, kind: StmtKind::Assign(vec![Expr::Name(name.clone())], v) });
+    out.push(Stmt { line, kind: StmtKind::Del(vec![Expr::Name(wname)]) });
 }

@@ -37,6 +37,7 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_random" => random_module(),
         "builtins" => Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() })),
         "_hashlib" => hashlib_module(),
+        "_struct" => struct_module(),
         _ => return Ok(None),
     }))
 }
@@ -327,9 +328,9 @@ fn f_write(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             }
             ObjKind::Other(Value::Str(s)) => {
                 if &*s.s == "<stderr>" {
-                    vm.err_out.push_str(&text);
+                    vm.write_err(&text);
                 } else {
-                    vm.out.push_str(&text);
+                    vm.write_out(&text);
                 }
                 None
             }
@@ -2859,4 +2860,110 @@ fn h_sha256(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn h_sha512(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let b = bytes_of(vm, &a[0])?;
     Ok(Value::Bytes(Rc::new(sha512(&b).to_vec())))
+}
+
+// -------------------------------------------------------------------------
+// _struct: IEEE bit patterns for struct.py
+
+fn struct_module() -> Value {
+    let (d, m) = module("_struct");
+    put_fns(&d, &[("_struct.double_bits", st_double_bits), ("_struct.bits_double", st_bits_double), ("_struct.float_bits", st_float_bits), ("_struct.bits_float", st_bits_float), ("_struct.half_bits", st_half_bits), ("_struct.bits_half", st_bits_half)]);
+    m
+}
+
+fn st_double_bits(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let x = fl(vm, a, 0, "pack")?;
+    Ok(Value::from_big(BigInt::from_u128(x.to_bits() as u128, false)))
+}
+
+fn st_bits_double(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let b = crate::ops::big_of(&a[0]).ok_or_else(|| vm.type_error("expected int"))?;
+    let lo = b.mag.first().copied().unwrap_or(0) as u64;
+    let hi = b.mag.get(1).copied().unwrap_or(0) as u64;
+    Ok(Value::Float(f64::from_bits((hi << 32) | lo)))
+}
+
+fn st_float_bits(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let x = fl(vm, a, 0, "pack")?;
+    let f = x as f32;
+    if f.is_infinite() && x.is_finite() {
+        return Err(vm.err("OverflowError", "float too large to pack with f format"));
+    }
+    Ok(Value::Int(f.to_bits() as i64))
+}
+
+fn st_bits_float(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let b = vm.to_index(&a[0])? as u32;
+    Ok(Value::Float(f32::from_bits(b) as f64))
+}
+
+fn st_half_bits(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let x = fl(vm, a, 0, "pack")?;
+    let sign: u16 = if x.is_sign_negative() { 0x8000 } else { 0 };
+    let ax = x.abs();
+    let h: u16 = if x.is_nan() {
+        0x7e00
+    } else if ax.is_infinite() {
+        0x7c00
+    } else if ax == 0.0 {
+        0
+    } else {
+        // round to nearest even at 11 significant bits
+        let (m, e) = frexp(ax);
+        // ax = m * 2^e, 0.5 <= m < 1
+        let mut e = e - 1; // ax = (2m) * 2^e, 1 <= 2m < 2
+        if e < -14 {
+            // subnormal: units of 2^-24
+            let q = (ax * 2f64.powi(24)).round_ties_even();
+            if q >= 1024.0 {
+                0x0400
+            } else {
+                q as u16
+            }
+        } else {
+            let mut frac = ((2.0 * m - 1.0) * 1024.0).round_ties_even();
+            if frac >= 1024.0 {
+                frac = 0.0;
+                e += 1;
+            }
+            if e > 15 {
+                return Err(vm.err("OverflowError", "float too large to pack with e format"));
+            }
+            (((e + 15) as u16) << 10) | frac as u16
+        }
+    };
+    Ok(Value::Int((sign | h) as i64))
+}
+
+fn frexp(x: f64) -> (f64, i32) {
+    if x == 0.0 || !x.is_finite() {
+        return (x, 0);
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    if exp == 0 {
+        let (m, e) = frexp(x * 2f64.powi(64));
+        return (m, e - 64);
+    }
+    let m = f64::from_bits((bits & !(0x7ff << 52)) | (1022 << 52));
+    (m, exp - 1022)
+}
+
+fn st_bits_half(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let h = vm.to_index(&a[0])? as u16;
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let e = ((h >> 10) & 0x1f) as i32;
+    let f = (h & 0x3ff) as f64;
+    let v = if e == 0 {
+        f * 2f64.powi(-24)
+    } else if e == 31 {
+        if f == 0.0 {
+            f64::INFINITY
+        } else {
+            f64::NAN
+        }
+    } else {
+        (1.0 + f / 1024.0) * 2f64.powi(e - 15)
+    };
+    Ok(Value::Float(sign * v))
 }

@@ -1041,6 +1041,15 @@ pub fn exc_str(vm: &mut Vm, v: &Value) -> PyResult<String> {
     if cls.is_subclass(&vm.exc_class("KeyError")) && args.len() == 1 {
         return vm.repr(&args[0]);
     }
+    if cls.is_subclass(&vm.exc_class("OSError")) && (2..=3).contains(&args.len()) {
+        let msg = vm.str_of(&args[1])?;
+        let errno = vm.str_of(&args[0])?;
+        if args.len() == 3 {
+            let f = vm.repr(&args[2])?;
+            return Ok(format!("[Errno {}] {}: {}", errno, msg, f));
+        }
+        return Ok(format!("[Errno {}] {}", errno, msg));
+    }
     match args.len() {
         0 => Ok(String::new()),
         1 => vm.str_of(&args[0]),
@@ -1404,7 +1413,7 @@ pub fn write_stdout(vm: &mut Vm, s: &str) -> PyResult<()> {
             }
         }
     }
-    vm.out.push_str(s);
+    vm.write_out(s);
     Ok(())
 }
 
@@ -1458,7 +1467,7 @@ fn bi_print(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     s.push_str(&end);
     if file.is_none() || crate::modules::is_std_stream(&file) {
         if crate::modules::is_stderr(&file) {
-            vm.err_out.push_str(&s);
+            vm.write_err(&s);
             return Ok(Value::None);
         }
         write_stdout(vm, &s)?;
@@ -2330,15 +2339,8 @@ pub fn round_float(x: f64, nd: i64) -> f64 {
     if nd >= 0 {
         // exact decimal rounding through the formatter
         let s = format!("{:.*}", nd as usize, x);
-        let r: f64 = s.parse().unwrap_or(x);
-        // Rust rounds ties on the exact binary value; recheck halfway cases
-        let scaled = x * 10f64.powi(nd as i32);
-        if scaled.is_finite() && (scaled - scaled.trunc()).abs() == 0.5 && scaled.abs() < 1e15 {
-            let t = scaled.trunc();
-            let even = if (t as i64) % 2 == 0 { t } else { t + scaled.signum() };
-            return even / 10f64.powi(nd as i32);
-        }
-        r
+        // the formatter rounds the exact binary value, ties to even, as CPython
+        s.parse().unwrap_or(x)
     } else {
         let p = 10f64.powi((-nd) as i32);
         let y = x / p;

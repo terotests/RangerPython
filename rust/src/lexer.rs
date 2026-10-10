@@ -167,7 +167,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
                     let raw = lw.contains('r');
                     let bytes = lw.contains('b');
                     let f = lw.contains('f');
-                    let (body, ni, nl) = read_string(&chars, i, line, raw || f, f)?;
+                    let (body, ni, nl) = read_string(&chars, i, line, raw, f)?;
                     i = ni;
                     line = nl;
                     let s = if raw || f { body } else { unescape(&body, bytes).map_err(|m| err(&m, line))? };
@@ -240,13 +240,17 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
 
 /// Reads a quoted string starting at `i` (the quote). Returns the raw body,
 /// the index after the closing quote and the line after it.
-fn read_string(chars: &[char], mut i: usize, mut line: u32, _raw: bool, fstr: bool) -> Result<(String, usize, u32), LexError> {
+fn read_string(chars: &[char], mut i: usize, mut line: u32, raw: bool, fstr: bool) -> Result<(String, usize, u32), LexError> {
     let q = chars[i];
     let n = chars.len();
     let triple = i + 2 < n && chars[i + 1] == q && chars[i + 2] == q;
     i += if triple { 3 } else { 1 };
     let mut body = String::new();
     let mut brace = 0i32;
+    // inside a replacement field: bracket depth, and whether the format
+    // spec (after a top-level ':') has started
+    let mut pdepth = 0i32;
+    let mut in_spec = false;
     loop {
         if i >= n {
             return Err(LexError {
@@ -255,7 +259,22 @@ fn read_string(chars: &[char], mut i: usize, mut line: u32, _raw: bool, fstr: bo
             });
         }
         let c = chars[i];
-        if fstr && brace > 0 && (c == '\'' || c == '"') {
+        if fstr && brace > 0 && !in_spec {
+            match c {
+                '(' | '[' => pdepth += 1,
+                ')' | ']' => pdepth -= 1,
+                ':' if brace == 1 && pdepth == 0 => in_spec = true,
+                '#' => {
+                    // a comment in a multi-line replacement field
+                    while i < n && chars[i] != '\n' {
+                        i += 1;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if fstr && brace > 0 && !(in_spec && brace == 1) && (c == '\'' || c == '"') {
             // a string nested in an f-string expression, copied as written
             let iq = c;
             let it = i + 2 < n && chars[i + 1] == iq && chars[i + 2] == iq;
@@ -289,6 +308,24 @@ fn read_string(chars: &[char], mut i: usize, mut line: u32, _raw: bool, fstr: bo
             }
             continue;
         }
+        if fstr && !raw && brace == 0 && c == '\\' && i + 2 < n && chars[i + 1] == 'N' && chars[i + 2] == '{' {
+            // \N{NAME} in the literal text is not a replacement field
+            while i < n && chars[i] != '}' {
+                body.push(chars[i]);
+                i += 1;
+            }
+            if i < n {
+                body.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if fstr && c == '\\' && i + 1 < n && (chars[i + 1] == '{' || chars[i + 1] == '}') {
+            // a backslash does not escape a brace
+            body.push(c);
+            i += 1;
+            continue;
+        }
         if c == '\\' && i + 1 < n {
             body.push(c);
             body.push(chars[i + 1]);
@@ -308,7 +345,8 @@ fn read_string(chars: &[char], mut i: usize, mut line: u32, _raw: bool, fstr: bo
             }
         }
         if c == '\n' {
-            if !triple {
+            // a replacement field may span lines (3.12)
+            if !triple && !(fstr && brace > 0) {
                 return Err(LexError { msg: "unterminated string literal".into(), line });
             }
             line += 1;
@@ -323,6 +361,10 @@ fn read_string(chars: &[char], mut i: usize, mut line: u32, _raw: bool, fstr: bo
                 brace += 1;
             } else if c == '}' && brace > 0 {
                 brace -= 1;
+                if brace == 0 {
+                    in_spec = false;
+                    pdepth = 0;
+                }
             }
         }
         body.push(c);

@@ -1,11 +1,49 @@
 // SPDX-License-Identifier: MIT
-//! rpy script.py [outdir]: runs a script and prints its output; the files it
-//! wrote are saved under outdir as a__b.txt for /a/b.txt.
+//! rpy [options] script.py [outdir]: runs a script and prints its output;
+//! the files it wrote are saved under outdir as a__b.txt for /a/b.txt.
+//!
+//!   --mount HOST=VFS   put HOST's .py files (recursively) at VFS
+//!   --path VFS         a folder imports look in after /
+//!   --arg X            append X to sys.argv
+//!   --echo             stream output as it is written
+
+fn mount(rt: &mut rpy::Runtime, host: &std::path::Path, vfs: &str) {
+    let Ok(rd) = std::fs::read_dir(host) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().to_string();
+        let target = format!("{}/{}", vfs.trim_end_matches('/'), name);
+        if p.is_dir() {
+            mount(rt, &p, &target);
+        } else if name.ends_with(".py") {
+            if let Ok(t) = std::fs::read_to_string(&p) {
+                rt.write_file(&target, &t);
+            }
+        }
+    }
+}
 
 fn run() -> i32 {
-    let args: Vec<String> = std::env::args().collect();
+    let mut rt = rpy::Runtime::new();
+    let mut extra = vec![];
+    let mut args: Vec<String> = vec![];
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--mount" => {
+                let m = it.next().unwrap_or_default();
+                let (h, v) = m.split_once('=').unwrap_or((&m, "/"));
+                mount(&mut rt, std::path::Path::new(h), v);
+            }
+            "--path" => rt.search_path.push(it.next().unwrap_or_default()),
+            "--arg" => extra.push(it.next().unwrap_or_default()),
+            "--echo" => rt.echo = true,
+            _ => args.push(a),
+        }
+    }
+    args.insert(0, String::new());
     if args.len() < 2 {
-        println!("usage: rpy script.py [outdir]");
+        println!("usage: rpy [--mount HOST=VFS] [--path VFS] [--arg X] [--echo] script.py [outdir]");
         return 2;
     }
     let script = &args[1];
@@ -16,8 +54,8 @@ fn run() -> i32 {
             return 2;
         }
     };
-    let mut rt = rpy::Runtime::new();
     rt.argv = vec![script.clone()];
+    rt.argv.extend(extra);
     let name = script.rsplit('/').next().unwrap_or(script).to_string();
     let r = rt.run(&src, &name);
     use std::io::Write;
@@ -26,13 +64,14 @@ fn run() -> i32 {
         let s = r.stdout.strip_suffix('\n').unwrap_or(&r.stdout);
         let _ = writeln!(out, "{}", s);
     }
+    let _ = out.flush();
+    let mut err = std::io::stderr().lock();
     if !r.stderr.is_empty() {
-        let _ = write!(out, "{}", r.stderr);
+        let _ = write!(err, "{}", r.stderr);
     }
     if !r.ok && !r.traceback.is_empty() {
-        let _ = writeln!(out, "{}", r.traceback);
+        let _ = writeln!(err, "{}", r.traceback);
     }
-    let _ = out.flush();
     if let Some(dir) = args.get(2) {
         for p in rt.changed_files() {
             if let Some(text) = rt.read_file(&p) {

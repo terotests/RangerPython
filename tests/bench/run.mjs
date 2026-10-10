@@ -49,6 +49,7 @@ const targets = [
 ];
 if (args.has("--go")) targets.push(["Go", (f) => cli(path.join(REPO, "build/go/pyrun"), [], f)]);
 if (args.has("--rust")) targets.push(["Rust", (f) => cli(path.join(REPO, "build/rust/pyrun"), [], f)]);
+if (args.has("--rpy")) targets.push(["Rust (hand-written)", (f) => cli(path.join(REPO, "rust/target/release/rpy"), [], f)]);
 if (args.has("--python")) targets.push(["Python", (f) => cli("python3", [path.join(REPO, "build/python/pyrun.py")], f)]);
 
 const files = fs.readdirSync(HERE).filter((f) => f.endsWith(".py")).sort();
