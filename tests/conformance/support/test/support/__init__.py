@@ -128,7 +128,9 @@ def check_impl_detail(**guards):
 
 
 def impl_detail(msg=None, **guards):
-    if check_impl_detail(**guards):
+    # run what CPython runs, like cpython_only above
+    run = guards.get("cpython", True) if guards else True
+    if run:
         return lambda f: f
     return unittest.skip(msg or "implementation detail")
 
@@ -311,7 +313,22 @@ def check_syntax_error(testcase, statement, errtext="", *, lineno=None, offset=N
 
 
 def check_free_after_iterating(test, iter, cls, args=()):
-    raise unittest.SkipTest("object finalization is the host's")
+    done = False
+    def wrapper():
+        class A(cls):
+            def __del__(self):
+                nonlocal done
+                try:
+                    next(it)
+                except StopIteration:
+                    done = True
+        return A
+    it = iter(wrapper()(*args))
+    # Issue 26494: Shouldn't crash
+    test.assertRaises(StopIteration, next, it)
+    # The sequence should be deallocated just after the end of iterating
+    gc_collect()
+    test.assertTrue(done)
 
 
 def check_disallow_instantiation(testcase, tp, *args, **kwds):

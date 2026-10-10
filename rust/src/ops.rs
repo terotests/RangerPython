@@ -2686,7 +2686,7 @@ impl Vm {
                 }
                 Ok(Some(v.clone()))
             }
-            Iter::Enumerate(inner, count) => {
+            Iter::Enumerate(inner, count, _) => {
                 let inner = inner.clone();
                 let c = count.clone();
                 drop(b);
@@ -2696,15 +2696,16 @@ impl Vm {
                             Value::Int(i) => Value::Int(i + 1),
                             other => self.binop(BinOp::Add, other, &Value::Int(1))?,
                         };
-                        if let Iter::Enumerate(_, count) = &mut *r.borrow_mut() {
+                        if let Iter::Enumerate(_, count, last) = &mut *r.borrow_mut() {
                             *count = nc;
+                            return Ok(Some(reuse_tuple(last, vec![c, v])));
                         }
                         Ok(Some(Value::tuple(vec![c, v])))
                     }
                     None => Ok(None),
                 }
             }
-            Iter::Zip(its, strict) => {
+            Iter::Zip(its, strict, _) => {
                 let its = its.clone();
                 let strict = *strict;
                 drop(b);
@@ -2729,6 +2730,9 @@ impl Vm {
                 }
                 if its.is_empty() {
                     return Ok(None);
+                }
+                if let Iter::Zip(_, _, last) = &mut *r.borrow_mut() {
+                    return Ok(Some(reuse_tuple(last, out)));
                 }
                 Ok(Some(Value::tuple(out)))
             }
@@ -3256,4 +3260,18 @@ fn descr_call(vm: &mut Vm, a: &[Value], k: &[(Rc<PyStr>, Value)]) -> PyResult<Va
     };
     let f = vm.call_vec(&t[0], vec![t[1].clone(), t[2].clone(), t[3].clone()], &[])?;
     vm.call_vec(&f, a[1..].to_vec(), k)
+}
+
+/// the result tuple of enumerate() and zip(): refilled in place while the
+/// iterator holds the only reference to it, as CPython does
+fn reuse_tuple(last: &mut Option<Rc<Vec<Value>>>, items: Vec<Value>) -> Value {
+    if let Some(t) = last {
+        if let Some(v) = Rc::get_mut(t) {
+            *v = items;
+            return Value::Tuple(t.clone());
+        }
+    }
+    let t = Rc::new(items);
+    *last = Some(t.clone());
+    Value::Tuple(t)
 }

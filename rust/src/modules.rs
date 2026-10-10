@@ -42,6 +42,7 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_struct" => struct_module(),
         "_unicodedata" => unicodedata_module(),
         "_rpyweak" => weak_module(),
+        "_rpygc" => gc_module(),
         _ => return Ok(None),
     }))
 }
@@ -89,6 +90,47 @@ fn weak_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
     }
     Ok(a[0].clone())
+}
+
+// -------------------------------------------------------------------------
+// gc introspection: memory is reference counted, so only what CPython's
+// collector would report about an object is kept
+
+fn gc_module() -> Value {
+    let (d, m) = module("_rpygc");
+    put_fns(&d, &[("_rpygc.is_tracked", gc_is_tracked)]);
+    m
+}
+
+fn gc_is_tracked(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    Ok(Value::Bool(gc_tracked(vm, &a[0])))
+}
+
+/// whether CPython's collector tracks `v` once a collection has run: a
+/// tuple or dict is untracked while it holds only what cannot be tracked
+fn gc_tracked(vm: &Vm, v: &Value) -> bool {
+    let may = |x: &Value| match x {
+        Value::Tuple(_) => gc_tracked(vm, x),
+        _ => gc_type(vm, x),
+    };
+    match v {
+        Value::Tuple(t) => t.iter().any(may),
+        Value::Dict(d) => d.borrow().iter().any(|e| may(&e.key) || may(&e.value)),
+        _ => gc_type(vm, v),
+    }
+}
+
+/// whether `v`'s type takes part in garbage collection at all: atoms,
+/// static types and bare object() instances do not
+fn gc_type(vm: &Vm, v: &Value) -> bool {
+    match v {
+        Value::Undef | Value::None | Value::NotImplemented | Value::Ellipsis | Value::Bool(_) | Value::Int(_) | Value::Big(_) | Value::Float(_) | Value::Complex(_) => false,
+        Value::Str(_) | Value::Bytes(_) | Value::ByteArray(_) | Value::Range(_) | Value::BigRange(_) | Value::Code(_) => false,
+        Value::Class(c) => c.dict.borrow().get_s("__module__").is_some(),
+        Value::Instance(i) => !Rc::ptr_eq(&i.class.borrow(), &vm.t.object),
+        _ => true,
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -787,14 +829,35 @@ fn sys_getsizeof(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     };
     Ok(Value::Int(n as i64))
 }
-fn sys_intern(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    Ok(a[0].clone())
+thread_local! {
+    /// the strings sys.intern has seen, one object per distinct text
+    static INTERNED: RefCell<std::collections::HashMap<String, Rc<PyStr>>> = RefCell::new(std::collections::HashMap::new());
+}
+
+fn sys_intern(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    match &a[0] {
+        Value::Str(s) => Ok(Value::Str(INTERNED.with(|t| t.borrow_mut().entry(s.s.clone()).or_insert_with(|| s.clone()).clone()))),
+        other => {
+            let tn = vm.type_name(other);
+            Err(vm.type_error(format!("intern() argument must be str, not {}", tn)))
+        }
+    }
 }
 fn sys_encoding(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::str("utf-8"))
 }
-fn sys_getrefcount(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
-    Ok(Value::Int(2))
+/// the strong count of the argument's allocation; None, the booleans and
+/// small ints are immortal as in CPython, and other values without an
+/// allocation of their own count the variable and the argument
+fn sys_getrefcount(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let n = match &a[0] {
+        Value::None | Value::NotImplemented | Value::Ellipsis | Value::Bool(_) => u32::MAX as usize,
+        Value::Int(i) if (-5..=256).contains(i) => u32::MAX as usize,
+        v => crate::value::strong_count(v).unwrap_or(2),
+    };
+    Ok(Value::Int(n as i64))
 }
 fn sys_noop(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::None)

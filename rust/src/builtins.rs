@@ -2266,7 +2266,7 @@ pub fn bi_enumerate(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         return Err(vm.type_error(format!("'{}' object cannot be interpreted as an integer", tn)));
     }
     let inner = vm.iter(&it)?;
-    Ok(mk_iter(Iter::Enumerate(inner, start)))
+    Ok(mk_iter(Iter::Enumerate(inner, start, None)))
 }
 
 pub fn bi_zip(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
@@ -2282,7 +2282,7 @@ pub fn bi_zip(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         let _ = i;
         its.push(vm.iter(x)?);
     }
-    Ok(mk_iter(Iter::Zip(its, strict)))
+    Ok(mk_iter(Iter::Zip(its, strict, None)))
 }
 
 impl Exc {

@@ -557,6 +557,15 @@ impl Vm {
         r
     }
 
+    /// runs the finalizers that a store or delete just made due, so that
+    /// __del__ follows the last reference going as closely as in CPython
+    #[inline]
+    pub fn finalize_pending(&mut self) {
+        if crate::value::HAS_PENDING_DEL.with(|h| h.get()) {
+            self.run_finalizers();
+        }
+    }
+
     /// runs __del__ of the instances whose last reference went away
     pub fn run_finalizers(&mut self) {
         crate::value::HAS_PENDING_DEL.with(|h| h.set(false));
@@ -574,10 +583,12 @@ impl Vm {
                 }
                 continue;
             }
-            let name = PyStr::new("__del__".to_string());
-            if let Some(f) = self.lookup_special(&v, &Rc::new(name)) {
+            let name = Rc::new(PyStr::new("__del__".to_string()));
+            if let Some(f) = self.lookup_special(&v, &name) {
                 if let Err(e) = self.call_vec(&f, vec![], &[]) {
-                    self.unraisable(e, &f);
+                    // the report names the function, as CPython's does
+                    let raw = self.class_of(&v).lookup(&name).unwrap_or(f);
+                    self.unraisable(e, &raw);
                 }
             }
         }
@@ -737,6 +748,7 @@ impl Vm {
                 Op::StoreFast(i) => {
                     let v = Self::pop(f);
                     f.stack[i as usize] = v;
+                    self.finalize_pending();
                 }
                 Op::DelFast(i) => {
                     if f.stack[i as usize].is_undef() {
@@ -744,6 +756,7 @@ impl Vm {
                         return Err(self.err("UnboundLocalError", format!("cannot access local variable '{}' where it is not associated with a value", n)));
                     }
                     f.stack[i as usize] = Value::Undef;
+                    self.finalize_pending();
                 }
                 Op::LoadDeref(i) => {
                     let v = f.cells[i as usize].borrow().clone();
@@ -755,6 +768,7 @@ impl Vm {
                 Op::StoreDeref(i) => {
                     let v = Self::pop(f);
                     *f.cells[i as usize].borrow_mut() = v;
+                    self.finalize_pending();
                 }
                 Op::DelDeref(i) => {
                     *f.cells[i as usize].borrow_mut() = Value::Undef;
@@ -805,16 +819,19 @@ impl Vm {
                     let v = Self::pop(f);
                     let g = f.ext.as_ref().unwrap().globals.clone().unwrap();
                     self.setitem(&g, Value::Str(code.names[i as usize].clone()), v)?;
+                    self.finalize_pending();
                 }
                 Op::StoreGlobal(i) => {
                     let v = Self::pop(f);
                     f.globals.borrow_mut().set_str(code.names[i as usize].clone(), v);
+                    self.finalize_pending();
                 }
                 Op::DelGlobal(i) => {
                     let name = &code.names[i as usize];
                     if f.globals.borrow_mut().remove_str(name).is_none() {
                         return Err(self.name_error(name));
                     }
+                    self.finalize_pending();
                 }
                 Op::LoadName(i) if f.ext.is_some() => {
                     let name = &code.names[i as usize];
@@ -857,6 +874,7 @@ impl Vm {
                     let v = Self::pop(f);
                     let m = f.ext.as_ref().unwrap().locals.clone().unwrap();
                     self.setitem(&m, Value::Str(code.names[i as usize].clone()), v)?;
+                    self.finalize_pending();
                 }
                 Op::StoreName(i) => {
                     let v = Self::pop(f);
@@ -865,6 +883,7 @@ impl Vm {
                         Some(ns) => ns.borrow_mut().set_str(name, v),
                         None => f.globals.borrow_mut().set_str(name, v),
                     }
+                    self.finalize_pending();
                 }
                 Op::DelName(i) if f.ext.as_ref().map(|x| x.locals.is_some()).unwrap_or(false) => {
                     let m = f.ext.as_ref().unwrap().locals.clone().unwrap();
@@ -872,6 +891,7 @@ impl Vm {
                     if let Err(e) = self.delitem(&m, &Value::Str(name.clone())) {
                         return Err(if self.exc_is(&e, "KeyError") { self.name_error(name) } else { e });
                     }
+                    self.finalize_pending();
                 }
                 Op::DelName(i) => {
                     let name = &code.names[i as usize];
@@ -879,6 +899,7 @@ impl Vm {
                     if ns.borrow_mut().remove_str(name).is_none() {
                         return Err(self.name_error(name));
                     }
+                    self.finalize_pending();
                 }
                 Op::LoadAttr(i) => {
                     let obj = Self::pop(f);
@@ -889,10 +910,12 @@ impl Vm {
                     let obj = Self::pop(f);
                     let v = Self::pop(f);
                     self.setattr(&obj, &code.names[i as usize], v)?;
+                    self.finalize_pending();
                 }
                 Op::DelAttr(i) => {
                     let obj = Self::pop(f);
                     self.delattr(&obj, &code.names[i as usize])?;
+                    self.finalize_pending();
                 }
                 Op::LoadMethod(i) => {
                     let obj = Self::pop(f);
@@ -954,17 +977,21 @@ impl Vm {
                         let j = if *i < 0 { *i + n } else { *i };
                         if j >= 0 && j < n {
                             lb[j as usize] = v;
+                            drop(lb);
+                            self.finalize_pending();
                             continue;
                         }
                         drop(lb);
                         return Err(self.index_error("list assignment index out of range"));
                     }
                     self.setitem(&obj, idx, v)?;
+                    self.finalize_pending();
                 }
                 Op::DelSubscr => {
                     let idx = Self::pop(f);
                     let obj = Self::pop(f);
                     self.delitem(&obj, &idx)?;
+                    self.finalize_pending();
                 }
                 Op::BuildSlice(n) => {
                     let step = if n == 3 { Self::pop(f) } else { Value::None };
@@ -1067,6 +1094,7 @@ impl Vm {
                 }
                 Op::Pop => {
                     f.stack.pop();
+                    self.finalize_pending();
                 }
                 Op::Dup => {
                     let v = f.stack.last().unwrap().clone();
@@ -1570,6 +1598,7 @@ impl Vm {
                             self.handled.pop();
                         }
                     }
+                    self.finalize_pending();
                 }
                 Op::Reraise => {
                     let exc = Self::pop(f);

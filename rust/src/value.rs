@@ -330,8 +330,10 @@ pub enum Iter {
     BigRange(Box<(crate::bigint::BigInt, crate::bigint::BigInt, crate::bigint::BigInt)>),
     /// dict, position, kind (keys, values, items, set; +4 reversed), size seen, entries left
     Dict(Rc<RefCell<Dict>>, usize, u8, usize, usize),
-    Enumerate(Value, Value),
-    Zip(Vec<Value>, bool),
+    /// inner iterator, count, and the last result tuple, refilled while
+    /// nothing else holds it
+    Enumerate(Value, Value, Option<Rc<Vec<Value>>>),
+    Zip(Vec<Value>, bool, Option<Rc<Vec<Value>>>),
     Map(Value, Vec<Value>),
     Filter(Value, Value, bool),
     /// a sequence driven by __getitem__
@@ -817,6 +819,39 @@ pub fn fast_hash(v: &Value) -> Option<u64> {
             acc
         }
         other => (ptr_id(other) as u64) >> 4,
+    })
+}
+
+/// how many references share `v`'s allocation, None for values without one
+pub fn strong_count(v: &Value) -> Option<usize> {
+    Some(match v {
+        Value::Str(r) => Rc::strong_count(r),
+        Value::List(r) => Rc::strong_count(r),
+        Value::Tuple(r) => Rc::strong_count(r),
+        Value::Dict(r) | Value::Set(r) | Value::FrozenSet(r) => Rc::strong_count(r),
+        Value::Func(r) => Rc::strong_count(r),
+        Value::Native(r) => Rc::strong_count(r),
+        Value::Method(r) => Rc::strong_count(r),
+        Value::Class(r) => Rc::strong_count(r),
+        Value::Instance(r) => Rc::strong_count(r),
+        Value::Module(r) => Rc::strong_count(r),
+        Value::Iter(r) => Rc::strong_count(r),
+        Value::Gen(r) => Rc::strong_count(r),
+        Value::Big(r) => Rc::strong_count(r),
+        Value::Bytes(r) => Rc::strong_count(r),
+        Value::ByteArray(r) => Rc::strong_count(r),
+        Value::Range(r) => Rc::strong_count(r),
+        Value::BigRange(r) => Rc::strong_count(r),
+        Value::Slice(r) => Rc::strong_count(r),
+        Value::DictView(r) => Rc::strong_count(r),
+        Value::Property(r) => Rc::strong_count(r),
+        Value::StaticMethod(r) | Value::ClassMethod(r) => Rc::strong_count(r),
+        Value::Super(r) => Rc::strong_count(r),
+        Value::Cell(r) => Rc::strong_count(r),
+        Value::Code(r) => Rc::strong_count(r),
+        Value::Obj(r) => Rc::strong_count(r),
+        Value::Complex(r) => Rc::strong_count(r),
+        _ => return None,
     })
 }
 

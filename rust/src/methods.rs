@@ -2249,6 +2249,8 @@ fn list_sort(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     // sorting works on a copy; the list reads as empty meanwhile
     let mut items = std::mem::take(&mut *l.borrow_mut());
     let r = sort_values(vm, &mut items, &key, rev);
+    // the keys are gone by now, and their __del__ may touch the list
+    vm.finalize_pending();
     // a list that grew, even if emptied again, has a buffer
     let modified = l.borrow().capacity() != 0;
     *l.borrow_mut() = items;
@@ -3463,12 +3465,12 @@ fn iter_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Iter::Seq(obj, i) => t3(iter_fn, vec![obj.clone()], Some(Value::Int(*i))),
         Iter::SeqRev(obj, i) => t3(rev, vec![obj.clone()], Some(Value::Int(*i))),
         Iter::Callable(f, s) => t3(iter_fn, vec![f.clone(), s.clone()], None),
-        Iter::Enumerate(inner, count) => {
+        Iter::Enumerate(inner, count, _) => {
             let (inner, count) = (inner.clone(), count.clone());
             let c = own;
             t3(c, vec![inner, count], None)
         }
-        Iter::Zip(its, strict) => {
+        Iter::Zip(its, strict, _) => {
             let (its, strict) = (its.clone(), *strict);
             let c = own;
             t3(c, its, if strict { Some(Value::Bool(true)) } else { None })
@@ -3499,7 +3501,7 @@ fn iter_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Value::Iter(it) => it.clone(),
         _ => return Ok(Value::None),
     };
-    if let Iter::Zip(_, strict) = &mut *it.borrow_mut() {
+    if let Iter::Zip(_, strict, _) = &mut *it.borrow_mut() {
         *strict = vm.truthy(&a[1])?;
         return Ok(Value::None);
     }

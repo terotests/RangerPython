@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# gc for the Ranger Python runtime: memory is the host's, so these do nothing.
+# gc for the Ranger Python runtime: memory is reference counted, so there is
+# nothing to collect; is_tracked answers as CPython's collector would.
 _enabled = True
 def collect(generation=2): return 0
 def enable():
@@ -11,7 +12,7 @@ def disable():
 def isenabled(): return _enabled
 def get_referrers(*objs): return []
 def get_referents(*objs): return []
-def is_tracked(obj): return False
+from _rpygc import is_tracked
 def freeze(): pass
 garbage = []
 callbacks = []

@@ -1506,6 +1506,10 @@ fn str_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         Some(v) => vm.to_index(&v)?,
         None => -1,
     };
+    // nothing to replace gives back the string itself, as CPython does
+    if matches!(&a[0], Value::Str(_)) && (count == 0 || Rc::ptr_eq(&old, &new) || (!old.s.is_empty() && !x.s.contains(&*old.s))) {
+        return Ok(a[0].clone());
+    }
     if count < 0 {
         if old.s.is_empty() {
             // between every character
@@ -1710,6 +1714,9 @@ fn str_expandtabs(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         Some(v) => vm.to_index(&v)?,
         None => 8,
     };
+    if matches!(&a[0], Value::Str(_)) && !x.s.contains('\t') {
+        return Ok(a[0].clone());
+    }
     let mut out = String::new();
     let mut col = 0i64;
     for c in x.s.chars() {
