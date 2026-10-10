@@ -25,6 +25,7 @@
 ;   Prop (wrapped getter, setter), Static, ClassM (wrapped function)
 ;   Super (cls: the class to look after, self)
 ;   Gen (gen): a generator, run a step at a time
+;   Complex (d real, d2 imaginary)
 ;   Func and Class keep their defining class in cls (for super())
 ; ============================================================================
 
@@ -56,6 +57,7 @@ Enum PyT:int (
     ClassM
     Super
     Gen
+    Complex
 )
 
 class PyVal {
@@ -64,6 +66,8 @@ class PyVal {
     def i2:int 0
     def i3:int 0
     def d:double 0.0
+    ; Complex: the imaginary part (the real one in d)
+    def d2:double 0.0
     def s:string ""
     def items:[PyVal]
     def vals:[PyVal]
@@ -90,6 +94,9 @@ class PyVal {
     def gen@(optional):PyGen
     ; a lazy chain: the iterator being read
     def cur@(optional):PyVal
+    ; Class: the built-in type it derives from (int, list, …), "native" for
+    ; a runtime class (Counter, deque, …) kept in wrapped
+    def bt:string ""
 
     Constructor (tag:PyT) {
         t = tag

@@ -71,12 +71,12 @@ Enum PyK:int (
     Walrus      ; s name, k1 value
     Yield       ; k1 value (or none)
     YieldFrom   ; k1
-    Param       ; s name, k1 default (or none), i 0 plain, 1 *args, 2 **kwargs, 3 bare * marker, 4 / marker
+    Param       ; s name, k1 default (or none), k2 annotation, i 0 plain, 1 *args, 2 **kwargs, 3 bare * marker, 4 / marker
     ; ---- statements
     ExprStmt    ; k1
     Assign      ; kids targets, k1 value
     AugAssign   ; s op ("+", …), k1 target, k2 value
-    AnnAssign   ; k1 target, k2 value (or none)
+    AnnAssign   ; k1 target, k2 value (or none), k3 annotation
     If          ; k1 test, body, orelse
     While       ; k1 test, body, orelse
     For         ; k1 target, k2 iterable, body, orelse
@@ -84,8 +84,9 @@ Enum PyK:int (
     Continue
     Pass
     Return      ; k1 (or none)
-    Def         ; s name, kids params, body, decos, i 1 when it yields
-    Class       ; s name, kids bases (and Keyword for metaclass=…, ignored), body, decos
+    Def         ; s name, kids params, body, decos, i 1 when it yields, k3 return annotation, tparams
+    Class       ; s name, kids bases (and Keyword for metaclass=…, ignored), body, decos, tparams
+    TypeAlias   ; s name, k1 value, tparams
     Try         ; body, handlers (Handler), orelse, final
     Handler     ; k1 type (or none), s name (or ""), body
     Raise       ; k1 (or none), k2 cause (or none)
@@ -117,6 +118,10 @@ class PyNode {
     def final:[PyNode]
     def handlers:[PyNode]
     def decos:[PyNode]
+    ; def f[T], class C[T]: the type parameters' names
+    def tparams:[string]
+    ; Def / Class: the qualified name (C.f, f.<locals>.g)
+    def qual:string ""
     ; Def / Lambda: the local names (assigned in the body), worked out once
     def locals:[string:boolean]
     def localsKnown:boolean false

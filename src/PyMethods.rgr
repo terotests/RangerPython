@@ -20,16 +20,17 @@ class PyMethods {
     Constructor (interp:PyInterp) {
         ip = interp
         this.addNames("str" "join split rsplit splitlines strip lstrip rstrip replace upper lower title capitalize swapcase casefold startswith endswith find rfind index rindex count format format_map zfill ljust rjust center isdigit isnumeric isdecimal isalpha isalnum isspace isupper islower istitle isidentifier isascii isprintable partition rpartition encode expandtabs removeprefix removesuffix translate __len__ __contains__ __getitem__ __add__ __mul__ __eq__ __lt__ __hash__ __iter__ __str__ __repr__")
-        this.addNames("list" "append extend insert pop remove index count sort reverse copy clear __len__ __getitem__ __setitem__ __contains__ __iter__ __add__ __eq__ __repr__")
+        this.addNames("list" "__init__ append extend insert pop remove index count sort reverse copy clear __len__ __getitem__ __setitem__ __contains__ __iter__ __add__ __eq__ __repr__")
         this.addNames("deque" "append appendleft extend extendleft pop popleft remove index count reverse rotate copy clear __len__")
         this.addNames("tuple" "index count __len__ __getitem__ __contains__ __iter__ __add__ __eq__ __hash__ __repr__")
-        this.addNames("dict" "get keys values items pop popitem setdefault update copy clear __len__ __getitem__ __setitem__ __contains__ __iter__ __eq__ __repr__ most_common elements total subtract")
-        this.addNames("set" "add remove discard pop clear copy update union intersection difference symmetric_difference issubset issuperset isdisjoint intersection_update difference_update symmetric_difference_update __len__ __contains__ __iter__")
+        this.addNames("dict" "__init__ move_to_end get keys values items pop popitem setdefault update copy clear __len__ __getitem__ __setitem__ __contains__ __iter__ __eq__ __repr__ most_common elements total subtract")
+        this.addNames("set" "__init__ add remove discard pop clear copy update union intersection difference symmetric_difference issubset issuperset isdisjoint intersection_update difference_update symmetric_difference_update __len__ __contains__ __iter__")
         this.addNames("frozenset" "copy union intersection difference symmetric_difference issubset issuperset isdisjoint __len__ __contains__ __iter__ __hash__")
         this.addNames("file" "write writelines read readline readlines close flush seek tell __enter__ __exit__ __iter__ __next__ readable writable")
         this.addNames("int" "bit_length conjugate is_integer __index__ __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ to_bytes")
         this.addNames("float" "is_integer conjugate hex __int__ __float__ __abs__ __add__ __sub__ __mul__ __eq__ __lt__ __hash__ as_integer_ratio")
         this.addNames("iter" "__next__ __iter__")
+        this.addNames("complex" "conjugate __abs__ __add__ __sub__ __mul__ __truediv__ __pow__ __eq__ __hash__ __neg__ __pos__ __bool__ __complex__ __radd__ __rsub__ __rmul__ __rtruediv__ __rpow__ __repr__ __str__ __getnewargs__ __format__")
         this.addNames("generator" "__next__ __iter__ send throw close")
         this.addNames("range" "index count __len__ __iter__ __contains__")
     }
@@ -75,6 +76,9 @@ class PyMethods {
             }
             case PyT.Float {
                 return "float"
+            }
+            case PyT.Complex {
+                return "complex"
             }
             case PyT.Iter {
                 return "iter"
@@ -136,6 +140,16 @@ class PyMethods {
             if (name == "closed") {
                 def optr125@(optional):PyVal (ip.mkBool(obj.closed))
                 return optr125
+            }
+        }
+        if (obj.t == PyT.Complex) {
+            if (name == "real") {
+                def optrc1@(optional):PyVal (ip.mkFloat(obj.d))
+                return optrc1
+            }
+            if (name == "imag") {
+                def optrc2@(optional):PyVal (ip.mkFloat(obj.d2))
+                return optrc2
             }
         }
         if (obj.t == PyT.Gen) {
@@ -214,6 +228,14 @@ class PyMethods {
     fn typeAttr@(optional):PyVal (tv:PyVal name:string) {
         def none@(optional):PyVal
         def kind:string tv.s
+        if ((name == "__new__") && ((kind == "int") || (kind == "float") || (kind == "str") || (kind == "tuple") || (kind == "frozenset") || (kind == "complex") || (kind == "list") || (kind == "dict") || (kind == "set"))) {
+            def optrnw@(optional):PyVal (ip.mkBuiltinMethod(tv "type.__new__"))
+            return optrnw
+        }
+        if ((name == "__init__") && ((kind == "list") || (kind == "dict") || (kind == "set"))) {
+            def optrin@(optional):PyVal (ip.mkBuiltinMethod(tv "unbound:__init__"))
+            return optrin
+        }
         if ((kind == "dict") && (name == "fromkeys")) {
             def optr167@(optional):PyVal (ip.mkBuiltinMethod(tv "dict.fromkeys"))
             return optr167
@@ -251,6 +273,61 @@ class PyMethods {
     }
 
     fn callMethod:PyVal (self:PyVal name:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        if (ip.isDataSub(self)) {
+            ; a subclass's value seen as the built-in type
+            def saved@(optional):PyVal ip.rawSelf
+            ip.rawSelf = self
+            def r:PyVal ip.NONE
+            def failed:boolean false
+            def err:PyVal ip.NONE
+            try {
+                r = (this.callMethodPlain(self name args kn kv))
+            } {
+                failed = true
+                err = (ip.takeException((error_msg)))
+            }
+            ip.rawSelf = saved
+            if failed {
+                ip.reraise(err)
+            }
+            return r
+        }
+        return (this.callMethodPlain(self name args kn kv))
+    }
+
+    fn callMethodPlain:PyVal (self:PyVal name:string args:[PyVal] kn:[string] kv:[PyVal]) {
+        if (name == "__init__") {
+            return (this.initMethod(self args kn kv))
+        }
+        if (name == "__noop__") {
+            if ((array_length kn) > 0) {
+                ip.raise("TypeError" ("object.__init_subclass__() takes no keyword arguments"))
+            }
+            return ip.NONE
+        }
+        if (name == "type.__new__") {
+            ; int.__new__(cls, …): the built-in value made for a subclass
+            if ((array_length args) == 0) {
+                ip.raise("TypeError" (self.s + ".__new__(): not enough arguments"))
+            }
+            def ncls:PyVal (itemAt args 0)
+            def rest0:[PyVal]
+            def ni:int 1
+            while (ni < (array_length args)) {
+                push rest0 (itemAt args ni)
+                ni = ni + 1
+            }
+            def made:PyVal (ip.bi.call(self.s rest0 kn kv))
+            if ((ncls.t == PyT.Builtin) && (ncls.s == self.s)) {
+                return made
+            }
+            if ((ncls.t != PyT.Class) || (ncls.bt != self.s)) {
+                ip.raise("TypeError" (self.s + ".__new__(" + (ip.typeName(ncls)) + "): " + (ip.typeName(ncls)) + " is not a subtype of " + self.s))
+            }
+            def nv:PyVal (ip.cloneVal(made))
+            nv.cls = ncls
+            return nv
+        }
         if (name == "__counter_key__") {
             def ck:PyVal (itemAt args 0)
             return (itemAt ck.items 1)
@@ -364,6 +441,9 @@ class PyMethods {
             case PyT.Gen {
                 return (this.genMethod(self name args))
             }
+            case PyT.Complex {
+                return (this.complexMethod(self name args))
+            }
             case PyT.Iter {
                 if ((name == "__next__") && ((strlen self.mode) > 0)) {
                     def lnx@(optional):PyVal (ip.nextOpt(self))
@@ -435,6 +515,95 @@ class PyMethods {
             return (ip.pair((ip.mkInt((py_trunc x))) (ip.mkInt((py_trunc den)))))
         }
         ip.raise("AttributeError" ("'" + (ip.typeName(self)) + "' object has no attribute '" + name + "'"))
+        return ip.NONE
+    }
+
+    fn complexMethod:PyVal (self:PyVal name:string args:[PyVal]) {
+        if (name == "conjugate") {
+            return (ip.mkComplex(self.d (0.0 - self.d2)))
+        }
+        if (name == "__complex__") {
+            return self
+        }
+        if (name == "__getnewargs__") {
+            return (ip.mkTuple(([] _:PyVal ((ip.mkFloat(self.d)) (ip.mkFloat(self.d2))))))
+        }
+        if (name == "__bool__") {
+            return (ip.mkBool((ip.truthy(self))))
+        }
+        if ((name == "__repr__") || (name == "__str__")) {
+            return (ip.mkStr((ip.complexRepr(self))))
+        }
+        if (name == "__format__") {
+            return (ip.mkStr((ip.formatValue(self (ip.toStr((this.arg(args 0))))))))
+        }
+        if ((name == "__neg__") || (name == "__pos__")) {
+            def op:string "-"
+            if (name == "__pos__") {
+                op = "+"
+            }
+            return (ip.unary(op self))
+        }
+        def kn:[string]
+        def kv:[PyVal]
+        if (name == "__abs__") {
+            return (ip.bi.call("abs" ([] _:PyVal (self)) kn kv))
+        }
+        if (name == "__hash__") {
+            return (ip.bi.call("hash" ([] _:PyVal (self)) kn kv))
+        }
+        def o:PyVal (this.arg(args 0))
+        if ((ip.isComplexNum(o)) == false) {
+            return ip.NOTIMPL
+        }
+        if (name == "__eq__") {
+            return (ip.mkBool((ip.eq(self o))))
+        }
+        def ops:[string] ([] _:string ("add" "sub" "mul" "truediv" "pow"))
+        def sym:[string] ([] _:string ("+" "-" "*" "/" "**"))
+        for ops nm:string i {
+            if (name == ("__" + nm + "__")) {
+                return (ip.binop((itemAt sym i) self o))
+            }
+            if (name == ("__r" + nm + "__")) {
+                return (ip.binop((itemAt sym i) o self))
+            }
+        }
+        ip.raise("AttributeError" ("'complex' object has no attribute '" + name + "'"))
+        return ip.NONE
+    }
+
+    ; list.__init__, dict.__init__, set.__init__ (through super() in a
+    ; subclass): refill the value; the others take what __new__ made
+    fn initMethod:PyVal (self:PyVal args:[PyVal] kn:[string] kv:[PyVal]) {
+        def none:[PyVal]
+        if (self.t == PyT.List) {
+            self.items = none
+            if ((array_length args) > 0) {
+                for (ip.iterValues((itemAt args 0))) v:PyVal i {
+                    push self.items v
+                }
+            }
+            return ip.NONE
+        }
+        if (self.t == PyT.Dict) {
+            self.items = none
+            self.vals = none
+            def ni:[string:int]
+            self.index = ni
+            return (this.dictMethod(self "update" args kn kv))
+        }
+        if ((self.t == PyT.Set) && (self.mode != "frozen")) {
+            self.items = none
+            def ni2:[string:int]
+            self.index = ni2
+            if ((array_length args) > 0) {
+                for (ip.iterValues((itemAt args 0))) v2:PyVal j {
+                    ip.setAdd(self v2)
+                }
+            }
+            return ip.NONE
+        }
         return ip.NONE
     }
 
@@ -1645,6 +1814,36 @@ class PyMethods {
 
     fn dictMethod:PyVal (self:PyVal name:string args:[PyVal] kn:[string] kv:[PyVal]) {
         def n:int (array_length args)
+        if (name == "move_to_end") {
+            def mk:PyVal (this.arg(args 0))
+            def mv@(optional):PyVal (ip.dictGet(self mk))
+            if (null? mv) {
+                ip.raiseVal((ip.makeExcArg("KeyError" mk)))
+            }
+            def atEnd:boolean true
+            def lv:PyVal (ip.bi.arg(args 1 kn kv "last"))
+            if (lv.t != PyT.None) {
+                atEnd = (ip.truthy(lv))
+            }
+            ip.dictDel(self mk)
+            if atEnd {
+                ip.dictSet(self mk (unwrap mv))
+                return ip.NONE
+            }
+            def ks:[PyVal] self.items
+            def vs:[PyVal] self.vals
+            def none:[PyVal]
+            def none2:[PyVal]
+            def ni:[string:int]
+            self.items = none
+            self.vals = none2
+            self.index = ni
+            ip.dictSet(self mk (unwrap mv))
+            for ks k:PyVal ki {
+                ip.dictSet(self k (itemAt vs ki))
+            }
+            return ip.NONE
+        }
         if (name == "get") {
             this.need("get" args 1 2)
             def r@(optional):PyVal (ip.dictGet(self (itemAt args 0)))

@@ -64,6 +64,8 @@ class PyInterp {
     def ENDED:PyVal (new PyVal(PyT.None))
     ; a generator expression's first iterable, evaluated already
     def compFirst@(optional):PyVal
+    ; a subclassed built-in value a built-in method is working on
+    def rawSelf@(optional):PyVal
     def reprDepth:int 0
     def globals:PyScope (new PyScope)
     def bi:PyBuiltins
@@ -386,6 +388,12 @@ class PyInterp {
     ; ---- truth, length, type names
 
     fn typeName:string (v:PyVal) {
+        if (!null? v.cls) {
+            if (this.isDataSub(v)) {
+                def tcl:PyVal (unwrap v.cls)
+                return tcl.s
+            }
+        }
         if (((v.t == PyT.List) || (v.t == PyT.Dict) || (v.t == PyT.Tuple)) && (has v.attrs "__class__")) {
             def tc:PyVal (unwrap (get v.attrs "__class__"))
             return tc.s
@@ -402,6 +410,9 @@ class PyInterp {
             }
             case PyT.Float {
                 return "float"
+            }
+            case PyT.Complex {
+                return "complex"
             }
             case PyT.Str {
                 return "str"
@@ -481,7 +492,7 @@ class PyInterp {
     }
 
     fn isTypeBuiltin:boolean (name:string) {
-        def ts:[string] ([] _:string ("int" "float" "str" "bool" "list" "tuple" "dict" "set" "frozenset" "object" "type" "range" "slice" "enumerate" "zip" "map" "filter" "reversed" "property" "staticmethod" "classmethod" "super"))
+        def ts:[string] ([] _:string ("int" "float" "complex" "str" "bool" "list" "tuple" "dict" "set" "frozenset" "object" "type" "range" "slice" "enumerate" "zip" "map" "filter" "reversed" "property" "staticmethod" "classmethod" "super"))
         for ts t:string i {
             if (t == name) {
                 return true
@@ -491,6 +502,16 @@ class PyInterp {
     }
 
     fn truthy:boolean (v:PyVal) {
+        if (!null? v.cls) {
+            def sb@(optional):PyVal (this.subDunder(v "__bool__" ([] _:PyVal ())))
+            if (!null? sb) {
+                return (this.truthy((unwrap sb)))
+            }
+            def sbl@(optional):PyVal (this.subDunder(v "__len__" ([] _:PyVal ())))
+            if (!null? sbl) {
+                return (this.truthy((unwrap sbl)))
+            }
+        }
         switch v.t {
             case PyT.None {
                 return false
@@ -503,6 +524,9 @@ class PyInterp {
             }
             case PyT.Float {
                 return (v.d != 0.0)
+            }
+            case PyT.Complex {
+                return ((v.d != 0.0) || (v.d2 != 0.0))
             }
             case PyT.Str {
                 return ((strlen v.s) > 0)
@@ -554,6 +578,13 @@ class PyInterp {
     }
 
     fn length:int (v:PyVal) {
+        if (!null? v.cls) {
+            def sl@(optional):PyVal (this.subDunder(v "__len__" ([] _:PyVal ())))
+            if (!null? sl) {
+                def slv:PyVal (unwrap sl)
+                return slv.i
+            }
+        }
         switch v.t {
             case PyT.Str {
                 return (v.strLen())
@@ -591,6 +622,18 @@ class PyInterp {
     ; ---- str and repr
 
     fn toStr:string (v:PyVal) {
+        if (!null? v.cls) {
+            def ss@(optional):PyVal (this.subDunder(v "__str__" ([] _:PyVal ())))
+            if (!null? ss) {
+                return (this.toStr((unwrap ss)))
+            }
+            if (v.t != PyT.Str) {
+                def ss2@(optional):PyVal (this.subDunder(v "__repr__" ([] _:PyVal ())))
+                if (!null? ss2) {
+                    return (this.toStr((unwrap ss2)))
+                }
+            }
+        }
         switch v.t {
             case PyT.Str {
                 return v.s
@@ -654,6 +697,12 @@ class PyInterp {
     }
 
     fn toRepr:string (v:PyVal) {
+        if (!null? v.cls) {
+            def sr@(optional):PyVal (this.subDunder(v "__repr__" ([] _:PyVal ())))
+            if (!null? sr) {
+                return (this.toStr((unwrap sr)))
+            }
+        }
         switch v.t {
             case PyT.None {
                 return "None"
@@ -669,6 +718,9 @@ class PyInterp {
             }
             case PyT.Float {
                 return (PyFormat.floatRepr(v.d))
+            }
+            case PyT.Complex {
+                return (this.complexRepr(v))
             }
             case PyT.Str {
                 return (PyFormat.strRepr(v.s))
@@ -805,6 +857,12 @@ class PyInterp {
     ; ---- hashing and equality
 
     fn hashKey:string (v:PyVal) {
+        if (!null? v.cls) {
+            def sh@(optional):PyVal (this.subDunder(v "__hash__" ([] _:PyVal ())))
+            if (!null? sh) {
+                return ("h" + (this.toStr((unwrap sh))))
+            }
+        }
         switch v.t {
             case PyT.None {
                 return "N"
@@ -823,6 +881,12 @@ class PyInterp {
             }
             case PyT.Str {
                 return ("s" + v.s)
+            }
+            case PyT.Complex {
+                if (v.d2 == 0.0) {
+                    return (this.hashKey((this.mkFloat(v.d))))
+                }
+                return ("c" + (this.complexRepr(v)))
             }
             case PyT.Tuple {
                 def parts:[string]
@@ -869,6 +933,17 @@ class PyInterp {
     }
 
     fn eq:boolean (a:PyVal b:PyVal) {
+        if ((!null? a.cls) || (!null? b.cls)) {
+            if ((this.isDataSub(a)) || (this.isDataSub(b))) {
+                def se@(optional):PyVal (this.dunderBin("__eq__" "__eq__" a b))
+                if (!null? se) {
+                    return (this.truthy((unwrap se)))
+                }
+            }
+        }
+        if (((a.t == PyT.Complex) || (b.t == PyT.Complex)) && (this.isComplexNum(a)) && (this.isComplexNum(b))) {
+            return (((this.reOf(a)) == (this.reOf(b))) && ((this.imOf(a)) == (this.imOf(b))))
+        }
         if ((this.isNum(a)) && (this.isNum(b))) {
             if ((this.isIntLike(a)) && (this.isIntLike(b))) {
                 return (a.i == b.i)
@@ -981,6 +1056,14 @@ class PyInterp {
 
     ; a < b
     fn less:boolean (a:PyVal b:PyVal) {
+        if ((!null? a.cls) || (!null? b.cls)) {
+            if ((this.isDataSub(a)) || (this.isDataSub(b))) {
+                def sl@(optional):PyVal (this.dunderBin("__lt__" "__gt__" a b))
+                if (!null? sl) {
+                    return (this.truthy((unwrap sl)))
+                }
+            }
+        }
         if ((this.isNum(a)) && (this.isNum(b))) {
             if ((this.isIntLike(a)) && (this.isIntLike(b))) {
                 return (a.i < b.i)
@@ -1007,7 +1090,7 @@ class PyInterp {
         if ((a.t == PyT.Set) && (b.t == PyT.Set)) {
             return ((array_length a.items) < (array_length b.items) && (this.isSubset(a b)))
         }
-        if ((a.t == PyT.Inst) || (b.t == PyT.Inst)) {
+        if ((this.isObjLike(a)) || (this.isObjLike(b))) {
             def r@(optional):PyVal (this.dunderBin("__lt__" "__gt__" a b))
             if (!null? r) {
                 return (this.truthy((unwrap r)))
@@ -1031,7 +1114,7 @@ class PyInterp {
             return (this.eq(a b))
         }
         if (op == "!=") {
-            if (a.t == PyT.Inst) {
+            if ((this.isObjLike(a)) || (this.isObjLike(b))) {
                 def r@(optional):PyVal (this.dunderBin("__ne__" "__ne__" a b))
                 if (!null? r) {
                     return (this.truthy((unwrap r)))
@@ -1043,7 +1126,7 @@ class PyInterp {
             return (this.less(a b))
         }
         if (op == ">") {
-            if ((a.t == PyT.Inst) || (b.t == PyT.Inst)) {
+            if ((this.isObjLike(a)) || (this.isObjLike(b))) {
                 def r2@(optional):PyVal (this.dunderBin("__gt__" "__lt__" a b))
                 if (!null? r2) {
                     return (this.truthy((unwrap r2)))
@@ -1052,7 +1135,7 @@ class PyInterp {
             return (this.less(b a))
         }
         if (op == "<=") {
-            if ((a.t == PyT.Inst) || (b.t == PyT.Inst)) {
+            if ((this.isObjLike(a)) || (this.isObjLike(b))) {
                 def r3@(optional):PyVal (this.dunderBin("__le__" "__ge__" a b))
                 if (!null? r3) {
                     return (this.truthy((unwrap r3)))
@@ -1070,7 +1153,7 @@ class PyInterp {
             return ((this.less(b a)) == false)
         }
         if (op == ">=") {
-            if ((a.t == PyT.Inst) || (b.t == PyT.Inst)) {
+            if ((this.isObjLike(a)) || (this.isObjLike(b))) {
                 def r4@(optional):PyVal (this.dunderBin("__ge__" "__le__" a b))
                 if (!null? r4) {
                     return (this.truthy((unwrap r4)))
@@ -1104,6 +1187,12 @@ class PyInterp {
     }
 
     fn contains:boolean (container:PyVal item:PyVal) {
+        if (!null? container.cls) {
+            def sc@(optional):PyVal (this.subDunder(container "__contains__" ([] _:PyVal (item))))
+            if (!null? sc) {
+                return (this.truthy((unwrap sc)))
+            }
+        }
         switch container.t {
             case PyT.Str {
                 if (item.t != PyT.Str) {
@@ -1261,6 +1350,12 @@ class PyInterp {
 
     ; every value an iterable gives, in order
     fn iterValues:[PyVal] (v:PyVal) {
+        if (!null? v.cls) {
+            def si@(optional):PyVal (this.subDunder(v "__iter__" ([] _:PyVal ())))
+            if (!null? si) {
+                return (this.iterValues((unwrap si)))
+            }
+        }
         switch v.t {
             case PyT.List {
                 def out:[PyVal]
@@ -1512,8 +1607,13 @@ class PyInterp {
     ; a method an instance's class defines (for the dunder protocols)
     fn findMethod@(optional):PyVal (v:PyVal name:string) {
         def none@(optional):PyVal
-        if ((v.t != PyT.Inst) || (null? v.cls)) {
+        if (null? v.cls) {
             return none
+        }
+        if (v.t != PyT.Inst) {
+            if ((this.isDataSub(v)) == false) {
+                return none
+            }
         }
         def c:PyVal (unwrap v.cls)
         def f@(optional):PyVal (this.classLookup(c name))
@@ -1603,6 +1703,14 @@ class PyInterp {
 
     fn getAttrOpt@(optional):PyVal (obj:PyVal name:string) {
         def none@(optional):PyVal
+        if (!null? obj.cls) {
+            if (this.isDataSub(obj)) {
+                def dsa@(optional):PyVal (this.dataSubAttr(obj name))
+                if (!null? dsa) {
+                    return dsa
+                }
+            }
+        }
         switch obj.t {
             case PyT.Inst {
                 def c:PyVal (unwrap obj.cls)
@@ -1655,6 +1763,9 @@ class PyInterp {
                     return optr1547
                 }
                 if (name == "__qualname__") {
+                    if (has obj.attrs "__qualname__") {
+                        return (get obj.attrs "__qualname__")
+                    }
                     def optr1550@(optional):PyVal (this.mkStr(obj.s))
                     return optr1550
                 }
@@ -1664,11 +1775,18 @@ class PyInterp {
                     for obj.vals mv:PyVal mi {
                         push m mv
                     }
+                    if (((strlen obj.bt) > 0) && (obj.bt != "native")) {
+                        push m (unwrap (get builtins obj.bt))
+                    }
                     push m (this.bi.objectClass())
                     def optr1558@(optional):PyVal (this.mkTuple(m))
                     return optr1558
                 }
                 if (name == "__bases__") {
+                    if (((array_length obj.bases) == 0) && ((strlen obj.bt) > 0) && (obj.bt != "native")) {
+                        def optrbb@(optional):PyVal (this.mkTuple(([] _:PyVal ((unwrap (get builtins obj.bt))))))
+                        return optrbb
+                    }
                     def optr1561@(optional):PyVal (this.mkTuple(obj.bases))
                     return optr1561
                 }
@@ -1683,6 +1801,23 @@ class PyInterp {
                 }
                 def v@(optional):PyVal (this.classLookup(obj name))
                 if (null? v) {
+                    if (name == "__annotations__") {
+                        def ca:PyVal (this.mkDict())
+                        obj.putAttr("__annotations__" ca)
+                        def optrca@(optional):PyVal ca
+                        return optrca
+                    }
+                    if (name == "__doc__") {
+                        def optrcd@(optional):PyVal NONE
+                        return optrcd
+                    }
+                    if (name == "__type_params__") {
+                        def optrct@(optional):PyVal (this.mkTuple(([] _:PyVal ())))
+                        return optrct
+                    }
+                    if ((name == "__init__") && ((strlen obj.bt) == 0)) {
+                        return (get builtins "__object_init__")
+                    }
                     return none
                 }
                 def vv:PyVal (unwrap v)
@@ -1716,7 +1851,7 @@ class PyInterp {
                 def self:PyVal (unwrap obj.self)
                 def after:PyVal (unwrap obj.cls)
                 def start:PyVal self
-                if (self.t == PyT.Inst) {
+                if ((self.t == PyT.Inst) || (this.isDataSub(self))) {
                     start = (unwrap self.cls)
                 }
                 def mro:[PyVal]
@@ -1750,6 +1885,29 @@ class PyInterp {
                         found = true
                     }
                 }
+                if ((this.isDataSub(self)) && (name != "__class__")) {
+                    ; past the classes: the built-in type's own method
+                    def saved@(optional):PyVal rawSelf
+                    rawSelf = self
+                    def bm@(optional):PyVal (this.meth.attrOf(self name))
+                    rawSelf = saved
+                    if (!null? bm) {
+                        return bm
+                    }
+                }
+                if ((self.t == PyT.Class) && ((strlen self.bt) > 0) && (self.bt != "native")) {
+                    def bty@(optional):PyVal (get builtins self.bt)
+                    if (!null? bty) {
+                        def tam@(optional):PyVal (this.meth.typeAttr((unwrap bty) name))
+                        if (!null? tam) {
+                            return tam
+                        }
+                    }
+                }
+                if (name == "__init_subclass__") {
+                    def optris@(optional):PyVal (this.mkBuiltinMethod(self "__noop__"))
+                    return optris
+                }
                 if (name == "__init__") {
                     ; object.__init__
                     def oi (new PyVal(PyT.Bound))
@@ -1762,19 +1920,10 @@ class PyInterp {
                 return none
             }
             case PyT.Func {
-                if (name == "__name__") {
-                    def optr1629@(optional):PyVal (this.mkStr(obj.s))
-                    return optr1629
+                if (has obj.attrs name) {
+                    return (get obj.attrs name)
                 }
-                if (name == "__qualname__") {
-                    def optr1632@(optional):PyVal (this.mkStr(obj.s))
-                    return optr1632
-                }
-                if (name == "__doc__") {
-                    def optr1635@(optional):PyVal NONE
-                    return optr1635
-                }
-                return (get obj.attrs name)
+                return (this.funcAttr(obj name))
             }
             case PyT.Bound {
                 if (name == "__name__") {
@@ -1798,10 +1947,19 @@ class PyInterp {
                 return none
             }
             case PyT.Builtin {
-                if (name == "__name__") {
+                if ((name == "__name__") || (name == "__qualname__")) {
                     def bd:int (lastIndexOf obj.s ".")
                     def optr1654@(optional):PyVal (this.mkStr((substring obj.s (bd + 1) (strlen obj.s))))
                     return optr1654
+                }
+                if (name == "__module__") {
+                    def bmd:int (lastIndexOf obj.s ".")
+                    if (bmd > 0) {
+                        def optrbm@(optional):PyVal (this.mkStr((substring obj.s 0 bmd)))
+                        return optrbm
+                    }
+                    def optrbm2@(optional):PyVal (this.mkStr("builtins"))
+                    return optrbm2
                 }
                 if ((obj.s == "itertools.chain") && (name == "from_iterable")) {
                     def cf (new PyVal(PyT.Builtin))
@@ -1862,6 +2020,19 @@ class PyInterp {
             return
         }
         if ((obj.t == PyT.Class) || (obj.t == PyT.Module) || (obj.t == PyT.Func)) {
+            obj.putAttr(name val)
+            return
+        }
+        if (this.isDataSub(obj)) {
+            def dc:PyVal (unwrap obj.cls)
+            def dcv@(optional):PyVal (this.classLookup(dc name))
+            if (!null? dcv) {
+                def dcvv:PyVal (unwrap dcv)
+                if ((dcvv.t == PyT.Prop) && (!null? dcvv.setter)) {
+                    this.callMethodVal((unwrap dcvv.setter) obj ([] _:PyVal (val)))
+                    return
+                }
+            }
             obj.putAttr(name val)
             return
         }
@@ -2000,6 +2171,18 @@ class PyInterp {
     }
 
     fn getItem:PyVal (obj:PyVal idx:PyVal) {
+        if (!null? obj.cls) {
+            def sg@(optional):PyVal (this.subDunder(obj "__getitem__" ([] _:PyVal (idx))))
+            if (!null? sg) {
+                return (unwrap sg)
+            }
+            if ((obj.t == PyT.Dict) && (this.isDataSub(obj)) && (null? (this.dictGet(obj idx)))) {
+                def smi@(optional):PyVal (this.subDunder(obj "__missing__" ([] _:PyVal (idx))))
+                if (!null? smi) {
+                    return (unwrap smi)
+                }
+            }
+        }
         switch obj.t {
             case PyT.List {
                 if (idx.t == PyT.Slice) {
@@ -2084,15 +2267,36 @@ class PyInterp {
                 }
             }
             case PyT.Class {
-                ; list[int] and the like in annotations
-                return obj
+                def cg@(optional):PyVal (this.classLookup(obj "__class_getitem__"))
+                if (!null? cg) {
+                    def cgf:PyVal (unwrap cg)
+                    if ((cgf.t == PyT.ClassM) || (cgf.t == PyT.Static)) {
+                        cgf = (unwrap cgf.wrapped)
+                    }
+                    def kn:[string]
+                    def kv:[PyVal]
+                    return (this.callValue(cgf ([] _:PyVal (obj idx)) kn kv))
+                }
+                if (obj.mode == "native") {
+                    return (this.genericAlias(obj idx))
+                }
             }
             case PyT.Builtin {
-                return obj
+                if (this.isTypeBuiltin(obj.s)) {
+                    return (this.genericAlias(obj idx))
+                }
             }
         }
         this.raise("TypeError" ("'" + (this.typeName(obj)) + "' object is not subscriptable"))
         return NONE
+    }
+
+    ; list[int]: a types.GenericAlias
+    fn genericAlias:PyVal (origin:PyVal args:PyVal) {
+        def ga:PyVal (this.getAttr((this.importModule("types")) "GenericAlias"))
+        def kn:[string]
+        def kv:[PyVal]
+        return (this.callValue(ga ([] _:PyVal (origin args)) kn kv))
     }
 
     fn makeExcArg:PyVal (name:string arg:PyVal) {
@@ -2115,6 +2319,12 @@ class PyInterp {
     }
 
     fn setItem:void (obj:PyVal idx:PyVal val:PyVal) {
+        if (!null? obj.cls) {
+            def ssi@(optional):PyVal (this.subDunder(obj "__setitem__" ([] _:PyVal (idx val))))
+            if (!null? ssi) {
+                return
+            }
+        }
         switch obj.t {
             case PyT.List {
                 if (idx.t == PyT.Slice) {
@@ -2173,6 +2383,12 @@ class PyInterp {
     }
 
     fn delItem:void (obj:PyVal idx:PyVal) {
+        if (!null? obj.cls) {
+            def sdi@(optional):PyVal (this.subDunder(obj "__delitem__" ([] _:PyVal (idx))))
+            if (!null? sdi) {
+                return
+            }
+        }
         if (obj.t == PyT.List) {
             if (idx.t == PyT.Slice) {
                 def ps:[int] (this.slicePositions(idx (array_length obj.items)))
@@ -2305,7 +2521,188 @@ class PyInterp {
         return result
     }
 
+    ; ---- complex numbers (re in d, im in d2)
+
+    fn mkComplex:PyVal (re:double im:double) {
+        def v (new PyVal(PyT.Complex))
+        v.d = re
+        v.d2 = im
+        return v
+    }
+
+    fn isComplexNum:boolean (v:PyVal) {
+        return ((this.isNum(v)) || (v.t == PyT.Complex))
+    }
+
+    fn reOf:double (v:PyVal) {
+        if (v.t == PyT.Complex) {
+            return v.d
+        }
+        return (this.toDouble(v))
+    }
+
+    fn imOf:double (v:PyVal) {
+        if (v.t == PyT.Complex) {
+            return v.d2
+        }
+        return 0.0
+    }
+
+    sfn fabs:double (x:double) {
+        if (x < 0.0) {
+            return (0.0 - x)
+        }
+        return x
+    }
+
+    sfn hypot:double (a:double b:double) {
+        def x:double (PyInterp.fabs(a))
+        def y:double (PyInterp.fabs(b))
+        if ((py_isinf x) || (py_isinf y)) {
+            return (py_inf)
+        }
+        if (x < y) {
+            def t:double x
+            x = y
+            y = t
+        }
+        if (x == 0.0) {
+            return 0.0
+        }
+        def r:double (y / x)
+        return (x * (py_sqrt (1.0 + (r * r))))
+    }
+
+    ; CPython's _Py_c_quot
+    fn cQuot:PyVal (ar:double ai:double br:double bi:double) {
+        def abr:double (PyInterp.fabs(br))
+        def abi:double (PyInterp.fabs(bi))
+        if (abr >= abi) {
+            if (abr == 0.0) {
+                this.raise("ZeroDivisionError" "complex division by zero")
+            }
+            def ratio:double (bi / br)
+            def denom:double (br + (bi * ratio))
+            return (this.mkComplex(((ar + (ai * ratio)) / denom) ((ai - (ar * ratio)) / denom)))
+        }
+        if (abi >= abr) {
+            def ratio2:double (br / bi)
+            def denom2:double ((br * ratio2) + bi)
+            return (this.mkComplex((((ar * ratio2) + ai) / denom2) (((ai * ratio2) - ar) / denom2)))
+        }
+        return (this.mkComplex((py_nan) (py_nan)))
+    }
+
+    fn cPow:PyVal (ar:double ai:double br:double bi:double) {
+        if ((bi == 0.0) && ((py_floor br) == br) && ((PyInterp.fabs(br)) <= 100.0)) {
+            def n:int (py_trunc br)
+            def neg:boolean (n < 0)
+            if neg {
+                n = 0 - n
+            }
+            def rr:double 1.0
+            def ri:double 0.0
+            def pr:double ar
+            def pi:double ai
+            def mask:int 1
+            while ((mask > 0) && (n >= mask)) {
+                if ((py_and32 n mask) != 0) {
+                    def tr:double ((rr * pr) - (ri * pi))
+                    ri = ((rr * pi) + (ri * pr))
+                    rr = tr
+                }
+                mask = mask * 2
+                def qr:double ((pr * pr) - (pi * pi))
+                pi = ((pr * pi) + (pi * pr))
+                pr = qr
+            }
+            if neg {
+                return (this.cQuot(1.0 0.0 rr ri))
+            }
+            return (this.mkComplex(rr ri))
+        }
+        if ((br == 0.0) && (bi == 0.0)) {
+            return (this.mkComplex(1.0 0.0))
+        }
+        if ((ar == 0.0) && (ai == 0.0)) {
+            if ((bi != 0.0) || (br < 0.0)) {
+                this.raise("ZeroDivisionError" "zero to a negative or complex power")
+            }
+            return (this.mkComplex(0.0 0.0))
+        }
+        def vabs:double (PyInterp.hypot(ar ai))
+        def len:double (py_pow vabs br)
+        def at:double (py_atan2 ai ar)
+        def phase:double (at * br)
+        if (bi != 0.0) {
+            len = len / (py_exp (at * bi))
+            phase = phase + (bi * (py_log vabs))
+        }
+        return (this.mkComplex((len * (py_cos phase)) (len * (py_sin phase))))
+    }
+
+    fn complexBin:PyVal (op:string a:PyVal b:PyVal) {
+        def ar:double (this.reOf(a))
+        def ai:double (this.imOf(a))
+        def br:double (this.reOf(b))
+        def bi:double (this.imOf(b))
+        if (op == "+") {
+            return (this.mkComplex((ar + br) (ai + bi)))
+        }
+        if (op == "-") {
+            return (this.mkComplex((ar - br) (ai - bi)))
+        }
+        if (op == "*") {
+            return (this.mkComplex(((ar * br) - (ai * bi)) ((ar * bi) + (ai * br))))
+        }
+        if (op == "/") {
+            return (this.cQuot(ar ai br bi))
+        }
+        if (op == "**") {
+            return (this.cPow(ar ai br bi))
+        }
+        this.raise("TypeError" ("unsupported operand type(s) for " + op + ": '" + (this.typeName(a)) + "' and '" + (this.typeName(b)) + "'"))
+        return NONE
+    }
+
+    ; a part of a complex's repr: the float's repr without a trailing .0
+    sfn cPart:string (x:double) {
+        def s:string (PyFormat.floatRepr(x))
+        if ((strlen s) > 2) {
+            if (endsWith s ".0") {
+                return (substring s 0 ((strlen s) - 2))
+            }
+        }
+        return s
+    }
+
+    fn complexRepr:string (v:PyVal) {
+        def im:string (PyInterp.cPart(v.d2))
+        if ((v.d == 0.0) && ((PyFormat.isNegZero(v.d)) == false)) {
+            return (im + "j")
+        }
+        def re:string (PyInterp.cPart(v.d))
+        def sign:string "+"
+        if ((v.d2 < 0.0) || ((v.d2 == 0.0) && (PyFormat.isNegZero(v.d2))) || ((py_isnan v.d2) && false)) {
+            sign = "-"
+            im = (PyInterp.cPart((0.0 - v.d2)))
+            if ((v.d2 == 0.0)) {
+                im = "0"
+            }
+        }
+        return ("(" + re + sign + im + "j)")
+    }
+
     fn binop:PyVal (op:string a:PyVal b:PyVal) {
+        if ((!null? a.cls) || (!null? b.cls)) {
+            if ((this.isDataSub(a)) || (this.isDataSub(b))) {
+                def bnm:string (this.dunderName(op))
+                def sbo@(optional):PyVal (this.dunderBin(("__" + bnm + "__") ("__r" + bnm + "__") a b))
+                if (!null? sbo) {
+                    return (unwrap sbo)
+                }
+            }
+        }
         if ((this.isIntLike(a)) && (this.isIntLike(b))) {
             def x:int a.i
             def y:int b.i
@@ -2360,6 +2757,9 @@ class PyInterp {
                 return (this.mkInt(r))
             }
         }
+        if (((a.t == PyT.Complex) || (b.t == PyT.Complex)) && (this.isComplexNum(a)) && (this.isComplexNum(b))) {
+            return (this.complexBin(op a b))
+        }
         if ((this.isNum(a)) && (this.isNum(b))) {
             def fx:double (this.toDouble(a))
             def fy:double (this.toDouble(b))
@@ -2400,8 +2800,8 @@ class PyInterp {
                 if ((fx == 0.0) && (fy < 0.0)) {
                     this.raise("ZeroDivisionError" "0.0 cannot be raised to a negative power")
                 }
-                if ((fx < 0.0) && ((py_floor fy) != fy)) {
-                    this.raise("ValueError" "negative number cannot be raised to a fractional power (complex numbers are not supported)")
+                if ((fx < 0.0) && ((py_floor fy) != fy) && ((py_isinf fy) == false)) {
+                    return (this.cPow(fx 0.0 fy 0.0))
                 }
                 return (this.mkFloat((py_pow fx fy)))
             }
@@ -2446,6 +2846,13 @@ class PyInterp {
             if ((op == "|") || (op == "&") || (op == "-") || (op == "^")) {
                 return (this.meth.setOp(op a b))
             }
+        }
+        if ((op == "|") && (((a.t == PyT.Builtin) && (this.isTypeBuiltin(a.s))) || (a.t == PyT.Class) || (a.t == PyT.None)) && (((b.t == PyT.Builtin) && (this.isTypeBuiltin(b.s))) || (b.t == PyT.Class) || (b.t == PyT.None))) {
+            ; int | None: a types.UnionType
+            def ut:PyVal (this.getAttr((this.importModule("types")) "UnionType"))
+            def ukn:[string]
+            def ukv:[PyVal]
+            return (this.callValue(ut ([] _:PyVal ((this.mkTuple(([] _:PyVal (a b)))))) ukn ukv))
         }
         if ((a.t == PyT.Dict) && (b.t == PyT.Dict) && (op == "|")) {
             def d:PyVal (this.copyDict(a))
@@ -2577,12 +2984,28 @@ class PyInterp {
     }
 
     fn unary:PyVal (op:string a:PyVal) {
+        if (!null? a.cls) {
+            def un:string "__invert__"
+            if (op == "-") {
+                un = "__neg__"
+            }
+            if (op == "+") {
+                un = "__pos__"
+            }
+            def su@(optional):PyVal (this.subDunder(a un ([] _:PyVal ())))
+            if (!null? su) {
+                return (unwrap su)
+            }
+        }
         if (op == "-") {
             if (this.isIntLike(a)) {
                 return (this.mkInt((0 - a.i)))
             }
             if (a.t == PyT.Float) {
                 return (this.mkFloat((a.d * -1.0)))
+            }
+            if (a.t == PyT.Complex) {
+                return (this.mkComplex((a.d * -1.0) (a.d2 * -1.0)))
             }
             def m@(optional):PyVal (this.findMethod(a "__neg__"))
             if (!null? m) {
@@ -2593,7 +3016,7 @@ class PyInterp {
             if (this.isIntLike(a)) {
                 return (this.mkInt(a.i))
             }
-            if (a.t == PyT.Float) {
+            if ((a.t == PyT.Float) || (a.t == PyT.Complex)) {
                 return a
             }
             def m2@(optional):PyVal (this.findMethod(a "__pos__"))
@@ -2793,6 +3216,9 @@ class PyInterp {
                 return (this.mkInt(n.i))
             }
             case PyK.FloatLit {
+                if (n.i == 2) {
+                    return (this.mkComplex(0.0 n.d))
+                }
                 return (this.mkFloat(n.d))
             }
             case PyK.StrLit {
@@ -3369,7 +3795,257 @@ class PyInterp {
                 set f.defs p.s (this.eval((unwrap p.k1) sc))
             }
         }
+        if (n.kind == PyK.Def) {
+            def asc:PyScope sc
+            if ((array_length n.tparams) > 0) {
+                ; def f[T]: T is seen by the annotations and the body
+                def ts (new PyScope)
+                ts.parent = closure
+                ts.globals = (this.moduleScope(sc))
+                f.putAttr("__type_params__" (this.bindTypeParams(n.tparams ts)))
+                f.scope = ts
+                asc = ts
+            }
+            def ann:PyVal (this.mkDict())
+            for n.kids p2:PyNode i2 {
+                if (!null? p2.k2) {
+                    this.dictSet(ann (this.mkStr(p2.s)) (this.eval((unwrap p2.k2) asc)))
+                }
+            }
+            if (!null? n.k3) {
+                this.dictSet(ann (this.mkStr("return")) (this.eval((unwrap n.k3) asc)))
+            }
+            if ((array_length ann.items) > 0) {
+                f.putAttr("__annotations__" ann)
+            }
+        }
         return f
+    }
+
+    fn funcAttr@(optional):PyVal (f:PyVal name:string) {
+        def none@(optional):PyVal
+        def node:PyNode (unwrap f.node)
+        def r@(optional):PyVal
+        if (name == "__name__") {
+            r = (this.mkStr(f.s))
+            return r
+        }
+        if (name == "__qualname__") {
+            if ((strlen node.qual) > 0) {
+                r = (this.mkStr(node.qual))
+            } {
+                r = (this.mkStr(f.s))
+            }
+            return r
+        }
+        if (name == "__doc__") {
+            if (node.kind == PyK.Def) {
+                r = (this.docOf(node.body))
+                return r
+            }
+            r = NONE
+            return r
+        }
+        if (name == "__module__") {
+            r = (this.moduleName((unwrap f.scope)))
+            return r
+        }
+        if (name == "__annotations__") {
+            def ad:PyVal (this.mkDict())
+            f.putAttr("__annotations__" ad)
+            r = ad
+            return r
+        }
+        if (name == "__type_params__") {
+            r = (this.mkTuple(([] _:PyVal ())))
+            return r
+        }
+        if ((name == "__defaults__") || (name == "__kwdefaults__")) {
+            def pos:[PyVal]
+            def kwd:PyVal (this.mkDict())
+            def kwOnly:boolean false
+            for node.kids p:PyNode i {
+                if ((p.i == 1) || (p.i == 3)) {
+                    kwOnly = true
+                }
+                if (has f.defs p.s) {
+                    if kwOnly {
+                        this.dictSet(kwd (this.mkStr(p.s)) (unwrap (get f.defs p.s)))
+                    } {
+                        push pos (unwrap (get f.defs p.s))
+                    }
+                }
+            }
+            if (name == "__defaults__") {
+                if ((array_length pos) == 0) {
+                    r = NONE
+                    return r
+                }
+                r = (this.mkTuple(pos))
+                return r
+            }
+            if ((array_length kwd.items) == 0) {
+                r = NONE
+                return r
+            }
+            r = kwd
+            return r
+        }
+        if (name == "__dict__") {
+            def dd:PyVal (this.mkDict())
+            for (f.attrKeys()) k:string ki {
+                this.dictSet(dd (this.mkStr(k)) (unwrap (get f.attrs k)))
+            }
+            r = dd
+            return r
+        }
+        if (name == "__globals__") {
+            def gs:PyScope (this.moduleScope((unwrap f.scope)))
+            def gd:PyVal (this.mkDict())
+            for (keys gs.vars) gk:string gi {
+                this.dictSet(gd (this.mkStr(gk)) (unwrap (get gs.vars gk)))
+            }
+            r = gd
+            return r
+        }
+        if (name == "__closure__") {
+            r = NONE
+            return r
+        }
+        if (name == "__code__") {
+            def co (new PyVal(PyT.Inst))
+            co.cls = (this.codeClass())
+            co.putAttr("co_name" (this.mkStr(f.s)))
+            co.putAttr("co_qualname" (this.mkStr(node.qual)))
+            co.putAttr("co_firstlineno" (this.mkInt(node.line)))
+            co.putAttr("co_filename" (this.mkStr("<script>")))
+            def argc:int 0
+            def kwc:int 0
+            def posonly:int 0
+            def flags:int 0
+            def names:[PyVal]
+            def kwOnly2:boolean false
+            for node.kids p3:PyNode i3 {
+                if (p3.i == 4) {
+                    posonly = argc
+                }
+                if (p3.i == 1) {
+                    flags = flags + 4
+                    kwOnly2 = true
+                }
+                if (p3.i == 2) {
+                    flags = flags + 8
+                }
+                if (p3.i == 3) {
+                    kwOnly2 = true
+                }
+                if (p3.i == 0) {
+                    if kwOnly2 {
+                        kwc = kwc + 1
+                    } {
+                        argc = argc + 1
+                    }
+                }
+            }
+            for node.kids p4:PyNode i4 {
+                if ((p4.i == 0)) {
+                    push names (this.mkStr(p4.s))
+                }
+            }
+            for node.kids p5:PyNode i5 {
+                if ((p5.i == 1) || (p5.i == 2)) {
+                    push names (this.mkStr(p5.s))
+                }
+            }
+            if (node.i == 1) {
+                flags = flags + 32
+            }
+            co.putAttr("co_argcount" (this.mkInt(argc)))
+            co.putAttr("co_kwonlyargcount" (this.mkInt(kwc)))
+            co.putAttr("co_posonlyargcount" (this.mkInt(posonly)))
+            co.putAttr("co_flags" (this.mkInt(flags)))
+            co.putAttr("co_varnames" (this.mkTuple(names)))
+            co.putAttr("co_nlocals" (this.mkInt((array_length names))))
+            r = co
+            return r
+        }
+        return none
+    }
+
+    def codeCls@(optional):PyVal
+
+    fn codeClass:PyVal () {
+        if (null? codeCls) {
+            def c (new PyVal(PyT.Class))
+            c.s = "code"
+            codeCls = c
+        }
+        return (unwrap codeCls)
+    }
+
+    fn execTypeAlias:void (n:PyNode sc:PyScope) {
+        def ts:PyScope sc
+        def tps:PyVal (this.mkTuple(([] _:PyVal ())))
+        if ((array_length n.tparams) > 0) {
+            def tsc (new PyScope)
+            tsc.parent = sc
+            tsc.globals = (this.moduleScope(sc))
+            tps = (this.bindTypeParams(n.tparams tsc))
+            ts = tsc
+        }
+        ; the value is lazy in CPython: a name defined later is fine
+        def val:PyVal NONE
+        try {
+            val = (this.eval((unwrap n.k1) ts))
+        } {
+            this.takeException((error_msg))
+        }
+        def tat:PyVal (this.getAttr((this.importModule("typing")) "TypeAliasType"))
+        def kn:[string]
+        def kv:[PyVal]
+        push kn "type_params"
+        push kv tps
+        def alias:PyVal (this.callValue(tat ([] _:PyVal ((this.mkStr(n.s)) val)) kn kv))
+        this.store(n.s alias sc)
+    }
+
+    ; T, *Ts, **P bound as typing.TypeVar in sc; their tuple
+    fn bindTypeParams:PyVal (names:[string] sc:PyScope) {
+        def tv:PyVal (this.getAttr((this.importModule("typing")) "TypeVar"))
+        def out:[PyVal]
+        for names nm:string i {
+            def kn:[string]
+            def kv:[PyVal]
+            push kn "infer_variance"
+            push kv TRUE
+            def v:PyVal (this.callValue(tv ([] _:PyVal ((this.mkStr(nm)))) kn kv))
+            set sc.vars nm v
+            push out v
+        }
+        return (this.mkTuple(out))
+    }
+
+    ; the docstring of a def or class body, or None
+    fn docOf:PyVal (body:[PyNode]) {
+        if ((array_length body) > 0) {
+            def st:PyNode (itemAt body 0)
+            if ((st.kind == PyK.ExprStmt) && (!null? st.k1)) {
+                def e:PyNode (unwrap st.k1)
+                if (e.kind == PyK.StrLit) {
+                    return (this.mkStr(e.s))
+                }
+            }
+        }
+        return NONE
+    }
+
+    fn moduleName:PyVal (sc:PyScope) {
+        def ms:PyScope (this.moduleScope(sc))
+        def nm@(optional):PyVal (get ms.vars "__name__")
+        if (null? nm) {
+            return (this.mkStr("__main__"))
+        }
+        return (unwrap nm)
     }
 
     fn callValue:PyVal (f:PyVal args:[PyVal] kn:[string] kv:[PyVal]) {
@@ -3616,9 +4292,171 @@ class PyInterp {
         return "were"
     }
 
+    ; ---- subclasses of the built-in types (class L(list)): the value is the
+    ; list, int, … itself with cls set to the class. A built-in method
+    ; working on such a value sees it as the plain type (rawSelf).
+
+    fn isObjLike:boolean (v:PyVal) {
+        if (v.t == PyT.Inst) {
+            return true
+        }
+        return (this.isDataSub(v))
+    }
+
+    fn isDataT:boolean (t:PyT) {
+        return ((t == PyT.List) || (t == PyT.Dict) || (t == PyT.Str) || (t == PyT.Int) || (t == PyT.Float) || (t == PyT.Tuple) || (t == PyT.Set) || (t == PyT.Complex))
+    }
+
+    fn isDataSub:boolean (v:PyVal) {
+        if (null? v.cls) {
+            return false
+        }
+        if ((this.isDataT(v.t)) == false) {
+            return false
+        }
+        if (!null? rawSelf) {
+            if ((unwrap rawSelf) == v) {
+                return false
+            }
+        }
+        return true
+    }
+
+    ; a method the subclass defines, called on v
+    fn subDunder@(optional):PyVal (v:PyVal name:string args:[PyVal]) {
+        def none@(optional):PyVal
+        if ((this.isDataSub(v)) == false) {
+            return none
+        }
+        def m@(optional):PyVal (this.findMethod(v name))
+        if (null? m) {
+            return none
+        }
+        def r@(optional):PyVal (this.callMethodVal((unwrap m) v args))
+        return r
+    }
+
+    fn dataSubAttr@(optional):PyVal (obj:PyVal name:string) {
+        def none@(optional):PyVal
+        def c:PyVal (unwrap obj.cls)
+        def r@(optional):PyVal
+        if (name == "__class__") {
+            r = c
+            return r
+        }
+        if (has obj.attrs name) {
+            if ((obj.t != PyT.Dict) || (name != "__missing__")) {
+                return (get obj.attrs name)
+            }
+        }
+        if (name == "__dict__") {
+            def d:PyVal (this.mkDict())
+            for (obj.attrKeys()) k:string i {
+                this.dictSet(d (this.mkStr(k)) (unwrap (get obj.attrs k)))
+            }
+            r = d
+            return r
+        }
+        def cv@(optional):PyVal (this.classLookup(c name))
+        if (null? cv) {
+            return none
+        }
+        r = (this.bindValue((unwrap cv) obj c))
+        return r
+    }
+
+    ; a fresh copy of a built-in value, to carry a subclass
+    fn cloneVal:PyVal (v:PyVal) {
+        def c (new PyVal(v.t))
+        c.i = v.i
+        c.i2 = v.i2
+        c.i3 = v.i3
+        c.d = v.d
+        c.d2 = v.d2
+        c.s = v.s
+        c.mode = v.mode
+        for v.items it:PyVal i {
+            push c.items it
+        }
+        for v.vals vv:PyVal j {
+            push c.vals vv
+        }
+        for (keys v.index) k:string ki {
+            set c.index k (unwrap (get v.index k))
+        }
+        for (v.attrKeys()) ak:string ai {
+            c.putAttr(ak (unwrap (get v.attrs ak)))
+        }
+        return c
+    }
+
+    ; the built-in part of an instance of cls (a subclass of cls.bt)
+    fn makeDataSub:PyVal (cls:PyVal args:[PyVal] kn:[string] kv:[PyVal]) {
+        def bt:string cls.bt
+        def hasInit:boolean (!null? (this.classLookup(cls "__init__")))
+        def base:PyVal NONE
+        def none:[PyVal]
+        def nkn:[string]
+        def nkv:[PyVal]
+        if (bt == "native") {
+            if hasInit {
+                base = (this.mods.construct((unwrap cls.wrapped) none nkn nkv))
+            } {
+                base = (this.mods.construct((unwrap cls.wrapped) args kn kv))
+            }
+        } {
+            if (hasInit && ((bt == "list") || (bt == "dict") || (bt == "set"))) {
+                base = (this.bi.call(bt none nkn nkv))
+            } {
+                base = (this.bi.call(bt args kn kv))
+            }
+        }
+        def v:PyVal (this.cloneVal(base))
+        v.cls = cls
+        return v
+    }
+
+    fn newDataSub:PyVal (cls:PyVal args:[PyVal] kn:[string] kv:[PyVal]) {
+        def nw@(optional):PyVal (this.classLookup(cls "__new__"))
+        def obj:PyVal NONE
+        if (!null? nw) {
+            def nf:PyVal (unwrap nw)
+            if (nf.t == PyT.Static) {
+                nf = (unwrap nf.wrapped)
+            }
+            def all0:[PyVal]
+            push all0 cls
+            for args a0:PyVal i0 {
+                push all0 a0
+            }
+            obj = (this.callValue(nf all0 kn kv))
+            if ((null? obj.cls) || ((this.isDataT(obj.t)) == false) || ((this.same((unwrap obj.cls) cls)) == false)) {
+                return obj
+            }
+        } {
+            obj = (this.makeDataSub(cls args kn kv))
+        }
+        def init@(optional):PyVal (this.classLookup(cls "__init__"))
+        if (!null? init) {
+            def all:[PyVal]
+            push all obj
+            for args a:PyVal i {
+                push all a
+            }
+            def r:PyVal (this.callValue((unwrap init) all kn kv))
+            if (r.t != PyT.None) {
+                this.raise("TypeError" "__init__() should return None")
+            }
+        }
+        return obj
+    }
+
     fn instantiate:PyVal (cls:PyVal args:[PyVal] kn:[string] kv:[PyVal]) {
         if (cls.mode == "native") {
             return (this.mods.construct(cls args kn kv))
+        }
+        if ((strlen cls.bt) > 0) {
+            return (this.newDataSub(cls args kn kv))
         }
         def nw@(optional):PyVal (this.classLookup(cls "__new__"))
         def obj (new PyVal(PyT.Inst))
@@ -3705,6 +4543,21 @@ class PyInterp {
                     def av:PyVal (this.eval((unwrap n.k2) sc))
                     this.assign((unwrap n.k1) av sc)
                 }
+                def at:PyNode (unwrap n.k1)
+                if ((!null? n.k3) && (at.kind == PyK.Name) && ((sc.isClass) || (null? sc.parent))) {
+                    ; module and class annotations are kept in __annotations__
+                    def anv:PyVal (this.eval((unwrap n.k3) sc))
+                    def ad@(optional):PyVal (get sc.vars "__annotations__")
+                    if (null? ad) {
+                        ad = (this.mkDict())
+                        set sc.vars "__annotations__" (unwrap ad)
+                    }
+                    this.dictSet((unwrap ad) (this.mkStr(at.s)) anv)
+                }
+                return 0
+            }
+            case PyK.TypeAlias {
+                this.execTypeAlias(n sc)
                 return 0
             }
             case PyK.If {
@@ -4957,37 +5810,114 @@ class PyInterp {
             if (b.kind == PyK.Keyword) {
                 continue
             }
-            def bv:PyVal (this.eval(b sc))
-            if ((bv.t == PyT.Builtin) && (bv.s == "object")) {
-                continue
-            }
-            if (bv.t == PyT.Builtin) {
-                this.raise("TypeError" ("subclassing the built-in type '" + bv.s + "' is not supported"))
-            }
-            if (bv.t != PyT.Class) {
-                this.raise("TypeError" "bases must be types")
-            }
-            push cls.bases bv
-            if bv.isExc {
-                cls.isExc = true
-            }
+            this.addBase(cls (this.eval(b sc)))
         }
         this.computeMro(cls)
         def body (new PyScope)
         body.parent = sc
         body.globals = (this.moduleScope(sc))
         body.isClass = true
-        set body.vars "__qualname__" (this.mkStr(n.s))
-        set body.vars "__module__" (this.mkStr("__main__"))
+        def qn:string n.qual
+        if ((strlen qn) == 0) {
+            qn = n.s
+        }
+        cls.putAttr("__module__" (this.moduleName(sc)))
+        cls.putAttr("__qualname__" (this.mkStr(qn)))
+        cls.putAttr("__doc__" (this.docOf(n.body)))
+        set body.vars "__qualname__" (this.mkStr(qn))
+        set body.vars "__module__" (this.moduleName(sc))
+        if ((array_length n.tparams) > 0) {
+            cls.putAttr("__type_params__" (this.bindTypeParams(n.tparams body)))
+        }
         this.execBlock(n.body body)
+        for n.tparams tp:string ti {
+            py_map_del body.vars tp
+        }
         def ks:[string] (keys body.vars)
         for ks k:string j {
             def v:PyVal (unwrap (get body.vars k))
             cls.putAttr(k v)
             this.setOwner(v cls)
         }
+        def ikn:[string]
+        def ikv:[PyVal]
+        for n.kids kb:PyNode kbi {
+            if ((kb.kind == PyK.Keyword) && (kb.s != "metaclass")) {
+                push ikn kb.s
+                push ikv (this.eval((unwrap kb.k1) sc))
+            }
+        }
+        this.finishClass(cls ikn ikv)
         def cv:PyVal (this.applyDecorators(n.decos cls sc))
         this.store(n.s cv sc)
+    }
+
+    fn addBase:void (cls:PyVal bv:PyVal) {
+        if ((bv.t == PyT.Builtin) && (bv.s == "object")) {
+            return
+        }
+        if (bv.t == PyT.Builtin) {
+            def okb:[string] ([] _:string ("int" "float" "complex" "str" "list" "tuple" "dict" "set" "frozenset"))
+            def isOk:boolean false
+            for okb ob:string obi {
+                if (ob == bv.s) {
+                    isOk = true
+                }
+            }
+            if (isOk == false) {
+                this.raise("TypeError" ("type '" + bv.s + "' is not an acceptable base type"))
+            }
+            if (((strlen cls.bt) > 0) && (cls.bt != bv.s)) {
+                this.raise("TypeError" "multiple bases have instance lay-out conflict")
+            }
+            cls.bt = bv.s
+            return
+        }
+        if (bv.t != PyT.Class) {
+            this.raise("TypeError" "bases must be types")
+        }
+        if (bv.mode == "native") {
+            cls.bt = "native"
+            cls.wrapped = bv
+        }
+        if (((strlen bv.bt) > 0) && ((strlen cls.bt) == 0)) {
+            cls.bt = bv.bt
+            cls.wrapped = bv.wrapped
+        }
+        push cls.bases bv
+        if bv.isExc {
+            cls.isExc = true
+        }
+    }
+
+    ; descriptors learn their name, then the bases hear of the subclass
+    fn finishClass:void (cls:PyVal ikn:[string] ikv:[PyVal]) {
+        for (cls.attrKeys()) k2:string j2 {
+            def v2:PyVal (unwrap (get cls.attrs k2))
+            if (v2.t == PyT.Inst) {
+                def sn@(optional):PyVal (this.findMethod(v2 "__set_name__"))
+                if (!null? sn) {
+                    this.callMethodVal((unwrap sn) v2 ([] _:PyVal (cls (this.mkStr(k2)))))
+                }
+            }
+        }
+        def isub@(optional):PyVal
+        for cls.vals mb:PyVal mbi {
+            if ((null? isub) && (this.same(mb cls) == false) && (has mb.attrs "__init_subclass__")) {
+                isub = (get mb.attrs "__init_subclass__")
+            }
+        }
+        if (!null? isub) {
+            def isf:PyVal (unwrap isub)
+            if ((isf.t == PyT.ClassM) || (isf.t == PyT.Static)) {
+                isf = (unwrap isf.wrapped)
+            }
+            this.callValue(isf ([] _:PyVal (cls)) ikn ikv)
+        } {
+            if ((array_length ikn) > 0) {
+                this.raise("TypeError" (cls.s + ".__init_subclass__() takes no keyword arguments"))
+            }
+        }
     }
 
     ; methods remember their class for super()

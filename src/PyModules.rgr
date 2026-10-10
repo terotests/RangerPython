@@ -3,7 +3,7 @@
 ; ============================================================================
 ; PyModules.rgr — the standard library modules the runtime ships with:
 ;   math, random, json, os, os.path, sys, string, time, collections,
-;   itertools, functools, statistics, copy, typing.
+;   itertools, functools, statistics, copy (typing is in lib/).
 ;
 ; A module is a PyVal(Module) whose functions are PyVal(Builtin) named
 ; "module.function"; PyBuiltins.call hands every such name to callBuiltin.
@@ -159,10 +159,18 @@ class PyModules {
             m6.putAttr("byteorder" (ip.mkStr("little")))
             m6.putAttr("implementation" (this.newModule("ranger")))
             m6.putAttr("float_info" (this.floatInfo()))
+            def fl:PyVal (this.newModule("sys.flags"))
+            def fnames:[string] ([] _:string ("debug" "inspect" "interactive" "optimize" "dont_write_bytecode" "no_user_site" "no_site" "ignore_environment" "verbose" "bytes_warning" "quiet" "hash_randomization" "isolated" "dev_mode" "utf8_mode" "warn_default_encoding" "safe_path" "int_max_str_digits"))
+            for fnames fln:string fli {
+                fl.putAttr(fln (ip.mkInt(0)))
+            }
+            m6.putAttr("flags" fl)
+            m6.putAttr("hexversion" (ip.mkInt(51183856)))
+            m6.putAttr("version_info" (ip.mkTuple(([] _:PyVal ((ip.mkInt(3)) (ip.mkInt(13)) (ip.mkInt(0)) (ip.mkStr("final")) (ip.mkInt(0)))))))
             def optr139@(optional):PyVal m6
             return optr139
         }
-        if (name == "string") {
+        if (name == "_string") {
             def m7:PyVal (this.newModule("string"))
             m7.putAttr("ascii_lowercase" (ip.mkStr("abcdefghijklmnopqrstuvwxyz")))
             m7.putAttr("ascii_uppercase" (ip.mkStr("ABCDEFGHIJKLMNOPQRSTUVWXYZ")))
@@ -184,7 +192,14 @@ class PyModules {
             def optr159@(optional):PyVal m8
             return optr159
         }
-        if (name == "collections") {
+        if (name == "builtins") {
+            def mb:PyVal (this.newModule("builtins"))
+            mb.attrs = ip.builtins
+            def optrmb@(optional):PyVal mb
+            return optrmb
+        }
+        if (name == "_collections") {
+            ; the native half of collections (lib/collections adds the rest)
             def m9:PyVal (this.newModule("collections"))
             m9.putAttr("defaultdict" (this.nativeClass("defaultdict")))
             m9.putAttr("Counter" (this.nativeClass("Counter")))
@@ -223,12 +238,6 @@ class PyModules {
             this.fns(m13 "copy deepcopy")
             def optr194@(optional):PyVal m13
             return optr194
-        }
-        if (name == "typing") {
-            def m14:PyVal (this.newModule("typing"))
-            this.fns(m14 "List Dict Set Tuple Optional Union Any Callable Iterable Iterator Sequence Mapping Generator Type FrozenSet DefaultDict NamedTuple TypeVar cast")
-            def optr199@(optional):PyVal m14
-            return optr199
         }
         return none
     }

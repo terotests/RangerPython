@@ -76,3 +76,61 @@ def new_class(name, bases=(), kwds=None, exec_body=None):
     if exec_body is not None:
         exec_body(ns)
     return type(name, bases, ns)
+
+
+class GenericAlias:
+    def __init__(self, origin, args):
+        if not isinstance(args, tuple):
+            args = (args,)
+        self.__origin__ = origin
+        self.__args__ = args
+        self.__parameters__ = ()
+
+    def __call__(self, *args, **kwargs):
+        return self.__origin__(*args, **kwargs)
+
+    def __getitem__(self, params):
+        return GenericAlias(self.__origin__, params)
+
+    def __or__(self, other):
+        return UnionType((self, other))
+
+    def __ror__(self, other):
+        return UnionType((other, self))
+
+    def __eq__(self, other):
+        return isinstance(other, GenericAlias) and self.__origin__ == other.__origin__ and self.__args__ == other.__args__
+
+    def __hash__(self):
+        return hash((self.__origin__, self.__args__))
+
+    def __mro_entries__(self, bases):
+        return (self.__origin__,)
+
+    def __repr__(self):
+        return _repr(self.__origin__) + "[" + ", ".join(_repr(a) for a in self.__args__) + "]"
+
+
+class UnionType:
+    def __init__(self, args):
+        self.__args__ = args
+
+    def __or__(self, other):
+        return UnionType(self.__args__ + (other,))
+
+    def __repr__(self):
+        return " | ".join(_repr(a) for a in self.__args__)
+
+
+def _repr(obj):
+    if obj is ...:
+        return "..."
+    if obj is None or obj is type(None):
+        return "None"
+    if isinstance(obj, type):
+        if obj.__module__ == "builtins":
+            return obj.__qualname__
+        return obj.__module__ + "." + obj.__qualname__
+    if isinstance(obj, tuple) and not obj:
+        return "()"
+    return repr(obj)

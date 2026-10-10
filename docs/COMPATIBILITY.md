@@ -8,64 +8,64 @@ score is out of the tests CPython (Python 3.13.16) passes with the same
 driver. Tests that need CPython internals (reference counts, object sizes,
 subprocesses) are skipped by the test.support stand-in and are not counted.
 
-**62 of 3582 tests pass: 1.7 %**
+**592 of 3582 tests pass: 16.5 %**
 
 | file | pass | of | score | note |
 |---|---:|---:|---:|---|
 | test_augassign | 5 | 7 | 71.4 % |  |
-| test_baseexception | 0 | 10 | 0.0 % | does not import: ModuleNotFoundError: No module named 'builtins' |
-| test_binop | 0 | 12 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_binop.py, line 237) |
-| test_bool | 0 | 31 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_bool.py, line 44) |
-| test_builtin | 0 | 115 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_builtin.py, line 1523) |
-| test_class | 0 | 33 | 0.0 % | does not import: TypeError: type() with three arguments is not supported |
-| test_collections | 0 | 99 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_collections.py, line 968) |
-| test_compare | 0 | 16 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_compare.py, line 25) |
+| test_baseexception | 0 | 10 | 0.0 % | does not import: ModuleNotFoundError: No module named 'platform' |
+| test_binop | 0 | 12 | 0.0 % | does not import: AttributeError: type object 'B' has no attribute 'register' |
+| test_bool | 23 | 31 | 74.2 % |  |
+| test_builtin | 0 | 115 | 0.0 % | does not import: ModuleNotFoundError: No module named 'ast' |
+| test_class | 0 | 33 | 0.0 % | does not import: ModuleNotFoundError: No module named '_testinternalcapi' |
+| test_collections | 0 | 99 | 0.0 % | does not import: ModuleNotFoundError: No module named 'array' |
+| test_compare | 0 | 16 | 0.0 % | does not import: ModuleNotFoundError: No module named 'fractions' |
 | test_contains | 2 | 4 | 50.0 % |  |
-| test_copy | 0 | 81 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_copy.py, line 101) |
-| test_decorators | 8 | 16 | 50.0 % |  |
-| test_dict | 0 | 111 | 0.0 % | does not import: ModuleNotFoundError: No module named 'collections.abc' |
-| test_dictviews | 0 | 16 | 0.0 % | does not import: ModuleNotFoundError: No module named 'collections.abc' |
-| test_enumerate | 0 | 92 | 0.0 % | does not import: ModuleNotFoundError: No module named 'pickle' |
-| test_exceptions | 0 | 95 | 0.0 % | does not import: ModuleNotFoundError: No module named 'pickle' |
-| test_float | 0 | 47 | 0.0 % | does not import: SyntaxError: \N{...} escapes are not supported (test.test_float.py, line 61) |
-| test_format | 0 | 18 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_format.py, line 407) |
-| test_fstring | 0 | 84 | 0.0 % | does not import: SyntaxError: \N{...} escapes are not supported (test.test_fstring.py, line 958) |
-| test_functools | 0 | 273 | 0.0 % | does not import: SyntaxError: expected '(', got '[' (test.test_functools.py, line 645) |
-| test_generators | 0 | 40 | 0.0 % | does not import: ModuleNotFoundError: No module named 'pickle' |
-| test_genexps | 0 | 0 | 0.0 % | does not import: ModuleNotFoundError: No module named 'doctest' |
-| test_grammar | 0 | 78 | 0.0 % | does not import: SyntaxError: a decorator must be followed by def or class (test.test_grammar.py, line 1977) |
-| test_index | 0 | 55 | 0.0 % | does not import: TypeError: subclassing the built-in type 'int' is not supported |
-| test_int | 0 | 46 | 0.0 % | does not import: SyntaxError: \N{...} escapes are not supported (test.test_int.py, line 52) |
-| test_isinstance | 1 | 23 | 4.3 % |  |
-| test_iter | 0 | 57 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_iter.py, line 763) |
-| test_itertools | 0 | 137 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_itertools.py, line 611) |
+| test_copy | 0 | 81 | 0.0 % | does not import: ModuleNotFoundError: No module named 'copyreg' |
+| test_decorators | 10 | 16 | 62.5 % |  |
+| test_dict | 52 | 111 | 46.8 % |  |
+| test_dictviews | 5 | 16 | 31.3 % |  |
+| test_enumerate | 0 | 92 | 0.0 % | does not import: TypeError: type 'enumerate' is not an acceptable base type |
+| test_exceptions | 0 | 95 | 0.0 % | does not import: ModuleNotFoundError: No module named 'errno' |
+| test_float | 0 | 47 | 0.0 % | does not import: ModuleNotFoundError: No module named 'fractions' |
+| test_format | 0 | 18 | 0.0 % | does not import: ModuleNotFoundError: No module named 'locale' |
+| test_fstring | 0 | 84 | 0.0 % | does not import: SyntaxError: unexpected character after line continuation character (test.test_fstring.py, line 868) |
+| test_functools | 0 | 273 | 0.0 % | does not import: ModuleNotFoundError: No module named 'unittest.mock' |
+| test_generators | 0 | 40 | 0.0 % | does not import: ModuleNotFoundError: No module named 'inspect' |
+| test_genexps | 0 | 0 | 0.0 % |  |
+| test_grammar | 0 | 78 | 0.0 % | does not import: SyntaxError: invalid syntax near 'async' (test.test_grammar.py, line 1993) |
+| test_index | 0 | 55 | 0.0 % | does not import: NameError: name 'bytearray' is not defined |
+| test_int | 0 | 46 | 0.0 % | does not import: ImportError: cannot import name 'mock' from 'unittest' |
+| test_isinstance | 2 | 23 | 8.7 % |  |
+| test_iter | 8 | 57 | 14.0 % | run stopped: TimeoutError: the script ran more than 4003596 steps |
+| test_itertools | 0 | 137 | 0.0 % | does not import: ModuleNotFoundError: No module named 'decimal' |
 | test_keywordonlyarg | 7 | 11 | 63.6 % |  |
-| test_list | 0 | 63 | 0.0 % | does not import: ModuleNotFoundError: No module named 'pickle' |
-| test_listcomps | 0 | 57 | 0.0 % | does not import: ModuleNotFoundError: No module named 'doctest' |
-| test_long | 0 | 42 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_long.py, line 1206) |
-| test_math | 0 | 82 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_math.py, line 1120) |
+| test_list | 39 | 63 | 61.9 % |  |
+| test_listcomps | 41 | 57 | 71.9 % |  |
+| test_long | 0 | 42 | 0.0 % | does not import: ModuleNotFoundError: No module named 'array' |
+| test_math | 0 | 82 | 0.0 % | does not import: ModuleNotFoundError: No module named 'fractions' |
 | test_opcodes | 0 | 8 | 0.0 % | does not import: NameError: name '__annotations__' is not defined |
 | test_pow | 4 | 7 | 57.1 % |  |
-| test_property | 0 | 29 | 0.0 % | does not import: AttributeError: module 'sys' has no attribute 'flags' |
-| test_raise | 19 | 37 | 51.4 % |  |
-| test_random | 0 | 101 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_random.py, line 51) |
-| test_range | 0 | 28 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_range.py, line 485) |
-| test_scope | 0 | 41 | 0.0 % | does not import: ModuleNotFoundError: No module named 'weakref' |
-| test_set | 0 | 623 | 0.0 % | does not import: ModuleNotFoundError: No module named 'weakref' |
-| test_setcomps | 0 | 1 | 0.0 % | does not import: ModuleNotFoundError: No module named 'doctest' |
-| test_slice | 0 | 11 | 0.0 % | does not import: ModuleNotFoundError: No module named 'weakref' |
+| test_property | 0 | 29 | 0.0 % | does not import: TypeError: type 'property' is not an acceptable base type |
+| test_raise | 20 | 37 | 54.1 % |  |
+| test_random | 0 | 101 | 0.0 % | does not import: ModuleNotFoundError: No module named 'unittest.mock' |
+| test_range | 3 | 28 | 10.7 % | run stopped: killed after 104 s |
+| test_scope | 27 | 41 | 65.9 % |  |
+| test_set | 227 | 623 | 36.4 % | run stopped: killed after 180 s |
+| test_setcomps | 0 | 1 | 0.0 % |  |
+| test_slice | 2 | 11 | 18.2 % |  |
 | test_sort | 16 | 21 | 76.2 % |  |
-| test_statistics | 0 | 370 | 0.0 % | does not import: ModuleNotFoundError: No module named 'bisect' |
-| test_str | 0 | 128 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_str.py, line 1229) |
-| test_string | 0 | 38 | 0.0 % | does not import: ImportError: cannot import name 'Template' from 'string' |
-| test_string_literals | 0 | 15 | 0.0 % | does not import: SyntaxError: \N{...} escapes are not supported (test.test_string_literals.py, line 275) |
-| test_super | 0 | 36 | 0.0 % | does not import: ModuleNotFoundError: No module named 'threading' |
-| test_tuple | 0 | 36 | 0.0 % | does not import: ModuleNotFoundError: No module named 'pickle' |
-| test_types | 0 | 118 | 0.0 % | does not import: ModuleNotFoundError: No module named 'collections.abc' |
-| test_unary | 0 | 6 | 0.0 % | does not import: SyntaxError: complex numbers are not supported (test.test_unary.py, line 12) |
-| test_unpack | 0 | 1 | 0.0 % | does not import: ModuleNotFoundError: No module named 'doctest' |
-| test_userdict | 0 | 25 | 0.0 % | does not import: AttributeError: module 'collections' has no attribute 'UserDict' |
-| test_with | 0 | 51 | 0.0 % | does not import: ImportError: cannot import name '_GeneratorContextManager' from 'contextlib' |
+| test_statistics | 0 | 370 | 0.0 % | does not import: ModuleNotFoundError: No module named 'decimal' |
+| test_str | 0 | 128 | 0.0 % | does not import: ModuleNotFoundError: No module named 'codecs' |
+| test_string | 33 | 38 | 86.8 % |  |
+| test_string_literals | 0 | 15 | 0.0 % | does not import: ModuleNotFoundError: No module named 'shutil' |
+| test_super | 0 | 36 | 0.0 % | does not import: ModuleNotFoundError: No module named 'unittest.mock' |
+| test_tuple | 22 | 36 | 61.1 % |  |
+| test_types | 0 | 118 | 0.0 % | does not import: ModuleNotFoundError: No module named '_datetime' |
+| test_unary | 5 | 6 | 83.3 % |  |
+| test_unpack | 1 | 1 | 100.0 % |  |
+| test_userdict | 0 | 25 | 0.0 % | does not import: TypeError: '_NullContext' object is not callable |
+| test_with | 38 | 51 | 74.5 % |  |
 
 ## Why tests fail
 
@@ -73,45 +73,46 @@ The most common reasons, by the error a failing test ends with:
 
 | tests | reason |
 |---:|---|
-| 1721 | not run: ModuleNotFoundError: No module named '…' |
-| 273 | not run: SyntaxError: expected '…', got '…' (test.test_functools.py, line 645) |
-| 137 | not run: SyntaxError: complex numbers are not supported (test.test_itertools.py, line 611) |
-| 128 | not run: SyntaxError: complex numbers are not supported (test.test_str.py, line 1229) |
-| 115 | not run: SyntaxError: complex numbers are not supported (test.test_builtin.py, line 1523) |
-| 101 | not run: SyntaxError: complex numbers are not supported (test.test_random.py, line 51) |
-| 99 | not run: SyntaxError: complex numbers are not supported (test.test_collections.py, line 968) |
-| 89 | not run: ImportError: cannot import name '…' from '…' |
-| 84 | not run: SyntaxError: \N{...} escapes are not supported (test.test_fstring.py, line 958) |
-| 82 | not run: SyntaxError: complex numbers are not supported (test.test_math.py, line 1120) |
-| 81 | not run: SyntaxError: complex numbers are not supported (test.test_copy.py, line 101) |
-| 78 | not run: SyntaxError: a decorator must be followed by def or class (test.test_grammar.py, line 1977) |
-| 57 | not run: SyntaxError: complex numbers are not supported (test.test_iter.py, line 763) |
-| 55 | not run: TypeError: subclassing the built-in type '…' is not supported |
-| 54 | not run: AttributeError: module '…' has no attribute '…' |
-| 47 | not run: SyntaxError: \N{...} escapes are not supported (test.test_float.py, line 61) |
-| 46 | not run: SyntaxError: \N{...} escapes are not supported (test.test_int.py, line 52) |
-| 42 | not run: SyntaxError: complex numbers are not supported (test.test_long.py, line 1206) |
-| 33 | not run: TypeError: type() with three arguments is not supported |
-| 31 | not run: SyntaxError: complex numbers are not supported (test.test_bool.py, line 44) |
-| 30 | wrong result (AssertionError) |
-| 28 | not run: SyntaxError: complex numbers are not supported (test.test_range.py, line 485) |
-| 18 | not run: SyntaxError: complex numbers are not supported (test.test_format.py, line 407) |
-| 16 | not run: SyntaxError: complex numbers are not supported (test.test_compare.py, line 25) |
-| 16 | AttributeError: '…' object has no attribute '…' |
-| 15 | not run: SyntaxError: \N{...} escapes are not supported (test.test_string_literals.py, line 275) |
-| 12 | not run: SyntaxError: complex numbers are not supported (test.test_binop.py, line 237) |
-| 8 | not run: NameError: name '…' is not defined |
-| 6 | not run: SyntaxError: complex numbers are not supported (test.test_unary.py, line 12) |
-| 5 | TypeError: isinstance() arg N must be a type, a tuple of types, or a union |
-| 3 | TypeError: unsupported operand type(s) for \|: '…' and '…' |
+| 1856 | not run: ModuleNotFoundError: No module named '…' |
+| 359 | not run: killed after 180 s |
+| 135 | wrong result (AssertionError) |
+| 121 | not run: TypeError: type '…' is not an acceptable base type |
+| 84 | not run: SyntaxError: unexpected character after line continuation character (test.test_fstring.py, line 868) |
+| 78 | not run: SyntaxError: invalid syntax near '…' (test.test_grammar.py, line 1993) |
+| 63 | not run: NameError: name '…' is not defined |
+| 49 | not run: TimeoutError: the script ran more than 4003596 steps |
+| 46 | not run: ImportError: cannot import name '…' from '…' |
+| 36 | AttributeError: '…' object has no attribute '…' |
+| 27 | NameError: name '…' is not defined |
+| 25 | not run: TypeError: '…' object is not callable |
+| 20 | skipped here: CPython implementation detail |
+| 18 | not run: killed after 104 s |
+| 12 | not run: AttributeError: type object '…' has no attribute '…' |
+| 7 | AttributeError: module '…' has no attribute '…' |
+| 6 | TypeError: isinstance() arg N must be a type, a tuple of types, or a union |
+| 5 | StopIteration: |
+| 4 | skipped here: object finalization is the host's |
+| 4 | TypeError: '…' object cannot be interpreted as an integer |
+| 3 | KeyError: None |
+| 3 | KeyError: '…' |
+| 3 | TypeError: unsupported operand type(s) for &: '…' and '…' |
+| 3 | TypeError: slice indices must be integers or None or have an __index__ method |
+| 2 | TypeError: unsupported operand type(s) for -: '…' and '…' |
+| 2 | RuntimeError: internal error: RangeError: Invalid array length |
 | 2 | IndexError: |
-| 2 | TypeError: foo |
-| 1 | AttributeError: type object '…' has no attribute '…' |
-| 1 | SyntaxError: f-string: complex numbers are not supported |
-| 1 | TypeError: '…' object cannot be interpreted as an integer |
+| 2 | TypeError: '…' object is not iterable |
+| 1 | RecursionError: maximum recursion depth exceeded |
+| 1 | ModuleNotFoundError: No module named '…' |
+| 1 | TypeError: unsupported operand type(s) for ^: '…' and '…' |
+| 1 | TypeError: unsupported operand type(s) for \|: '…' and '…' |
+| 1 | TypeError: <lambda>() missing N required argument: '…' |
+| 1 | Exc: |
+| 1 | IndexError: pop from empty list |
 | 1 | skipped here: test.support.catch_unraisable_exception is not available on this runtime |
+| 1 | TypeError: foo |
 | 1 | RuntimeError: internal error: TypeError: Cannot read properties of undefined (reading '…') |
-| 1 | TypeError: subclassing the built-in type '…' is not supported |
+| 1 | ValueError: Invalid format specifier '…' |
+| 1 | TypeError: format() got multiple values for argument '…' |
 
 Run `node tests/conformance/run.mjs` for the full list in
 tests/conformance/results.json.

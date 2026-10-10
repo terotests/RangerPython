@@ -39,7 +39,7 @@ class PyBuiltins {
     }
 
     fn install:void () {
-        def names:[string] ([] _:string ("print" "len" "range" "enumerate" "zip" "map" "filter" "sorted" "reversed" "sum" "min" "max" "abs" "round" "int" "float" "str" "bool" "list" "tuple" "dict" "set" "frozenset" "isinstance" "issubclass" "type" "repr" "ascii" "chr" "ord" "hex" "oct" "bin" "divmod" "pow" "any" "all" "open" "format" "hash" "id" "iter" "next" "getattr" "setattr" "hasattr" "delattr" "callable" "input" "vars" "globals" "locals" "dir" "property" "staticmethod" "classmethod" "super" "object" "slice" "exit" "quit" "__object_init__" "__build_class__" "__import__" "eval" "exec" "compile"))
+        def names:[string] ([] _:string ("print" "len" "range" "enumerate" "zip" "map" "filter" "sorted" "reversed" "sum" "min" "max" "abs" "round" "int" "float" "complex" "str" "bool" "list" "tuple" "dict" "set" "frozenset" "isinstance" "issubclass" "type" "repr" "ascii" "chr" "ord" "hex" "oct" "bin" "divmod" "pow" "any" "all" "open" "format" "hash" "id" "iter" "next" "getattr" "setattr" "hasattr" "delattr" "callable" "input" "vars" "globals" "locals" "dir" "property" "staticmethod" "classmethod" "super" "object" "slice" "exit" "quit" "__object_init__" "__build_class__" "__import__" "eval" "exec" "compile"))
         for names n:string i {
             this.put(n)
         }
@@ -170,6 +170,152 @@ class PyBuiltins {
         }
         ip.raise("TypeError" ("must be real number, not " + (ip.typeName(v))))
         return 0.0
+    }
+
+    ; complex(), complex(x), complex(re, im), complex("1+2j")
+    fn makeComplex:PyVal (args:[PyVal] kn:[string] kv:[PyVal]) {
+        def rv:PyVal (this.arg(args 0 kn kv "real"))
+        def iv:PyVal (this.arg(args 1 kn kv "imag"))
+        def hasIm:boolean (((array_length args) > 1) || ((this.kwIndex(kn "imag")) >= 0))
+        if (rv.t == PyT.Str) {
+            if hasIm {
+                ip.raise("TypeError" "complex() can't take second arg if first is a string")
+            }
+            return (this.parseComplexText(rv.s))
+        }
+        if (hasIm && (iv.t == PyT.Str)) {
+            ip.raise("TypeError" "complex() second arg can't be a string")
+        }
+        def a:PyVal (this.complexOf(rv "first"))
+        if (hasIm == false) {
+            return a
+        }
+        def b:PyVal (this.complexOf(iv "second"))
+        ; re + im * 1j, as CPython adds the parts
+        def re:double a.d
+        def im:double b.d
+        if (iv.t == PyT.Complex) {
+            re = re - b.d2
+        }
+        if (rv.t == PyT.Complex) {
+            im = im + a.d2
+        }
+        return (ip.mkComplex(re im))
+    }
+
+    fn kwIndex:int (kn:[string] name:string) {
+        for kn k:string i {
+            if (k == name) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    fn complexOf:PyVal (v:PyVal which:string) {
+        if (v.t == PyT.Complex) {
+            return v
+        }
+        if (v.t == PyT.None) {
+            return (ip.mkComplex(0.0 0.0))
+        }
+        if (ip.isNum(v)) {
+            return (ip.mkComplex((ip.toDouble(v)) 0.0))
+        }
+        def cm@(optional):PyVal (ip.findMethod(v "__complex__"))
+        if (!null? cm) {
+            def r:PyVal (ip.callMethodVal((unwrap cm) v ([] _:PyVal ())))
+            if (r.t != PyT.Complex) {
+                ip.raise("TypeError" ("__complex__ returned non-complex (type " + (ip.typeName(r)) + ")"))
+            }
+            return r
+        }
+        def fm@(optional):PyVal (ip.findMethod(v "__float__"))
+        if (!null? fm) {
+            return (ip.mkComplex((this.toNum(v)) 0.0))
+        }
+        def im@(optional):PyVal (ip.findMethod(v "__index__"))
+        if (!null? im) {
+            def r2:PyVal (ip.callMethodVal((unwrap im) v ([] _:PyVal ())))
+            return (ip.mkComplex((ip.toDouble(r2)) 0.0))
+        }
+        ip.raise("TypeError" ("complex() " + which + " argument must be a string or a number, not '" + (ip.typeName(v)) + "'"))
+        return v
+    }
+
+    fn parseComplexText:PyVal (text:string) {
+        def s:string (trim text)
+        def bad:string ("complex() arg is a malformed string")
+        if ((startsWith s "(") && (endsWith s ")")) {
+            s = (trim (substring s 1 ((strlen s) - 1)))
+        }
+        def n:int (strlen s)
+        if (n == 0) {
+            ip.raise("ValueError" bad)
+        }
+        def last:string (to_lowercase (substring s (n - 1) n))
+        if (last != "j") {
+            if ((indexOf s " ") >= 0) {
+                ip.raise("ValueError" bad)
+            }
+            return (ip.mkComplex((this.complexPart(s bad)) 0.0))
+        }
+        def body:string (substring s 0 (n - 1))
+        ; the sign that starts the imaginary part: not the first character,
+        ; not after an exponent's e
+        def cs:[int] (to_chars body)
+        def split:int -1
+        def k:int ((array_length cs) - 1)
+        while (k > 0) {
+            def c:int (itemAt cs k)
+            if ((c == 43) || (c == 45)) {
+                def pc:int (itemAt cs (k - 1))
+                if ((pc != 101) && (pc != 69)) {
+                    split = k
+                    break
+                }
+            }
+            k = k - 1
+        }
+        def reText:string ""
+        def imText:string body
+        if (split > 0) {
+            reText = (substring body 0 split)
+            imText = (substring body split (strlen body))
+        }
+        if (((indexOf reText " ") >= 0) || ((indexOf imText " ") >= 0)) {
+            ip.raise("ValueError" bad)
+        }
+        def im:double 1.0
+        if ((imText == "+") || (imText == "")) {
+            im = 1.0
+        } {
+            if (imText == "-") {
+                im = -1.0
+            } {
+                im = (this.complexPart(imText bad))
+            }
+        }
+        def re:double 0.0
+        if ((strlen reText) > 0) {
+            re = (this.complexPart(reText bad))
+        }
+        return (ip.mkComplex(re im))
+    }
+
+    fn complexPart:double (t:string bad:string) {
+        def r:double 0.0
+        def failed:boolean false
+        try {
+            r = (this.parseFloatText(t))
+        } {
+            failed = true
+            ip.takeException((error_msg))
+        }
+        if failed {
+            ip.raise("ValueError" bad)
+        }
+        return r
     }
 
     fn call0:PyVal (f:PyVal args:[PyVal]) {
@@ -596,7 +742,16 @@ class PyBuiltins {
             return false
         }
         if (cls.t == PyT.Class) {
+            if (has cls.attrs "__instancecheck__") {
+                def ick:PyVal (ip.getAttr(cls "__instancecheck__"))
+                def ckn:[string]
+                def ckv:[PyVal]
+                return (ip.truthy((ip.callValue(ick ([] _:PyVal (obj)) ckn ckv))))
+            }
             if ((obj.t == PyT.Inst) && (!null? obj.cls)) {
+                return (ip.isSubclass((unwrap obj.cls) cls))
+            }
+            if (ip.isDataSub(obj)) {
                 return (ip.isSubclass((unwrap obj.cls) cls))
             }
             if (((obj.t == PyT.Dict) || (obj.t == PyT.List) || (obj.t == PyT.Tuple)) && (has obj.attrs "__class__")) {
@@ -629,6 +784,9 @@ class PyBuiltins {
             if (n == "float") {
                 return (obj.t == PyT.Float)
             }
+            if (n == "complex") {
+                return (obj.t == PyT.Complex)
+            }
             if (n == "type") {
                 return ((obj.t == PyT.Class) || ((obj.t == PyT.Builtin) && (ip.isTypeBuiltin(obj.s))))
             }
@@ -643,6 +801,9 @@ class PyBuiltins {
 
     fn typeOf:PyVal (v:PyVal) {
         if (v.t == PyT.Inst) {
+            return (unwrap v.cls)
+        }
+        if (ip.isDataSub(v)) {
             return (unwrap v.cls)
         }
         if (((v.t == PyT.Dict) || (v.t == PyT.List) || (v.t == PyT.Tuple)) && (has v.attrs "__class__")) {
@@ -1054,6 +1215,19 @@ class PyBuiltins {
                 }
                 return x
             }
+            if (x.t == PyT.Complex) {
+                def ha:double (PyInterp.hypot(x.d x.d2))
+                if ((py_isinf ha) && ((py_isinf x.d) == false) && ((py_isinf x.d2) == false)) {
+                    ip.raise("OverflowError" "absolute value too large")
+                }
+                if ((py_isnan x.d) || (py_isnan x.d2)) {
+                    if ((py_isinf x.d) || (py_isinf x.d2)) {
+                        return (ip.mkFloat((py_inf)))
+                    }
+                    return (ip.mkFloat((py_nan)))
+                }
+                return (ip.mkFloat(ha))
+            }
             def am@(optional):PyVal (ip.findMethod(x "__abs__"))
             if (!null? am) {
                 return (ip.callMethodVal((unwrap am) x ([] _:PyVal ())))
@@ -1077,6 +1251,9 @@ class PyBuiltins {
                 return (this.parseIntText(sv2.s (this.toInt(base "int"))))
             }
             return (this.toIntValue((itemAt args 0)))
+        }
+        if (name == "complex") {
+            return (this.makeComplex(args kn kv))
         }
         if (name == "float") {
             if (n == 0) {
@@ -1162,17 +1339,25 @@ class PyBuiltins {
             def b:PyVal (itemAt args 1)
             if (b.t == PyT.Tuple) {
                 for b.items bb:PyVal bi {
-                    if ((c.t == PyT.Class) && (bb.t == PyT.Class) && (ip.isSubclass(c bb))) {
+                    def one:PyVal (this.call("issubclass" ([] _:PyVal (c bb)) kn kv))
+                    if (ip.truthy(one)) {
                         return ip.TRUE
                     }
                 }
                 return ip.FALSE
+            }
+            if ((b.t == PyT.Class) && (has b.attrs "__subclasscheck__")) {
+                def sck:PyVal (ip.getAttr(b "__subclasscheck__"))
+                return (ip.mkBool((ip.truthy((ip.callValue(sck ([] _:PyVal (c)) kn kv))))))
             }
             if ((c.t == PyT.Class) && (b.t == PyT.Class)) {
                 return (ip.mkBool((ip.isSubclass(c b))))
             }
             if ((b.t == PyT.Builtin) && (b.s == "object")) {
                 return ip.TRUE
+            }
+            if ((c.t == PyT.Class) && (b.t == PyT.Builtin)) {
+                return (ip.mkBool(((c.bt == b.s) || ((b.s == "int") && (c.bt == "bool")))))
             }
             if ((c.t == PyT.Builtin) && (b.t == PyT.Builtin)) {
                 return (ip.mkBool(((c.s == b.s) || ((c.s == "bool") && (b.s == "int")))))
@@ -1183,7 +1368,40 @@ class PyBuiltins {
             if (n == 1) {
                 return (this.typeOf((itemAt args 0)))
             }
-            ip.raise("TypeError" "type() with three arguments is not supported")
+            if (n != 3) {
+                ip.raise("TypeError" "type() takes 1 or 3 arguments")
+            }
+            def tname:PyVal (itemAt args 0)
+            def tbases:PyVal (itemAt args 1)
+            def tdict:PyVal (itemAt args 2)
+            if (tname.t != PyT.Str) {
+                ip.raise("TypeError" "type.__new__() argument 1 must be str")
+            }
+            if (tbases.t != PyT.Tuple) {
+                ip.raise("TypeError" "type.__new__() argument 2 must be tuple")
+            }
+            if (tdict.t != PyT.Dict) {
+                ip.raise("TypeError" "type.__new__() argument 3 must be dict")
+            }
+            def ncls (new PyVal(PyT.Class))
+            ncls.s = tname.s
+            for tbases.items tb:PyVal tbi {
+                ip.addBase(ncls tb)
+            }
+            ip.computeMro(ncls)
+            ncls.putAttr("__module__" (ip.mkStr("__main__")))
+            ncls.putAttr("__qualname__" tname)
+            ncls.putAttr("__doc__" ip.NONE)
+            for (ip.iterValues(tdict)) tk:PyVal tki {
+                if (tk.t != PyT.Str) {
+                    continue
+                }
+                def tv:PyVal (unwrap (ip.dictGet(tdict tk)))
+                ncls.putAttr(tk.s tv)
+                ip.setOwner(tv ncls)
+            }
+            ip.finishClass(ncls kn kv)
+            return ncls
         }
         if (name == "chr") {
             this.need("chr" args 1 1)
@@ -1287,6 +1505,9 @@ class PyBuiltins {
             def hv:PyVal (itemAt args 0)
             if (ip.isIntLike(hv)) {
                 return (ip.mkInt(hv.i))
+            }
+            if (((hv.t == PyT.Float) || ((hv.t == PyT.Complex) && (hv.d2 == 0.0))) && ((py_floor hv.d) == hv.d) && (hv.d < 9000000000000000.0) && (hv.d > -9000000000000000.0)) {
+                return (ip.mkInt((py_trunc hv.d)))
             }
             def hk:string (ip.hashKey(hv))
             return (ip.mkInt((this.strHash(hk))))

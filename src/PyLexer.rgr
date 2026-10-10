@@ -12,6 +12,7 @@
 
 Import "PyOps.rgr"
 Import "PyAst.rgr"
+Import "PyUnicodeNames.rgr"
 
 class PyLexer {
     def cs:[int]
@@ -322,9 +323,9 @@ class PyLexer {
             }
         }
         def jc:int (this.ch(0))
+        def imag:boolean false
         if ((jc == 106) || (jc == 74)) {
-            this.fail("complex numbers are not supported")
-            return
+            imag = true
         }
         def raw:[int]
         def i:int start
@@ -336,6 +337,11 @@ class PyLexer {
             i = i + 1
         }
         def t:string (py_codes_to_str raw 0 (array_length raw))
+        if imag {
+            pos = pos + 1
+            this.add(PyTok.Float (t + "j"))
+            return
+        }
         if isFloat {
             this.add(PyTok.Float t)
         } {
@@ -356,6 +362,50 @@ class PyLexer {
         return -1
     }
 
+    ; a string inside an f-string's field, copied as written
+    fn copyNestedString:void (out:[int]) {
+        def q:int (this.ch(0))
+        def triple:boolean (((this.ch(1)) == q) && ((this.ch(2)) == q))
+        def w:int 1
+        if triple {
+            w = 3
+        }
+        def k:int 0
+        while (k < w) {
+            push out q
+            pos = pos + 1
+            k = k + 1
+        }
+        while (pos < n) {
+            def c:int (this.ch(0))
+            if (c == 92) {
+                push out c
+                push out (this.ch(1))
+                pos = pos + 2
+                continue
+            }
+            if (c == 10) {
+                line = line + 1
+            }
+            if (c == q) {
+                if (triple == false) {
+                    push out c
+                    pos = pos + 1
+                    return
+                }
+                if (((this.ch(1)) == q) && ((this.ch(2)) == q)) {
+                    push out q
+                    push out q
+                    push out q
+                    pos = pos + 3
+                    return
+                }
+            }
+            push out c
+            pos = pos + 1
+        }
+    }
+
     fn scanString:void (at:int raw:boolean fmt:boolean isBytes:boolean) {
         pos = at
         def q:int (this.ch(0))
@@ -367,6 +417,9 @@ class PyLexer {
         }
         def out:[int]
         def startLine:int line
+        ; an f-string's replacement fields, innermost last: 0 expression,
+        ; 1 format spec, 2 a brace and 3 a bracket inside an expression
+        def modes:[int]
         while true {
             if (pos >= n) {
                 line = startLine
@@ -374,6 +427,63 @@ class PyLexer {
                 return
             }
             def c:int (this.ch(0))
+            if (fmt && ((array_length modes) > 0)) {
+                ; inside a field the text is kept as written (PEP 701)
+                def md:int (last modes)
+                if (c == 123) {
+                    if (md == 1) {
+                        push modes 0
+                    } {
+                        push modes 2
+                    }
+                    push out c
+                    pos = pos + 1
+                    continue
+                }
+                if (c == 125) {
+                    removeLast modes
+                    push out c
+                    pos = pos + 1
+                    continue
+                }
+                if (c == 10) {
+                    line = line + 1
+                    push out c
+                    pos = pos + 1
+                    continue
+                }
+                if (md != 1) {
+                    if ((c == 40) || (c == 91)) {
+                        push modes 3
+                    }
+                    if (((c == 41) || (c == 93)) && (md == 3)) {
+                        removeLast modes
+                    }
+                    if ((c == 58) && (md == 0) && ((this.ch(1)) != 61)) {
+                        removeLast modes
+                        push modes 1
+                    }
+                    if ((c == 39) || (c == 34)) {
+                        this.copyNestedString(out)
+                        continue
+                    }
+                }
+                push out c
+                pos = pos + 1
+                continue
+            }
+            if (fmt && (c == 123)) {
+                if ((this.ch(1)) == 123) {
+                    push out c
+                    push out c
+                    pos = pos + 2
+                    continue
+                }
+                push modes 0
+                push out c
+                pos = pos + 1
+                continue
+            }
             if (c == q) {
                 if triple {
                     if (((this.ch(1)) == q) && ((this.ch(2)) == q)) {
@@ -484,12 +594,40 @@ class PyLexer {
                         pos = pos + 1
                         k = k + 1
                     }
+                    if (fmt && ((v == 123) || (v == 125))) {
+                        push out v
+                    }
                     push out v
                     continue
                 }
-                if (c2 == 78) {
-                    this.fail("\\N{...} escapes are not supported")
-                    return
+                if ((c2 == 78) && (isBytes == false)) {
+                    def nm:[int]
+                    def closed:boolean false
+                    if ((this.ch(0)) == 123) {
+                        pos = pos + 1
+                        while (pos < n) {
+                            def nc:int (this.ch(0))
+                            pos = pos + 1
+                            if (nc == 125) {
+                                closed = true
+                                break
+                            }
+                            push nm nc
+                        }
+                    }
+                    def ucp:int -1
+                    if closed {
+                        ucp = (PyUnicodeNames.lookup((py_codes_to_str nm 0 (array_length nm))))
+                    }
+                    if (ucp < 0) {
+                        this.fail("(unicode error) 'unicodeescape' codec can't decode bytes: unknown Unicode character name")
+                        return
+                    }
+                    if (fmt && ((ucp == 123) || (ucp == 125))) {
+                        push out ucp
+                    }
+                    push out ucp
+                    continue
                 }
                 ; an unknown escape keeps its backslash
                 push out 92
