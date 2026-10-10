@@ -105,6 +105,7 @@ class PyRuntime {
             return false
         }
         def ip (new PyInterp(fs))
+        ip.setup()
         ip.maxSteps = maxSteps
         ip.echo = echo
         ip.argv = argv

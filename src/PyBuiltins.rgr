@@ -845,7 +845,8 @@ class PyBuiltins {
         if (mv.t == PyT.Str) {
             mode = mv.s
         }
-        def path:string (ip.fs.normalize(pv.s))
+        def vfs:PyFileSystem ip.fs
+        def path:string (vfs.normalize(pv.s))
         def f (new PyVal(PyT.File))
         f.s = pv.s
         f.mode = mode
@@ -862,12 +863,12 @@ class PyBuiltins {
             return f
         }
         if (plain == "w") {
-            ip.fs.write(path "")
+            vfs.write(path "")
             return f
         }
         if (plain == "a") {
             if ((ip.fs.isFile(path)) == false) {
-                ip.fs.write(path "")
+                vfs.write(path "")
             }
             return f
         }
@@ -875,7 +876,7 @@ class PyBuiltins {
             if (ip.fs.isFile(path)) {
                 ip.raise("FileExistsError" ("[Errno 17] File exists: " + (PyFormat.strRepr(pv.s))))
             }
-            ip.fs.write(path "")
+            vfs.write(path "")
             return f
         }
         ip.raise("ValueError" ("invalid mode: '" + mode + "'"))

@@ -15,6 +15,7 @@ operators {
     ; the unwinding without the interpreter around it.
     py_raise _:void (msg:string) {
         templates {
+            rust ( "panic!(\"{}\", " (e 1) ")" )
             es6 ( "throw new Error(" (e 1) ")" )
             go ( "panic(" (e 1) ")" )
             python ( "raise Exception(" (e 1) ")" )
@@ -22,6 +23,7 @@ operators {
     }
     py_pow _:double (a:double b:double) {
         templates {
+            rust ( "f64::powf(" (e 1) ", " (e 2) ")" )
             es6 ( "Math.pow(" (e 1) ", " (e 2) ")" )
             go ( "math.Pow(" (e 1) ", " (e 2) ")" (imp "math") )
             python ( "py_rt_pow(" (e 1) ", " (e 2) ")" (imp "math")
@@ -38,6 +40,7 @@ def py_rt_pow(a, b):
     }
     py_exp _:double (a:double) {
         templates {
+            rust ( "f64::exp(" (e 1) ")" )
             es6 ( "Math.exp(" (e 1) ")" )
             go ( "math.Exp(" (e 1) ")" (imp "math") )
             python ( "py_rt_exp(" (e 1) ")" (imp "math")
@@ -52,6 +55,7 @@ def py_rt_exp(a):
     }
     py_log _:double (a:double) {
         templates {
+            rust ( "f64::ln(" (e 1) ")" )
             es6 ( "Math.log(" (e 1) ")" )
             go ( "math.Log(" (e 1) ")" (imp "math") )
             python ( "py_rt_log(" (e 1) ")" (imp "math")
@@ -65,6 +69,7 @@ def py_rt_log(a):
     }
     py_log10 _:double (a:double) {
         templates {
+            rust ( "f64::log10(" (e 1) ")" )
             es6 ( "Math.log10(" (e 1) ")" )
             go ( "math.Log10(" (e 1) ")" (imp "math") )
             python ( "py_rt_log10(" (e 1) ")" (imp "math")
@@ -78,6 +83,7 @@ def py_rt_log10(a):
     }
     py_log2 _:double (a:double) {
         templates {
+            rust ( "f64::log2(" (e 1) ")" )
             es6 ( "Math.log2(" (e 1) ")" )
             go ( "math.Log2(" (e 1) ")" (imp "math") )
             python ( "py_rt_log2(" (e 1) ")" (imp "math")
@@ -91,6 +97,7 @@ def py_rt_log2(a):
     }
     py_sin _:double (a:double) {
         templates {
+            rust ( "f64::sin(" (e 1) ")" )
             es6 ( "Math.sin(" (e 1) ")" )
             go ( "math.Sin(" (e 1) ")" (imp "math") )
             python ( "math.sin(" (e 1) ")" (imp "math") )
@@ -98,6 +105,7 @@ def py_rt_log2(a):
     }
     py_cos _:double (a:double) {
         templates {
+            rust ( "f64::cos(" (e 1) ")" )
             es6 ( "Math.cos(" (e 1) ")" )
             go ( "math.Cos(" (e 1) ")" (imp "math") )
             python ( "math.cos(" (e 1) ")" (imp "math") )
@@ -105,6 +113,7 @@ def py_rt_log2(a):
     }
     py_tan _:double (a:double) {
         templates {
+            rust ( "f64::tan(" (e 1) ")" )
             es6 ( "Math.tan(" (e 1) ")" )
             go ( "math.Tan(" (e 1) ")" (imp "math") )
             python ( "math.tan(" (e 1) ")" (imp "math") )
@@ -112,6 +121,7 @@ def py_rt_log2(a):
     }
     py_asin _:double (a:double) {
         templates {
+            rust ( "f64::asin(" (e 1) ")" )
             es6 ( "Math.asin(" (e 1) ")" )
             go ( "math.Asin(" (e 1) ")" (imp "math") )
             python ( "math.asin(" (e 1) ")" (imp "math") )
@@ -119,6 +129,7 @@ def py_rt_log2(a):
     }
     py_acos _:double (a:double) {
         templates {
+            rust ( "f64::acos(" (e 1) ")" )
             es6 ( "Math.acos(" (e 1) ")" )
             go ( "math.Acos(" (e 1) ")" (imp "math") )
             python ( "math.acos(" (e 1) ")" (imp "math") )
@@ -126,6 +137,7 @@ def py_rt_log2(a):
     }
     py_atan _:double (a:double) {
         templates {
+            rust ( "f64::atan(" (e 1) ")" )
             es6 ( "Math.atan(" (e 1) ")" )
             go ( "math.Atan(" (e 1) ")" (imp "math") )
             python ( "math.atan(" (e 1) ")" (imp "math") )
@@ -133,6 +145,7 @@ def py_rt_log2(a):
     }
     py_atan2 _:double (a:double b:double) {
         templates {
+            rust ( "f64::atan2(" (e 1) ", " (e 2) ")" )
             es6 ( "Math.atan2(" (e 1) ", " (e 2) ")" )
             go ( "math.Atan2(" (e 1) ", " (e 2) ")" (imp "math") )
             python ( "math.atan2(" (e 1) ", " (e 2) ")" (imp "math") )
@@ -140,6 +153,7 @@ def py_rt_log2(a):
     }
     py_sqrt _:double (a:double) {
         templates {
+            rust ( "f64::sqrt(" (e 1) ")" )
             es6 ( "Math.sqrt(" (e 1) ")" )
             go ( "math.Sqrt(" (e 1) ")" (imp "math") )
             python ( "py_rt_sqrt(" (e 1) ")" (imp "math")
@@ -153,6 +167,7 @@ def py_rt_sqrt(a):
     }
     py_floor _:double (a:double) {
         templates {
+            rust ( "f64::floor(" (e 1) ")" )
             es6 ( "Math.floor(" (e 1) ")" )
             go ( "math.Floor(" (e 1) ")" (imp "math") )
             python ( "py_rt_floor(" (e 1) ")" (imp "math")
@@ -166,6 +181,7 @@ def py_rt_floor(a):
     }
     py_ceil _:double (a:double) {
         templates {
+            rust ( "f64::ceil(" (e 1) ")" )
             es6 ( "Math.ceil(" (e 1) ")" )
             go ( "math.Ceil(" (e 1) ")" (imp "math") )
             python ( "py_rt_ceil(" (e 1) ")" (imp "math")
@@ -179,6 +195,7 @@ def py_rt_ceil(a):
     }
     py_isnan _:boolean (a:double) {
         templates {
+            rust ( "f64::is_nan(" (e 1) ")" )
             es6 ( "Number.isNaN(" (e 1) ")" )
             go ( "math.IsNaN(" (e 1) ")" (imp "math") )
             python ( "math.isnan(" (e 1) ")" (imp "math") )
@@ -186,6 +203,7 @@ def py_rt_ceil(a):
     }
     py_isinf _:boolean (a:double) {
         templates {
+            rust ( "f64::is_infinite(" (e 1) ")" )
             es6 ( "(Math.abs(" (e 1) ") === Infinity)" )
             go ( "math.IsInf(" (e 1) ", 0)" (imp "math") )
             python ( "math.isinf(" (e 1) ")" (imp "math") )
@@ -193,6 +211,7 @@ def py_rt_ceil(a):
     }
     py_inf _:double () {
         templates {
+            rust ( "f64::INFINITY" )
             es6 ( "Infinity" )
             go ( "math.Inf(1)" (imp "math") )
             python ( "math.inf" (imp "math") )
@@ -200,6 +219,7 @@ def py_rt_ceil(a):
     }
     py_nan _:double () {
         templates {
+            rust ( "f64::NAN" )
             es6 ( "NaN" )
             go ( "math.NaN()" (imp "math") )
             python ( "math.nan" (imp "math") )
@@ -208,6 +228,7 @@ def py_rt_ceil(a):
     ; int -> double, the same on every target
     py_i2d _:double (a:int) {
         templates {
+            rust ( "((" (e 1) ") as f64)" )
             es6 ( "(" (e 1) ")" )
             go ( "float64(" (e 1) ")" )
             python ( "float(" (e 1) ")" )
@@ -216,6 +237,7 @@ def py_rt_ceil(a):
     ; double -> int toward zero (Python's int(x)); the caller checks the range
     py_trunc _:int (a:double) {
         templates {
+            rust ( "((" (e 1) ") as i64)" )
             es6 ( "Math.trunc(" (e 1) ")" )
             go ( "int64(" (e 1) ")" )
             python ( "int(" (e 1) ")" )
@@ -224,6 +246,7 @@ def py_rt_ceil(a):
     ; one code point as text
     py_chr _:string (code:int) {
         templates {
+            rust ( "std::char::from_u32((" (e 1) ") as u32).unwrap_or('\\u{FFFD}').to_string()" )
             es6 ( "String.fromCodePoint(" (e 1) ")" )
             go ( "string(rune(" (e 1) "))" )
             python ( "chr(" (e 1) ")" )
@@ -232,6 +255,7 @@ def py_rt_ceil(a):
     ; code points [start, end) as text
     py_codes_to_str _:string (cs:[int] start:int end:int) {
         templates {
+            rust ( "(" (e 1) ")[((" (e 2) ") as usize)..((" (e 3) ") as usize)].iter().map(|c| std::char::from_u32(*c as u32).unwrap_or('\\u{FFFD}')).collect::<String>()" )
             es6 ( "py_rt_codes(" (e 1) ", " (e 2) ", " (e 3) ")"
 (create_polyfill "
 function py_rt_codes(cs, s, e) {
@@ -259,6 +283,7 @@ func py_rt_codes(cs []int64, s int64, e int64) string {
     ; notation the target writes; PyFormat.floatRepr rewrites it as Python does
     py_float_digits _:string (a:double) {
         templates {
+            rust ( "format!(\"{:e}\", " (e 1) ")" )
             es6 ( "String(" (e 1) ")" )
             go ( "strconv.FormatFloat(" (e 1) ", 'e', -1, 64)" (imp "strconv") )
             python ( "repr(" (e 1) ")" )
@@ -267,6 +292,7 @@ func py_rt_codes(cs []int64, s int64, e int64) string {
     ; parse a float literal (already checked to be one); NaN if not
     py_parse_float _:double (s:string) {
         templates {
+            rust ( "(" (e 1) ").trim().parse::<f64>().unwrap_or(f64::NAN)" )
             es6 ( "Number(" (e 1) ")" )
             go ( "py_rt_parse_float(" (e 1) ")" (imp "strconv") (imp "math")
 (create_polyfill "
@@ -294,6 +320,7 @@ def py_rt_parse_float(s):
     ; milliseconds since the epoch
     py_now_ms _:double () {
         templates {
+            rust ( "(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as f64 / 1e6)" )
             es6 ( "Date.now()" )
             go ( "float64(time.Now().UnixNano()) / 1e6" (imp "time") )
             python ( "(time.time() * 1000.0)" (imp "time") )
@@ -302,6 +329,7 @@ def py_rt_parse_float(s):
     ; unsigned 32-bit bit operations (random's Mersenne Twister)
     py_xor32 _:int (a:int b:int) {
         templates {
+            rust ( "((((" (e 1) ") as u32) ^ ((" (e 2) ") as u32)) as i64)" )
             es6 ( "((" (e 1) " ^ " (e 2) ") >>> 0)" )
             go ( "int64(uint32(" (e 1) ") ^ uint32(" (e 2) "))" )
             python ( "((" (e 1) " ^ " (e 2) ") & 0xffffffff)" )
@@ -309,6 +337,7 @@ def py_rt_parse_float(s):
     }
     py_and32 _:int (a:int b:int) {
         templates {
+            rust ( "((((" (e 1) ") as u32) & ((" (e 2) ") as u32)) as i64)" )
             es6 ( "((" (e 1) " & " (e 2) ") >>> 0)" )
             go ( "int64(uint32(" (e 1) ") & uint32(" (e 2) "))" )
             python ( "((" (e 1) " & " (e 2) ") & 0xffffffff)" )
@@ -316,6 +345,7 @@ def py_rt_parse_float(s):
     }
     py_or32 _:int (a:int b:int) {
         templates {
+            rust ( "((((" (e 1) ") as u32) | ((" (e 2) ") as u32)) as i64)" )
             es6 ( "((" (e 1) " | " (e 2) ") >>> 0)" )
             go ( "int64(uint32(" (e 1) ") | uint32(" (e 2) "))" )
             python ( "((" (e 1) " | " (e 2) ") & 0xffffffff)" )
@@ -323,6 +353,7 @@ def py_rt_parse_float(s):
     }
     py_shr32 _:int (a:int n:int) {
         templates {
+            rust ( "((((" (e 1) ") as u32) >> ((" (e 2) ") as u32)) as i64)" )
             es6 ( "(" (e 1) " >>> " (e 2) ")" )
             go ( "int64(uint32(" (e 1) ") >> uint(" (e 2) "))" )
             python ( "((" (e 1) " & 0xffffffff) >> " (e 2) ")" )
@@ -330,6 +361,7 @@ def py_rt_parse_float(s):
     }
     py_shl32 _:int (a:int n:int) {
         templates {
+            rust ( "((((" (e 1) ") as u32).wrapping_shl((" (e 2) ") as u32)) as i64)" )
             es6 ( "((" (e 1) " << " (e 2) ") >>> 0)" )
             go ( "int64(uint32(" (e 1) ") << uint(" (e 2) "))" )
             python ( "((" (e 1) " << " (e 2) ") & 0xffffffff)" )
@@ -338,14 +370,57 @@ def py_rt_parse_float(s):
     ; drop a key from a map (Ranger has no map delete)
     py_map_del _:void (m@(mutates):[K:T] key:K) {
         templates {
+            rust ( (e 1) ".rg_remove(&*" (e 2) ");"
+(create_polyfill "
+trait RgRemove<K> {
+    fn rg_remove<Q: ?Sized + std::hash::Hash + Eq>(&mut self, k: &Q) where K: std::borrow::Borrow<Q>;
+}
+impl<K: std::hash::Hash + Eq, V> RgRemove<K> for RgOrderedMap<K, V> {
+    fn rg_remove<Q: ?Sized + std::hash::Hash + Eq>(&mut self, k: &Q) where K: std::borrow::Borrow<Q> {
+        if self.slot(k) == -1 { return; }
+        self.entries.retain(|e| e.0.borrow() != k);
+        self.rehash();
+    }
+}
+") )
             es6 ( "delete " (e 1) "[" (e 2) "]" )
             go ( "delete(" (e 1) ", " (e 2) ")" )
             python ( (e 1) ".pop(" (e 2) ", None)" )
         }
     }
+    ; Rust has no exceptions: the Rust build (scripts/build.mjs --rust)
+    ; rewrites each `try { A } { B }` as py_rust_try with B under an `if`,
+    ; and `error_msg` in B as py_rust_err. A raise is a panic, caught here.
+    py_rust_try _:void (failed@(mutates):boolean body:block) {
+        templates {
+            rust ( (e 1) " = rg_catch(std::panic::AssertUnwindSafe(|| {" (block 2) "}));"
+(create_polyfill "
+thread_local! { static RG_ERR: std::cell::RefCell<String> = std::cell::RefCell::new(String::new()); }
+fn rg_catch<F: FnOnce()>(f: std::panic::AssertUnwindSafe<F>) -> bool {
+    match std::panic::catch_unwind(f) {
+        Ok(_) => false,
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<String>() { s.clone() } else if let Some(s) = e.downcast_ref::<&str>() { s.to_string() } else { String::from(\"panic\") };
+            RG_ERR.with(|r| *r.borrow_mut() = msg);
+            true
+        }
+    }
+}
+fn rg_last_err() -> String { RG_ERR.with(|r| r.borrow().clone()) }
+") )
+            * ( "" )
+        }
+    }
+    py_rust_err _:string () {
+        templates {
+            rust ( "rg_last_err()" )
+            * ( "\"\"" )
+        }
+    }
     ; host setup before a run: Python-built runtimes need a deeper stack
     py_host_setup _:void () {
         templates {
+            rust ( "std::panic::set_hook(Box::new(|_| {}));" )
             es6 ( "" )
             go ( "" )
             python ( "sys.setrecursionlimit(200000)" (imp "sys") )

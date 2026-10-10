@@ -198,6 +198,11 @@ class PyVal  {
     return c.length;
   };
 }
+PyVal.one = function(v) {
+  let r = [];
+  r.push(v);
+  return r;
+};
 class PyScope  {
   constructor() {
     this.vars = {};
@@ -2842,9 +2847,11 @@ class PyParser  {
         if ( w == "nonlocal" ) {
           g.kind = 60;
         }
-        g.strs.push(this.mangle(this.expectName()));
+        const gn = this.expectName();
+        g.strs.push(this.mangle(gn));
         while (this.acceptOp(",")) {
-          g.strs.push(this.mangle(this.expectName()));
+          const gn_1 = this.expectName();
+          g.strs.push(this.mangle(gn_1));
         };
         return g;
       }
@@ -4658,7 +4665,8 @@ class PyBuiltins  {
     if ( mv.t == 4 ) {
       mode = mv.s;
     }
-    const path = this.ip.fs.normalize(pv.s);
+    const vfs = this.ip.fs;
+    const path = vfs.normalize(pv.s);
     const f = new PyVal(16);
     f.s = pv.s;
     f.mode = mode;
@@ -4680,12 +4688,12 @@ class PyBuiltins  {
       return f;
     }
     if ( plain == "w" ) {
-      this.ip.fs.write(path, "");
+      vfs.write(path, "");
       return f;
     }
     if ( plain == "a" ) {
       if ( this.ip.fs.isFile(path) == false ) {
-        this.ip.fs.write(path, "");
+        vfs.write(path, "");
       }
       return f;
     }
@@ -4693,7 +4701,7 @@ class PyBuiltins  {
       if ( this.ip.fs.isFile(path) ) {
         this.ip.raise("FileExistsError", "[Errno 17] File exists: " + PyFormat.strRepr(pv.s));
       }
-      this.ip.fs.write(path, "");
+      vfs.write(path, "");
       return f;
     }
     this.ip.raise("ValueError", ("invalid mode: '" + mode) + "'");
@@ -6005,6 +6013,8 @@ class PyMethods  {
     this.ip = undefined;
     this.table = {};
     this.ip = interp;
+  }
+  init () {
     this.addNames("str", "join split rsplit splitlines strip lstrip rstrip replace upper lower title capitalize swapcase casefold startswith endswith find rfind index rindex count format format_map zfill ljust rjust center isdigit isnumeric isdecimal isalpha isalnum isspace isupper islower istitle isidentifier isascii isprintable partition rpartition encode expandtabs removeprefix removesuffix translate __len__ __contains__ __getitem__ __add__ __mul__ __eq__ __lt__ __hash__ __iter__ __str__ __repr__");
     this.addNames("list", "__init__ append extend insert pop remove index count sort reverse copy clear __len__ __getitem__ __setitem__ __contains__ __iter__ __add__ __eq__ __repr__");
     this.addNames("deque", "append appendleft extend extendleft pop popleft remove index count reverse rotate copy clear __len__");
@@ -6019,7 +6029,7 @@ class PyMethods  {
     this.addNames("complex", "conjugate __abs__ __add__ __sub__ __mul__ __truediv__ __pow__ __eq__ __hash__ __neg__ __pos__ __bool__ __complex__ __radd__ __rsub__ __rmul__ __rtruediv__ __rpow__ __repr__ __str__ __getnewargs__ __format__");
     this.addNames("generator", "__next__ __iter__ send throw close");
     this.addNames("range", "index count __len__ __iter__ __contains__");
-  }
+  };
   addNames (kind, names) {
     const ns = names.split(" ");
     // Loop start
@@ -7267,7 +7277,8 @@ class PyMethods  {
         let headParts = [];
         let h = 0;
         while (h < na2 - maxsplit) {
-          headParts.push(all2[h].s);
+          const hv = all2[h];
+          headParts.push(hv.s);
           h = h + 1;
         };
         let out1 = [];
@@ -9640,7 +9651,8 @@ class PyModules  {
       if ( __len == 0 ) {
         this.ip.raise("IndexError", "Cannot choose from an empty sequence");
       }
-      return this.ip.getItem(seq, this.ip.mkInt(this.randbelow(__len)));
+      const pick = this.randbelow(__len);
+      return this.ip.getItem(seq, this.ip.mkInt(pick));
     }
     if ( f == "shuffle" ) {
       const x = args[0];
@@ -12058,12 +12070,22 @@ class PyInterp  {
     this.NOTIMPL.s = "NotImplemented";
     this.retVal = this.NONE;
     this.globals = new PyScope();
-    this.bi = new PyBuiltins(this);
-    this.meth = new PyMethods(this);
-    this.mods = new PyModules(this);
-    this.bi.install();
-    this.resetGlobals();
   }
+  makeModule (name) {
+    const mdl = this.mods;
+    return mdl.make(name);
+  };
+  setup () {
+    const b = new PyBuiltins(this);
+    this.bi = b;
+    const m = new PyMethods(this);
+    this.meth = m;
+    const md = new PyModules(this);
+    this.mods = md;
+    m.init();
+    b.install();
+    this.resetGlobals();
+  };
   resetGlobals () {
     this.globals = new PyScope();
     this.globals.vars["__name__"] = this.mkStr("__main__");
@@ -18649,7 +18671,7 @@ class PyInterp  {
         return again;
       }
     }
-    let made = this.mods.make(name);
+    let made = this.makeModule(name);
     if ( typeof(made) === "undefined" ) {
       made = this.importFromFiles(name);
     }
@@ -18765,6 +18787,7 @@ class PyInterp  {
       caught = this.takeException(( e.toString()));
       failed = true;
     }
+    mod.attrs = msc.vars;
     if ( failed ) {
       delete this.modules[name];
       this.reraise(caught);
@@ -18820,7 +18843,7 @@ class PyInterp  {
         if ( typeof(v) === "undefined" ) {
           let sub = ( Object.prototype.hasOwnProperty.call(this.modules, (n.s + ".") + name) ? this.modules[((n.s + ".") + name)] : undefined );
           if ( typeof(sub) === "undefined" ) {
-            sub = this.mods.make(((n.s + ".") + name));
+            sub = this.makeModule(((n.s + ".") + name));
           }
           if ( typeof(sub) === "undefined" ) {
             sub = this.importFromFiles(((n.s + ".") + name));
@@ -19039,6 +19062,7 @@ class PyRuntime  {
       return false;
     }
     const ip = new PyInterp(this.fs);
+    ip.setup();
     ip.maxSteps = this.maxSteps;
     ip.echo = this.echo;
     ip.argv = this.argv;

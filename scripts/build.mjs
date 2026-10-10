@@ -51,6 +51,25 @@ if (args.has("--python")) {
   console.log("built build/python/pyrun.py");
 }
 
+if (args.has("--rust")) {
+  // Rust has no exceptions; a copy of src/ with each try/catch rewritten
+  // (rustTry) compiles to one file that rustc builds without Cargo
+  const src = path.join(REPO, "build/rust/src");
+  fs.mkdirSync(src, { recursive: true });
+  for (const f of fs.readdirSync(path.join(REPO, "src"))) {
+    if (!f.endsWith(".rgr")) continue;
+    let text = fs.readFileSync(path.join(REPO, "src", f), "utf8");
+    if (f !== "PyStdlib.rgr" && f !== "PyUnicodeNames.rgr") text = rustTry(text);
+    fs.writeFileSync(path.join(src, f), text);
+  }
+  compile(["-l=rust", "build/rust/src/PyMain.rgr", "-d=build/rust", "-o=pyrun.rs"]);
+  const file = path.join(REPO, "build/rust/pyrun.rs");
+  fs.writeFileSync(file, rustFixups(fs.readFileSync(file, "utf8")));
+  const r = spawnSync("rustc", ["--edition", "2021", "-O", "-C", "target-cpu=native", "pyrun.rs", "-o", "pyrun"], { cwd: path.dirname(file), stdio: "inherit" });
+  if (r.status !== 0) throw new Error("rustc failed");
+  console.log("built build/rust/pyrun");
+}
+
 if (args.has("--go")) {
   const dir = path.join(REPO, "build/go");
   compile(["-l=go", "src/PyMain.rgr", "-d=build/go", "-o=pyrun.go"]);
@@ -126,4 +145,169 @@ function goBuild(dir, file) {
     fs.writeFileSync(file, lines.join("\n"));
   }
   throw new Error("go build failed: too many rounds");
+}
+
+// `try { A } { B }` becomes
+//   def __tryN:boolean false
+//   py_rust_try __tryN { A }
+//   if __tryN { B }
+// with error_msg in B read from the caught panic. The fields TRUE and FALSE
+// are renamed, since the Rust writer lower-cases them into keywords.
+function rustTry(text) {
+  text = text.replace(/\bTRUE\b/g, "PY_TRUE").replace(/\bFALSE\b/g, "PY_FALSE");
+  text = oneElementLists(text);
+  let n = 0;
+  for (;;) {
+    const m = /^([ \t]*)try \{[ \t]*$/m.exec(text);
+    if (!m) return text;
+    const ind = m[1];
+    const bodyStart = m.index + m[0].length;
+    const bodyEnd = closeBrace(text, bodyStart);
+    const afterBody = text.slice(bodyEnd + 1);
+    const cm = /^[ \t]*\{/.exec(afterBody);
+    if (!cm) throw new Error("try without a catch block at " + text.slice(m.index, m.index + 80));
+    const catchStart = bodyEnd + 1 + cm[0].length;
+    const catchEnd = closeBrace(text, catchStart);
+    const body = text.slice(bodyStart, bodyEnd);
+    const handler = text.slice(catchStart, catchEnd).replace(/\(error_msg\)/g, "(py_rust_err)");
+    const v = "__try" + n++;
+    text = text.slice(0, m.index) +
+      `${ind}def ${v}:boolean false\n${ind}py_rust_try ${v} {${body}}\n${ind}if ${v} {${handler}}` +
+      text.slice(catchEnd + 1);
+  }
+}
+
+function closeBrace(text, i) {
+  let depth = 1;
+  for (; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+    } else if (c === ";") {
+      while (i < text.length && text[i] !== "\n") i++;
+    } else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  throw new Error("unbalanced braces");
+}
+
+// what the Rust writer leaves for rustc to refuse
+function rustFixups(src) {
+  // The runtime was written for shared, mutable objects (JavaScript, Go,
+  // Python): the interpreter re-enters its builtins and they re-enter it,
+  // and the Rust writer's RefCell turns each such overlap into a "already
+  // borrowed" panic. This build swaps in a cell without the run-time check,
+  // which gives the same aliasing the other targets have.
+  src = src.replace("use std::cell::RefCell;", `use std::cell::UnsafeCell;
+pub struct RefCell<T: ?Sized> { v: UnsafeCell<T> }
+impl<T> RefCell<T> {
+    #[inline(always)] pub fn new(v: T) -> RefCell<T> { RefCell { v: UnsafeCell::new(v) } }
+}
+impl<T: ?Sized> RefCell<T> {
+    #[inline(always)] pub fn borrow(&self) -> &T { unsafe { &*self.v.get() } }
+    #[inline(always)] #[allow(clippy::mut_from_ref)] pub fn borrow_mut(&self) -> &mut T { unsafe { &mut *self.v.get() } }
+}
+impl<T: Clone> Clone for RefCell<T> { fn clone(&self) -> Self { RefCell::new(self.borrow().clone()) } }
+impl<T: Default> Default for RefCell<T> { fn default() -> Self { RefCell::new(T::default()) } }`);
+  // Every Python value, scope and call frame is a small heap block, and the
+  // system malloc was close to half the run time. Blocks up to 512 bytes
+  // come from per-size free lists; nothing small goes back to the system.
+  src += `
+mod rg_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::UnsafeCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const STEP: usize = 16;
+    const CLASSES: usize = 32;
+    const CHUNK: usize = 1 << 20;
+    pub struct RgAlloc { lock: AtomicBool, free: UnsafeCell<[*mut u8; CLASSES]>, cur: UnsafeCell<(*mut u8, usize)> }
+    unsafe impl Sync for RgAlloc {}
+    impl RgAlloc {
+        pub const fn new() -> Self {
+            RgAlloc { lock: AtomicBool::new(false), free: UnsafeCell::new([std::ptr::null_mut(); CLASSES]), cur: UnsafeCell::new((std::ptr::null_mut(), 0)) }
+        }
+        #[inline(always)] fn lock(&self) { while self.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { std::hint::spin_loop(); } }
+        #[inline(always)] fn unlock(&self) { self.lock.store(false, Ordering::Release); }
+    }
+    unsafe impl GlobalAlloc for RgAlloc {
+        #[inline]
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            let sz = l.size();
+            if sz == 0 || sz > STEP * CLASSES || l.align() > STEP { return System.alloc(l); }
+            let c = (sz - 1) / STEP;
+            self.lock();
+            let fl = &mut (*self.free.get())[c];
+            if !fl.is_null() {
+                let p = *fl;
+                *fl = *(p as *mut *mut u8);
+                self.unlock();
+                return p;
+            }
+            let need = (c + 1) * STEP;
+            let cur = &mut *self.cur.get();
+            if cur.1 < need {
+                let chunk = System.alloc(Layout::from_size_align_unchecked(CHUNK, STEP));
+                if chunk.is_null() { self.unlock(); return chunk; }
+                *cur = (chunk, CHUNK);
+            }
+            let p = cur.0;
+            cur.0 = p.add(need);
+            cur.1 -= need;
+            self.unlock();
+            p
+        }
+        #[inline]
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            let sz = l.size();
+            if sz == 0 || sz > STEP * CLASSES || l.align() > STEP { return System.dealloc(p, l); }
+            let c = (sz - 1) / STEP;
+            self.lock();
+            let fl = &mut (*self.free.get())[c];
+            *(p as *mut *mut u8) = *fl;
+            *fl = p;
+            self.unlock();
+        }
+    }
+}
+#[global_allocator]
+static RG_GLOBAL: rg_alloc::RgAlloc = rg_alloc::RgAlloc::new();
+`;
+  return src
+    .replace(/\.borrow\(\)\.(\w+)\.rg_remove\(/g, ".borrow_mut().$1.rg_remove(")
+    // a non-optional class field read into a local stays an Option
+    .replace(/PyModules::make\(&mdl, /g, "PyModules::make(mdl.as_ref().unwrap(), ");
+}
+
+// ([] _:PyVal ((call))) comes out of the Rust writer as the bare element
+function oneElementLists(text) {
+  const head = "([] _:PyVal (";
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const at = text.indexOf(head, i);
+    if (at < 0) return out + text.slice(i);
+    const open = at + head.length - 1;
+    const close = closeParen(text, open + 1);
+    const inner = text.slice(open + 1, close);
+    const end = closeParen(text, at + 1);
+    if (inner.startsWith("(") && closeParen(inner, 1) === inner.length - 1 && text.slice(close + 1, end).trim() === "") {
+      out += text.slice(i, at) + "(PyVal.one(" + oneElementLists(inner) + "))";
+      i = end + 1;
+    } else {
+      out += text.slice(i, open + 1);
+      i = open + 1;
+    }
+  }
+}
+
+function closeParen(text, i) {
+  let depth = 1;
+  for (; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+    } else if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return i;
+  }
+  throw new Error("unbalanced parentheses");
 }

@@ -87,10 +87,24 @@ class PyInterp {
         NOTIMPL.s = "NotImplemented"
         retVal = NONE
         globals = (new PyScope)
-        bi = (new PyBuiltins(this))
-        meth = (new PyMethods(this))
-        mods = (new PyModules(this))
-        bi.install()
+    }
+
+    ; the builtins, methods and modules, made after the constructor (on Rust
+    ; `this` is not shareable inside it), each kept by reference
+    fn makeModule@(optional):PyVal (name:string) {
+        def mdl:PyModules mods
+        return (mdl.make(name))
+    }
+
+    fn setup:void () {
+        def b (new PyBuiltins(this))
+        bi = b
+        def m (new PyMethods(this))
+        meth = m
+        def md (new PyModules(this))
+        mods = md
+        m.init()
+        b.install()
         this.resetGlobals()
     }
 
@@ -2057,7 +2071,7 @@ class PyInterp {
                     ; object.__init__
                     def oi (new PyVal(PyT.Bound))
                     oi.self = self
-                    oi.cls = (get builtins "__object_init__")
+                    oi.cls = (unwrap (get builtins "__object_init__"))
                     oi.s = "__init__"
                     def optr1623@(optional):PyVal oi
                     return optr1623
@@ -7067,7 +7081,7 @@ class PyInterp {
                 return (unwrap again)
             }
         }
-        def made@(optional):PyVal (this.mods.make(name))
+        def made@(optional):PyVal (this.makeModule(name))
         if (null? made) {
             made = (this.importFromFiles(name))
         }
@@ -7187,6 +7201,9 @@ class PyInterp {
             caught = (this.takeException((error_msg)))
             failed = true
         }
+        ; the same map on JavaScript, Go and Python; the Rust build copies
+        ; maps on assignment, so the globals are written back here
+        mod.attrs = msc.vars
         if failed {
             py_map_del modules name
             this.reraise(caught)
@@ -7241,7 +7258,7 @@ class PyInterp {
                     ; a submodule: from os import path
                     def sub@(optional):PyVal (get modules (n.s + "." + name))
                     if (null? sub) {
-                        sub = (this.mods.make((n.s + "." + name)))
+                        sub = (this.makeModule((n.s + "." + name)))
                     }
                     if (null? sub) {
                         sub = (this.importFromFiles((n.s + "." + name)))

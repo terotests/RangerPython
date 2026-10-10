@@ -61,6 +61,14 @@ Enum PyT:int (
 )
 
 class PyVal {
+    ; a one-element list (the Rust build writes ([] _:PyVal ((call))) as
+    ; the bare element)
+    sfn one:[PyVal] (v:PyVal) {
+        def r:[PyVal]
+        push r v
+        return r
+    }
+
     def t:PyT PyT.None
     def i:int 0
     def i2:int 0

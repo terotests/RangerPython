@@ -905,9 +905,11 @@ class PyParser {
                 if (w == "nonlocal") {
                     g.kind = PyK.Nonlocal
                 }
-                push g.strs (this.mangle((this.expectName())))
+                def gn:string (this.expectName())
+                push g.strs (this.mangle(gn))
                 while (this.acceptOp(",")) {
-                    push g.strs (this.mangle((this.expectName())))
+                    def gn:string (this.expectName())
+                push g.strs (this.mangle(gn))
                 }
                 return g
             }

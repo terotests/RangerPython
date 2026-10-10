@@ -81,6 +81,7 @@ if (args.has("--record")) {
 const expected = JSON.parse(fs.readFileSync(expectedFile, "utf8"));
 const targets = [["JavaScript", runJs]];
 if (args.has("--go")) targets.push(["Go", (c) => runCli(path.join(REPO, "build/go/pyrun"), [], c)]);
+if (args.has("--rust")) targets.push(["Rust", (c) => runCli(path.join(REPO, "build/rust/pyrun"), [], c)]);
 if (args.has("--python")) targets.push(["Python", (c) => runCli("python3", [path.join(REPO, "build/python/pyrun.py")], c)]);
 
 const results = [];

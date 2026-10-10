@@ -1091,7 +1091,9 @@ class PyModules {
             if (len == 0) {
                 ip.raise("IndexError" "Cannot choose from an empty sequence")
             }
-            return (ip.getItem(seq (ip.mkInt((this.randbelow(len))))))
+            ; bound first: the Rust build evaluated the nested call twice
+            def pick:int (this.randbelow(len))
+            return (ip.getItem(seq (ip.mkInt(pick))))
         }
         if (f == "shuffle") {
             def x:PyVal (itemAt args 0)
