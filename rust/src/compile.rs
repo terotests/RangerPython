@@ -612,6 +612,10 @@ enum FBlock<'a> {
     TryExcept,
     TryFinally(&'a [Stmt]),
     Handler,
+    /// a finally body run for an exception, which sits on the stack
+    FinallyExc,
+    /// a finally body run on the way out of a return, whose value sits on the stack
+    PendingReturn,
     With,
 }
 
@@ -1137,7 +1141,7 @@ impl<'a> Compiler<'a> {
                     let end = self.emit(Op::Jump(0));
                     let h = self.here();
                     self.patch(setup, h);
-                    self.u().blocks.push(FBlock::Handler);
+                    self.u().blocks.push(FBlock::FinallyExc);
                     self.stmts(finally)?;
                     self.u().blocks.pop();
                     self.emit(Op::Reraise);
@@ -1251,6 +1255,13 @@ impl<'a> Compiler<'a> {
                 FBlock::Handler => {
                     self.emit(Op::PopExcept);
                 }
+                FBlock::FinallyExc => {
+                    self.emit(Op::PopExcept);
+                    self.emit(Op::Pop);
+                }
+                FBlock::PendingReturn => {
+                    self.emit(Op::Pop);
+                }
                 FBlock::With => {
                     self.emit(Op::PopBlock);
                     self.emit(Op::WithExit(0));
@@ -1274,12 +1285,15 @@ impl<'a> Compiler<'a> {
                 FBlock::TryFinally(body) => {
                     self.emit(Op::PopBlock);
                     let saved: Vec<FBlock> = self.u().blocks.drain(i..).collect();
+                    self.u().blocks.push(FBlock::PendingReturn);
                     self.stmts(body)?;
+                    self.u().blocks.pop();
                     self.u().blocks.extend(saved);
                 }
-                FBlock::Handler => {
+                FBlock::Handler | FBlock::FinallyExc => {
                     self.emit(Op::PopExcept);
                 }
+                FBlock::PendingReturn => {}
                 FBlock::With => {
                     self.emit(Op::PopBlock);
                     self.emit(Op::WithExit(1));
@@ -1616,7 +1630,7 @@ impl<'a> Compiler<'a> {
         if !anns.is_empty() || f.returns.is_some() {
             let n = anns.len() + f.returns.is_some() as usize;
             for (name, a) in anns {
-                let k = self.const_str(name);
+                let k = self.const_str(&mangle(&self.class_name(), name));
                 self.emit(Op::LoadConst(k));
                 self.annotation(a)?;
             }
@@ -2128,7 +2142,7 @@ impl<'a> Compiler<'a> {
                             return Err(self.err(&format!("keyword argument repeated: {}", n)));
                         }
                         self.expr(e)?;
-                        kwnames.push(Value::str(n));
+                        kwnames.push(Value::str(&mangle(&self.class_name(), n)));
                     }
                     _ => unreachable!(),
                 }
@@ -2170,7 +2184,7 @@ impl<'a> Compiler<'a> {
                         self.emit(Op::BuildMap(0));
                         have_kw = true;
                     }
-                    let k = self.const_str(n);
+                    let k = self.const_str(&mangle(&self.class_name(), n));
                     self.emit(Op::LoadConst(k));
                     self.expr(e)?;
                     self.emit(Op::MapAdd(1));

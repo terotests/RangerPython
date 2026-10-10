@@ -249,11 +249,13 @@ impl Parser {
                         return Ok(());
                     }
                     if self.eat_kw("for") {
-                        out.push(self.for_rest(line)?);
+                        let st = self.for_rest(line)?;
+                        out.push(self.async_for(st));
                         return Ok(());
                     }
                     if self.eat_kw("with") {
-                        out.push(self.with_rest(line)?);
+                        let st = self.with_rest(line)?;
+                        out.push(self.async_with(st));
                         return Ok(());
                     }
                     return Err(self.err("invalid syntax"));
@@ -347,6 +349,86 @@ impl Parser {
         let body = self.block()?;
         let orelse = if self.eat_kw("else") { self.block()? } else { vec![] };
         Ok(Stmt { line, kind: StmtKind::For(target, iter, body, orelse) })
+    }
+
+    /// `async for` as a loop over `await anext(it)`
+    fn async_for(&self, st: Stmt) -> Stmt {
+        let line = st.line;
+        let StmtKind::For(target, iter, body, orelse) = st.kind else { return st };
+        let it: Name = Rc::from(format!(".aiter{}", self.pos));
+        let name = |n: &str| Expr::Name(Rc::from(n));
+        let call = |f: &str, a: Expr| Expr::Call { func: Box::new(name(f)), args: vec![Arg::Pos(a)] };
+        let stmt = |kind| Stmt { line, kind };
+        let mut on_end = orelse;
+        on_end.push(stmt(StmtKind::Break));
+        let get = stmt(StmtKind::Try {
+            body: vec![stmt(StmtKind::Assign(vec![target], Expr::Await(Box::new(call("anext", Expr::Name(it.clone()))))))],
+            handlers: vec![Handler { typ: Some(name("StopAsyncIteration")), name: None, body: on_end, line }],
+            orelse: vec![],
+            finally: vec![],
+            star: false,
+        });
+        let mut loop_body = vec![get];
+        loop_body.extend(body);
+        stmt(StmtKind::If(
+            Expr::Const(Const::True),
+            vec![
+                stmt(StmtKind::Assign(vec![Expr::Name(it.clone())], call("aiter", iter))),
+                stmt(StmtKind::While(Expr::Const(Const::True), loop_body, vec![])),
+            ],
+            vec![],
+        ))
+    }
+
+    /// `async with` as awaited `__aenter__`/`__aexit__` calls around a try
+    fn async_with(&self, st: Stmt) -> Stmt {
+        let line = st.line;
+        let StmtKind::With(items, body) = st.kind else { return st };
+        let mut inner = body;
+        for (k, (mgr, target)) in items.into_iter().enumerate().rev() {
+            let tag = format!("{}_{}", self.pos, k);
+            let m: Name = Rc::from(format!(".amgr{}", tag));
+            let ex: Name = Rc::from(format!(".aexit{}", tag));
+            let ok: Name = Rc::from(format!(".aok{}", tag));
+            let e: Name = Rc::from(format!(".aexc{}", tag));
+            let n = |x: &Name| Expr::Name(x.clone());
+            let stmt = |kind| Stmt { line, kind };
+            let type_of = |x: Expr| Expr::Call { func: Box::new(Expr::Name(Rc::from("type"))), args: vec![Arg::Pos(x)] };
+            let call = |f: Expr, args: Vec<Expr>| Expr::Call { func: Box::new(f), args: args.into_iter().map(Arg::Pos).collect() };
+            let none = || Expr::Const(Const::None);
+            let mut s = vec![
+                stmt(StmtKind::Assign(vec![n(&m)], mgr)),
+                stmt(StmtKind::Assign(vec![n(&ex)], Expr::Attr(Box::new(type_of(n(&m))), Rc::from("__aexit__")))),
+            ];
+            let enter = Expr::Await(Box::new(call(Expr::Attr(Box::new(type_of(n(&m))), Rc::from("__aenter__")), vec![n(&m)])));
+            match target {
+                Some(t) => s.push(stmt(StmtKind::Assign(vec![t], enter))),
+                None => s.push(stmt(StmtKind::Expr(enter))),
+            }
+            s.push(stmt(StmtKind::Assign(vec![n(&ok)], Expr::Const(Const::True))));
+            let exit_exc = Expr::Await(Box::new(call(n(&ex), vec![n(&m), type_of(n(&e)), n(&e), Expr::Attr(Box::new(n(&e)), Rc::from("__traceback__"))])));
+            let handler = vec![
+                stmt(StmtKind::Assign(vec![n(&ok)], Expr::Const(Const::False))),
+                stmt(StmtKind::If(Expr::Unary(UnOp::Not, Box::new(exit_exc)), vec![stmt(StmtKind::Raise(None, None))], vec![])),
+            ];
+            let guarded = stmt(StmtKind::Try {
+                body: inner,
+                handlers: vec![Handler { typ: Some(Expr::Name(Rc::from("BaseException"))), name: Some(e.clone()), body: handler, line }],
+                orelse: vec![],
+                finally: vec![],
+                star: false,
+            });
+            let exit_ok = stmt(StmtKind::Expr(Expr::Await(Box::new(call(n(&ex), vec![n(&m), none(), none(), none()])))));
+            s.push(stmt(StmtKind::Try {
+                body: vec![guarded],
+                handlers: vec![],
+                orelse: vec![],
+                finally: vec![stmt(StmtKind::If(n(&ok), vec![exit_ok], vec![]))],
+                star: false,
+            }));
+            inner = s;
+        }
+        Stmt { line, kind: StmtKind::If(Expr::Const(Const::True), inner, vec![]) }
     }
 
     fn try_rest(&mut self, line: u32) -> PResult<Stmt> {
@@ -1315,12 +1397,24 @@ impl Parser {
             if self.eat_op("**") {
                 args.push(Arg::StarStar(self.expression()?));
             } else if self.eat_op("*") {
+                if args.iter().any(|a| matches!(a, Arg::StarStar(_))) {
+                    return Err(self.err("iterable argument unpacking follows keyword argument unpacking"));
+                }
                 args.push(Arg::Star(self.expression()?));
             } else if matches!(self.peek(), Tok::Name(_)) && is_op(self.peek_at(1), "=") {
                 let n = self.name()?;
+                if args.iter().any(|a| matches!(a, Arg::Kw(k, _) if *k == n)) {
+                    return Err(self.err(&format!("keyword argument repeated: {}", n)));
+                }
                 self.advance();
                 args.push(Arg::Kw(n, self.expression()?));
             } else {
+                if args.iter().any(|a| matches!(a, Arg::StarStar(_))) {
+                    return Err(self.err("positional argument follows keyword argument unpacking"));
+                }
+                if args.iter().any(|a| matches!(a, Arg::Kw(..))) {
+                    return Err(self.err("positional argument follows keyword argument"));
+                }
                 let e = self.named_expr()?;
                 if self.at_kw("for") || self.at_kw("async") {
                     let comps = self.comp_for()?;

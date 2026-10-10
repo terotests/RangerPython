@@ -1444,18 +1444,18 @@ impl Vm {
                 Op::SetupFinally(h) => f.blocks.push(Block { kind: BLOCK_FINALLY, handler: h, level: f.stack.len() as u32, line: 0 }),
                 Op::SetupWith(h) => {
                     let mgr = Self::pop(f);
-                    let exit = match self.lookup_special(&mgr, &self.n.exit.clone()) {
+                    let enter = match self.lookup_special(&mgr, &self.n.enter.clone()) {
                         Some(e) => e,
                         None => {
                             let tn = self.type_name(&mgr);
                             return Err(self.type_error(format!("'{}' object does not support the context manager protocol", tn)));
                         }
                     };
-                    let enter = match self.lookup_special(&mgr, &self.n.enter.clone()) {
+                    let exit = match self.lookup_special(&mgr, &self.n.exit.clone()) {
                         Some(e) => e,
                         None => {
                             let tn = self.type_name(&mgr);
-                            return Err(self.type_error(format!("'{}' object does not support the context manager protocol", tn)));
+                            return Err(self.type_error(format!("'{}' object does not support the context manager protocol (missed __exit__ method)", tn)));
                         }
                     };
                     f.stack.push(exit);
