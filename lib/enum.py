@@ -455,6 +455,8 @@ class ReprEnum(Enum):
 
 
 class IntEnum(int, ReprEnum):
+    __repr__ = Enum.__repr__
+
     def __str__(self):
         return int.__repr__(self._value_)
 
@@ -484,6 +486,8 @@ class IntEnum(int, ReprEnum):
 
 
 class StrEnum(str, ReprEnum):
+    __repr__ = Enum.__repr__
+
     def __new__(cls, *values):
         if len(values) > 3:
             raise TypeError("too many arguments for str(): %r" % (values,))
@@ -621,6 +625,8 @@ class Flag(Enum):
 
 
 class IntFlag(int, ReprEnum, Flag):
+    __repr__ = Flag.__repr__
+
     def __str__(self):
         return int.__repr__(self._value_)
 

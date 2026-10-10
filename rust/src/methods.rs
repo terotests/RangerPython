@@ -557,6 +557,7 @@ pub fn install_types(vm: &mut Vm) {
     def(&t.map.clone(), "map.__new__", map_new);
     def(&t.filter.clone(), "filter.__new__", filter_new);
     def(&t.reversed.clone(), "reversed.__new__", reversed_new);
+    def(&it, "iterator.__new__", iterator_new);
     def(&it, "iterator.__iter__", return_self);
     def(&it, "iterator.__next__", iter_next);
     def(&it, "iterator.__length_hint__", iter_length_hint);
@@ -2525,6 +2526,14 @@ fn slice_indices_m(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
         _ => Err(vm.type_error("descriptor 'indices' requires a 'slice' object")),
     }
+}
+
+fn iterator_new(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let tn = match a.first() {
+        Some(Value::Class(c)) => c.name().to_string(),
+        _ => "iterator".to_string(),
+    };
+    Err(vm.type_error(format!("cannot create '{}' instances", tn)))
 }
 
 fn none_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {

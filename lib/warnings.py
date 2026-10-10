@@ -72,3 +72,20 @@ class catch_warnings:
         _filters[:] = self._saved[0]
         _log = self._saved[1]
         return False
+
+
+_DEPRECATED_MSG = "{name!r} is deprecated and slated for removal in Python {remove}"
+
+
+def _deprecated(name, message=_DEPRECATED_MSG, *, remove, _version=None):
+    """Warn that *name* is deprecated or should be removed (CPython's helper)."""
+    import sys
+    if _version is None:
+        _version = sys.version_info
+    remove_formatted = f"{remove[0]}.{remove[1]}"
+    if (_version[:2] > remove) or (_version[:2] == remove and _version[3] != "alpha"):
+        msg = f"{name!r} was slated for removal after Python {remove_formatted} alpha"
+        raise RuntimeError(msg)
+    else:
+        msg = message.format(name=name, remove=remove_formatted)
+        warn(msg, DeprecationWarning, stacklevel=3)

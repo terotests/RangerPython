@@ -610,6 +610,9 @@ fn str_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     if a.len() + k.len() > 4 {
         return Err(vm.type_error(format!("str expected at most 3 arguments, got {}", a.len() + k.len() - 1)));
     }
+    if let Some((n, _)) = k.iter().find(|(n, _)| !matches!(&*n.s, "object" | "encoding" | "errors")) {
+        return Err(vm.type_error(format!("str() got an unexpected keyword argument '{}'", n.s)));
+    }
     let obj = arg_or_kw(a, 1, k, "object");
     let enc = arg_or_kw(a, 2, k, "encoding");
     let errors = arg_or_kw(a, 3, k, "errors");
@@ -626,7 +629,15 @@ fn str_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
                     Value::Str(_) => o.clone(),
                     _ => {
                         let exact = matches!(&a[0], Value::Class(c) if Rc::ptr_eq(c, &vm.t.str_));
-                        match crate::builtins::user_str_result(vm, &o, "__str__")? {
+                        let mut r = crate::builtins::user_str_result(vm, &o, "__str__")?;
+                        if r.is_none() && !matches!(vm.base_of(&o), Value::Str(_)) {
+                            // object.__str__ is repr(): keep a str subclass it returns
+                            let native_str = vm.lookup_special(&o, &ps("__str__")).is_none_or(|f| !matches!(&f, Value::Method(m) if matches!(m.1, Value::Func(_))));
+                            if native_str {
+                                r = crate::builtins::user_str_result(vm, &o, "__repr__")?;
+                            }
+                        }
+                        match r {
                             Some(r) if exact => return Ok(r),
                             Some(r) => vm.base_of(&r),
                             None => match vm.base_of(&o) {
@@ -965,6 +976,9 @@ fn str_join(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let sep = me(vm, a, "join")?;
     margs(vm, "str.join", a, 1, 1)?;
     let items = vm.to_vec(&a[1])?;
+    if let [x @ Value::Str(_)] = &items[..] {
+        return Ok(x.clone());
+    }
     let mut out = String::new();
     for (i, x) in items.iter().enumerate() {
         if i > 0 {
@@ -1652,7 +1666,8 @@ fn str_maketrans(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
                 let kk = match &key {
                     Value::Str(s) if s.char_len() == 1 => Value::Int(s.s.chars().next().unwrap() as i64),
                     Value::Int(_) => key.clone(),
-                    _ => return Err(vm.value_error("string keys in translate table must be of length 1")),
+                    Value::Str(_) => return Err(vm.value_error("string keys in translate table must be of length 1")),
+                    _ => return Err(vm.type_error("keys in translate table must be strings or integers")),
                 };
                 vm.dict_set(&d, kk, v)?;
             }

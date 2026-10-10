@@ -131,3 +131,14 @@ class methodcaller:
 
     def __call__(self, obj):
         return getattr(obj, self._name)(*self._args, **self._kwargs)
+
+
+# the dunder aliases CPython's operator module also exports
+for _name in ("abs", "add", "and_", "call", "concat", "contains", "delitem", "eq", "floordiv",
+              "ge", "getitem", "gt", "iadd", "iand", "iconcat", "ifloordiv", "ilshift",
+              "imatmul", "imod", "imul", "index", "inv", "invert", "ior", "ipow", "irshift",
+              "isub", "itruediv", "ixor", "le", "lshift", "lt", "matmul", "mod", "mul", "ne",
+              "neg", "not_", "or_", "pos", "pow", "rshift", "setitem", "sub", "truediv", "xor"):
+    if _name in globals():
+        globals()["__" + _name.rstrip("_") + "__"] = globals()[_name]
+del _name
