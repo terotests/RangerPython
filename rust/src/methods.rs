@@ -216,6 +216,14 @@ fn builtin_divmod(vm: &mut Vm, x: &Value, y: &Value) -> PyResult<Value> {
     Ok(Value::tuple(vec![q, r]))
 }
 /// seq.__mul__(n) and seq.__rmul__(n): n is anything with __index__
+/// __buffer__(flags): the buffer protocol hands out a memoryview
+fn bytes_buffer(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 2)?;
+    vm.to_index(&a[1])?;
+    let mv = vm.builtins.borrow().get_s("memoryview").unwrap();
+    vm.call_vec(&mv, vec![a[0].clone()], &[])
+}
+
 fn seq_mul(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     margs(vm, "__mul__", a, 1, 1)?;
     let x = vm.base_of(&a[0]);
@@ -351,6 +359,7 @@ pub fn install_types(vm: &mut Vm) {
     def(&int, "int.__getnewargs__", getnewargs);
     def(&int, "int.conjugate", int_int);
     def(&int, "int.bit_length", int_bit_length);
+    def(&int, "int.__sizeof__", int_sizeof);
     def(&int, "int.bit_count", int_bit_count);
     def(&int, "int.to_bytes", int_to_bytes);
     def_class(&int, "int.from_bytes", int_from_bytes);
@@ -420,6 +429,8 @@ pub fn install_types(vm: &mut Vm) {
     def(&t.bytes.clone(), "bytes.__rmul__", seq_mul);
     def(&t.bytearray.clone(), "bytearray.__mul__", seq_mul);
     def(&t.bytearray.clone(), "bytearray.__rmul__", seq_mul);
+    def(&t.bytes.clone(), "bytes.__buffer__", bytes_buffer);
+    def(&t.bytearray.clone(), "bytearray.__buffer__", bytes_buffer);
     def(&tu, "tuple.__getnewargs__", getnewargs);
     def(&tu, "tuple.index", seq_index);
     def(&tu, "tuple.count", seq_count);
@@ -1380,6 +1391,19 @@ fn int_bit_length(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(b.bit_length() as i64))
 }
 
+/// CPython's size: the type's basic size plus one 30-bit digit per
+/// started digit, and always at least one
+fn int_sizeof(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let cls = Value::Class(vm.class_of(&a[0]));
+    let basic = vm.getattr(&cls, &ps("__basicsize__"))?;
+    let basic = vm.to_index(&basic)?;
+    let x = this(vm, a);
+    let b = crate::ops::big_of(&x).unwrap_or_else(BigInt::zero);
+    let digits = b.bit_length().div_ceil(30).max(1) as i64;
+    Ok(Value::Int(basic + 4 * digits))
+}
+
 fn int_bit_count(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = this(vm, a);
     let b = crate::ops::big_of(&x).unwrap_or_else(BigInt::zero);
@@ -1428,8 +1452,19 @@ fn int_from_bytes(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         let tn = vm.type_name(&data);
         return Err(vm.type_error(format!("cannot convert '{}' object to bytes", tn)));
     }
+    let dunder = match &data {
+        Value::Instance(_) => vm.lookup_special(&data, &ps("__bytes__")),
+        _ => None,
+    };
     let mut bs = match &data {
         Value::Bytes(_) | Value::ByteArray(_) => bytes_of(vm, &data)?,
+        _ if dunder.is_some() => match vm.call_vec(&dunder.unwrap(), vec![], &[])? {
+            b @ Value::Bytes(_) => bytes_of(vm, &b)?,
+            r => {
+                let tn = vm.type_name(&r);
+                return Err(vm.type_error(format!("__bytes__ returned non-bytes (type {})", tn)));
+            }
+        },
         other => match bytes_of(vm, other) {
             Ok(b) if !matches!(other, Value::List(_) | Value::Tuple(_)) => b,
             _ => {
@@ -1464,14 +1499,11 @@ fn int_from_bytes(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         v = v.sub(&BigInt::from_i64(1).shl(bs.len() * 8));
     }
     let r = Value::from_big(v);
-    if let Value::Class(c) = &a[0] {
-        if c.builtin.get() == Builtin::Bool {
-            let b = vm.truthy(&r)?;
-            return Ok(Value::Bool(b));
-        }
+    // other classes get cls(value), as CPython does
+    match &a[0] {
+        Value::Class(c) if Rc::ptr_eq(c, &vm.t.int) => Ok(r),
+        cls => vm.call_vec(cls, vec![r], &[]),
     }
-    let t = vm.t.int.clone();
-    Ok(wrap_new(vm, &a[0], &t, r))
 }
 
 fn int_ratio(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -1857,31 +1889,40 @@ fn complex_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let re = arg_or_kw(a, 1, k, "real");
     let im = arg_or_kw(a, 2, k, "imag");
-    let parts = |vm: &mut Vm, v: &Value| -> PyResult<(f64, f64)> {
+    let parts = |vm: &mut Vm, v: &Value| -> PyResult<(f64, f64, bool)> {
         match v {
-            Value::Complex(c) => Ok((c.0, c.1)),
-            Value::Str(s) => parse_complex(&s.s).ok_or_else(|| vm.value_error("complex() arg is a malformed string")),
+            Value::Complex(c) => Ok((c.0, c.1, true)),
+            Value::Str(s) => parse_complex(&s.s).map(|(r, i)| (r, i, true)).ok_or_else(|| vm.value_error("complex() arg is a malformed string")),
             Value::Instance(_) => {
                 if let Some(f) = vm.lookup_special(v, &ps("__complex__")) {
                     let r = vm.call_vec(&f, vec![], &[])?;
                     if let Value::Complex(c) = r {
-                        return Ok((c.0, c.1));
+                        return Ok((c.0, c.1, true));
                     }
                 }
-                Ok((vm.to_f64(v)?, 0.0))
+                Ok((vm.to_f64(v)?, 0.0, false))
             }
-            _ => Ok((vm.to_f64(v)?, 0.0)),
+            _ => Ok((vm.to_f64(v)?, 0.0, false)),
         }
     };
-    let (r1, i1) = match &re {
+    let (mut r1, i1, re_cx) = match &re {
         Some(v) => parts(vm, v)?,
-        None => (0.0, 0.0),
+        None => (0.0, 0.0, false),
     };
-    let (r2, i2) = match &im {
+    let (mut r2, i2, im_cx) = match &im {
         Some(v) => parts(vm, v)?,
-        None => (0.0, 0.0),
+        None => (0.0, 0.0, false),
     };
-    let v = Value::Complex(Rc::new((r1 - i2, i1 + r2)));
+    // only complex parts are combined, so a real -0.0 keeps its sign
+    if im_cx {
+        r1 -= i2;
+    }
+    if im.is_none() {
+        r2 = i1;
+    } else if re_cx {
+        r2 += i1;
+    }
+    let v = Value::Complex(Rc::new((r1, r2)));
     let t = vm.t.complex.clone();
     Ok(wrap_new(vm, &a[0], &t, v))
 }

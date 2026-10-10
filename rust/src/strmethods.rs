@@ -280,7 +280,7 @@ fn decode_bytes(vm: &mut Vm, b: &[u8], enc: &str, errors: &str) -> PyResult<Stri
             }
             Ok(out)
         }
-        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" | "l1" | "cp1252" | "8859" | "cp819" | "latin" => Ok(b.iter().map(|&c| c as char).collect()),
+        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" | "l1" | "8859" | "cp819" | "latin" => Ok(b.iter().map(|&c| c as char).collect()),
         "raw-unicode-escape" | "unicode-escape" => unescape_bytes(vm, b, enc == "raw-unicode-escape", errors),
         "utf-16" | "utf16" | "utf-16-le" | "utf-16le" | "utf-16-be" | "utf-16be" | "utf-32" | "utf32" | "utf-32-le" | "utf-32le" | "utf-32-be" | "utf-32be" => {
             let wide = enc.contains("32");
@@ -341,7 +341,11 @@ fn decode_bytes(vm: &mut Vm, b: &[u8], enc: &str, errors: &str) -> PyResult<Stri
             }
             Ok(out)
         }
-        _ => Err(vm.err("LookupError", format!("unknown encoding: {}", enc))),
+        "utf-7" | "utf7" | "u7" | "unicode-1-1-utf-7" => decode_utf7(vm, b, errors),
+        _ => match registry_codec(vm, &enc, Value::Bytes(Rc::new(b.to_vec())), errors, false)? {
+            Value::Str(r) => Ok(r.s.clone()),
+            _ => unreachable!(),
+        },
     }
 }
 
@@ -601,28 +605,249 @@ pub fn encode_str(vm: &mut Vm, st: &str, enc: &str, errors: &str) -> PyResult<Ve
             }
             Ok(out)
         }
-        _ => Err(vm.err("LookupError", format!("unknown encoding: {}", enc))),
+        "utf-7" | "utf7" | "u7" | "unicode-1-1-utf-7" => Ok(encode_utf7(st)),
+        _ => match registry_codec(vm, enc, Value::str(st), errors, true)? {
+            Value::Bytes(b) => Ok(b.to_vec()),
+            _ => unreachable!(),
+        },
     }
+}
+
+/// an encoding the native codecs do not know goes through the codecs
+/// registry, as str.encode/bytes.decode do in CPython; the result is a str
+/// for decoding and bytes for encoding
+fn registry_codec(vm: &mut Vm, enc: &str, input: Value, errors: &str, encode: bool) -> PyResult<Value> {
+    let g = vm.main_globals.clone();
+    let m = vm.import("codecs", &Value::None, 0, &g)?;
+    let lookup = vm.getattr(&m, &ps("lookup"))?;
+    let info = vm.call_vec(&lookup, vec![Value::str(enc)], &[])?;
+    // search functions may return plain 4-tuples: (encode, decode, reader, writer)
+    let f = match vm.base_of(&info) {
+        Value::Tuple(t) if t.len() >= 2 => t[if encode { 0 } else { 1 }].clone(),
+        _ => return Err(vm.type_error("codec search functions must return 4-tuples")),
+    };
+    let r = vm.call_vec(&f, vec![input, Value::str(errors)], &[])?;
+    let first = match vm.base_of(&r) {
+        Value::Tuple(t) if t.len() == 2 => t[0].clone(),
+        _ => {
+            let what = if encode { "encoder" } else { "decoder" };
+            return Err(vm.type_error(format!("{} must return a tuple (object, integer)", what)));
+        }
+    };
+    let (ok, what, want, verb) = if encode {
+        (matches!(first, Value::Bytes(_) | Value::ByteArray(_)), "encoder", "bytes", "encode")
+    } else {
+        (matches!(vm.base_of(&first), Value::Str(_)), "decoder", "str", "decode")
+    };
+    if !ok {
+        let tn = vm.type_name(&first);
+        return Err(vm.type_error(format!("'{}' {} returned '{}' instead of '{}'; use codecs.{}() to {} to arbitrary types", enc, what, tn, want, verb, verb)));
+    }
+    Ok(if encode { Value::Bytes(Rc::new(bytes_of(vm, &first)?)) } else { vm.base_of(&first) })
+}
+
+/// RFC 2152 character classes as CPython's utf7_category: 0 direct, 1
+/// optional direct, 2 whitespace, 3 special
+fn utf7_category(c: u32) -> u8 {
+    match c {
+        0x09 | 0x0a | 0x0d | 0x20 => 2,
+        0x27..=0x29 | 0x2c..=0x3a | 0x3f | 0x41..=0x5a | 0x61..=0x7a => 0,
+        0x21..=0x26 | 0x2a | 0x3b..=0x3e | 0x40 | 0x5b | 0x5d..=0x60 | 0x7b..=0x7d => 1,
+        _ => 3,
+    }
+}
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn from_b64(c: u8) -> Option<u32> {
+    B64.iter().position(|&x| x == c).map(|i| i as u32)
+}
+
+/// UTF-7 the way CPython writes it: only the special characters are encoded
+fn encode_utf7(st: &str) -> Vec<u8> {
+    let direct = |c: u32| c < 128 && c > 0 && utf7_category(c) != 3;
+    let mut out = vec![];
+    let (mut in_shift, mut bits, mut buf) = (false, 0u32, 0u64);
+    for ch in st.chars() {
+        let c = ch as u32;
+        if in_shift {
+            if direct(c) {
+                // shift out, flushing the partial sextet
+                if bits > 0 {
+                    out.push(B64[((buf << (6 - bits)) & 0x3f) as usize]);
+                    bits = 0;
+                    buf = 0;
+                }
+                in_shift = false;
+                if from_b64(c as u8).is_some() || c == u32::from(b'-') {
+                    out.push(b'-');
+                }
+                out.push(c as u8);
+                continue;
+            }
+        } else if ch == '+' {
+            out.extend_from_slice(b"+-");
+            continue;
+        } else if direct(c) {
+            out.push(c as u8);
+            continue;
+        } else {
+            out.push(b'+');
+            in_shift = true;
+        }
+        let mut buf16 = [0u16; 2];
+        for u in ch.encode_utf16(&mut buf16) {
+            bits += 16;
+            buf = (buf << 16) | u64::from(*u);
+            while bits >= 6 {
+                out.push(B64[((buf >> (bits - 6)) & 0x3f) as usize]);
+                bits -= 6;
+            }
+            buf &= (1 << bits) - 1;
+        }
+    }
+    if bits > 0 {
+        out.push(B64[((buf << (6 - bits)) & 0x3f) as usize]);
+    }
+    if in_shift {
+        out.push(b'-');
+    }
+    out
+}
+
+/// CPython's UTF-7 decoder; a lone surrogate cannot be a Rust char, so one
+/// decodes to U+FFFD
+fn decode_utf7(vm: &mut Vm, b: &[u8], errors: &str) -> PyResult<String> {
+    let mut out = String::new();
+    let (mut in_shift, mut bits, mut buf, mut surrogate) = (false, 0u32, 0u64, 0u32);
+    let mut shift_start = 0;
+    let mut i = 0;
+    let push = |out: &mut String, u: u32| out.push(char::from_u32(u).unwrap_or('\u{fffd}'));
+    while i < b.len() {
+        let ch = b[i];
+        let start = i;
+        let err: &str;
+        if in_shift {
+            if let Some(v) = from_b64(ch) {
+                buf = (buf << 6) | u64::from(v);
+                bits += 6;
+                i += 1;
+                if bits >= 16 {
+                    let u = ((buf >> (bits - 16)) & 0xffff) as u32;
+                    bits -= 16;
+                    buf &= (1 << bits) - 1;
+                    if surrogate != 0 {
+                        if (0xdc00..0xe000).contains(&u) {
+                            push(&mut out, 0x10000 + ((surrogate - 0xd800) << 10) + (u - 0xdc00));
+                            surrogate = 0;
+                            continue;
+                        }
+                        push(&mut out, surrogate);
+                        surrogate = 0;
+                    }
+                    if (0xd800..0xdc00).contains(&u) {
+                        surrogate = u;
+                    } else {
+                        push(&mut out, u);
+                    }
+                }
+                continue;
+            }
+            // leaving a base-64 section
+            in_shift = false;
+            if bits >= 6 {
+                i += 1;
+                err = "partial character in shift sequence";
+            } else if bits > 0 && buf != 0 {
+                i += 1;
+                err = "non-zero padding bits in shift sequence";
+            } else {
+                if surrogate != 0 && ch <= 127 && ch != b'+' {
+                    push(&mut out, surrogate);
+                }
+                surrogate = 0;
+                if ch == b'-' {
+                    i += 1;
+                }
+                continue;
+            }
+        } else if ch == b'+' {
+            i += 1;
+            if i < b.len() && b[i] == b'-' {
+                i += 1;
+                out.push('+');
+                continue;
+            }
+            if i < b.len() && from_b64(b[i]).is_none() {
+                i += 1;
+                err = "ill-formed sequence";
+            } else {
+                in_shift = true;
+                surrogate = 0;
+                shift_start = start;
+                bits = 0;
+                buf = 0;
+                continue;
+            }
+        } else if ch <= 127 {
+            i += 1;
+            out.push(ch as char);
+            continue;
+        } else {
+            i += 1;
+            err = "unexpected special character";
+        }
+        match errors {
+            "ignore" => {}
+            "replace" => out.push('\u{fffd}'),
+            _ => return Err(crate::builtins::decode_error(vm, "utf7", b, start, i, err)),
+        }
+    }
+    if in_shift && (surrogate != 0 || bits >= 6 || (bits > 0 && buf != 0)) {
+        match errors {
+            "ignore" => {}
+            "replace" => out.push('\u{fffd}'),
+            _ => return Err(crate::builtins::decode_error(vm, "utf7", b, shift_start, b.len(), "unterminated shift sequence")),
+        }
+    }
+    Ok(out)
 }
 
 fn str_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
-    if a.len() + k.len() > 4 {
-        return Err(vm.type_error(format!("str expected at most 3 arguments, got {}", a.len() + k.len() - 1)));
+    let npos = a.len() - 1;
+    if npos > 3 {
+        return Err(vm.type_error(format!("str expected at most 3 arguments, got {}", npos)));
+    }
+    if npos + k.len() > 3 {
+        return Err(vm.type_error(format!("str() takes at most 3 arguments ({} given)", npos + k.len())));
     }
     if let Some((n, _)) = k.iter().find(|(n, _)| !matches!(&*n.s, "object" | "encoding" | "errors")) {
         return Err(vm.type_error(format!("str() got an unexpected keyword argument '{}'", n.s)));
     }
+    for (pos, name) in [(1, "object"), (2, "encoding"), (3, "errors")] {
+        if npos >= pos && kwarg(k, name).is_some() {
+            return Err(vm.type_error(format!("argument for str() given by name ('{}') and position ({})", name, pos)));
+        }
+    }
     let obj = arg_or_kw(a, 1, k, "object");
     let enc = arg_or_kw(a, 2, k, "encoding");
     let errors = arg_or_kw(a, 3, k, "errors");
+    for (name, v) in [("encoding", &enc), ("errors", &errors)] {
+        if let Some(v) = v {
+            if !matches!(vm.base_of(v), Value::Str(_)) {
+                let tn = vm.type_name(v);
+                return Err(vm.type_error(format!("str() argument '{}' must be str, not {}", name, tn)));
+            }
+        }
+    }
     let v = match obj {
         None => Value::str(""),
         Some(o) => {
             if enc.is_some() || errors.is_some() {
                 let b = bytes_of(vm, &o)?;
-                let e = enc.as_ref().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or("utf-8".into());
-                let er = errors.as_ref().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or("strict".into());
+                let e = enc.as_ref().and_then(|v| vm.base_of(v).as_str().map(|s| s.to_string())).unwrap_or("utf-8".into());
+                let er = errors.as_ref().and_then(|v| vm.base_of(v).as_str().map(|s| s.to_string())).unwrap_or("strict".into());
                 Value::string(decode_bytes(vm, &b, &e, &er)?)
             } else {
                 match &o {

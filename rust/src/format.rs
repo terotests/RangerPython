@@ -644,6 +644,12 @@ pub fn parse_spec(s: &str) -> Option<Spec> {
     if i < c.len() && matches!(c[i], ',' | '_') {
         sp.grouping = Some(c[i]);
         i += 1;
+        if i < c.len() && matches!(c[i], ',' | '_') && Some(c[i]) != sp.grouping {
+            // both separators: the second stands in as the type, which
+            // format_spec reports whatever follows
+            sp.ty = Some(c[i]);
+            return Some(sp);
+        }
     }
     if i < c.len() && c[i] == '.' {
         i += 1;
@@ -868,6 +874,60 @@ fn format_float(vm: &mut Vm, x: f64, sp: &Spec) -> PyResult<String> {
     Ok(pad(sp, sign_str(sp, neg), &body, true, false))
 }
 
+/// format(complex, spec) as CPython's format_complex_internal: each part is
+/// formatted like a float and the imaginary part always carries a sign,
+/// unless the real part is left out
+fn format_complex(vm: &mut Vm, re: f64, im: f64, sp: &Spec) -> PyResult<String> {
+    let ty = sp.ty.unwrap_or('\0');
+    if !matches!(ty, 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'n' | '\0') {
+        return Err(vm.value_error(format!("Unknown format code '{}' for object of type 'complex'", ty)));
+    }
+    if sp.zero {
+        return Err(vm.value_error("Zero padding is not allowed in complex format specifier"));
+    }
+    if sp.align == Some('=') {
+        return Err(vm.value_error("'=' alignment flag is not allowed in complex format specifier"));
+    }
+    // no type is like str(): repr-style parts, the real part dropped when it is +0
+    let (mut t, mut skip_re, mut parens) = (ty, false, false);
+    if ty == '\0' {
+        t = if sp.prec.is_some() { 'g' } else { 'r' };
+        if re == 0.0 && !re.is_sign_negative() {
+            skip_re = true;
+        } else {
+            parens = true;
+        }
+    }
+    if t == 'n' {
+        t = 'g';
+    }
+    let part = |x: f64, always_sign: bool| -> String {
+        let mut body = if t == 'r' { complex_part(x.abs()) } else { fmt_float(x.abs(), t, sp.prec, sp.alt) };
+        let mut neg = x.is_sign_negative() && !x.is_nan();
+        if sp.z && neg && body.chars().all(|c| matches!(c, '0' | '.' | 'e' | 'E' | '+' | '-')) {
+            neg = false;
+        }
+        if let Some(g) = sp.grouping {
+            body = group(&body, g, 3);
+        }
+        let sign = if always_sign && !neg { "+" } else { sign_str(sp, neg) };
+        format!("{}{}", sign, body)
+    };
+    let mut out = String::new();
+    if parens {
+        out.push('(');
+    }
+    if !skip_re {
+        out.push_str(&part(re, false));
+    }
+    out.push_str(&part(im, !skip_re));
+    out.push('j');
+    if parens {
+        out.push(')');
+    }
+    Ok(pad(sp, "", &out, false, false))
+}
+
 pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
     let sp = match parse_spec(spec) {
         Some(s) => s,
@@ -909,6 +969,9 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
             if sp.sign.is_some() {
                 return Err(vm.value_error("Sign not allowed in string format specifier"));
             }
+            if sp.z {
+                return Err(vm.value_error("Negative zero coercion (z) not allowed in string format specifier"));
+            }
             if sp.alt {
                 return Err(vm.value_error("Alternate form (#) not allowed in string format specifier"));
             }
@@ -921,22 +984,7 @@ pub fn format_spec(vm: &mut Vm, v: &Value, spec: &str) -> PyResult<String> {
             };
             Ok(pad(&sp, "", &body, false, true))
         }
-        Value::Complex(c) => {
-            let (re, im) = (c.0, c.1);
-            let ty = sp.ty.unwrap_or('\0');
-            if !matches!(ty, 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'n' | '\0') {
-                return Err(vm.value_error(format!("Unknown format code '{}' for object of type 'complex'", ty)));
-            }
-            if ty == '\0' && sp.prec.is_none() {
-                let body = complex_repr(re, im);
-                return Ok(pad(&sp, "", &body, false, false));
-            }
-            let t = if ty == '\0' { 'g' } else { ty };
-            let r = fmt_float(re, t, sp.prec, sp.alt);
-            let i = fmt_float(im.abs(), t, sp.prec, sp.alt);
-            let body = format!("{}{}{}j", r, if im < 0.0 { '-' } else { '+' }, i);
-            Ok(pad(&sp, "", &body, false, false))
-        }
+        Value::Complex(c) => format_complex(vm, c.0, c.1, &sp),
         Value::None | Value::List(_) | Value::Tuple(_) | Value::Dict(_) => {
             let tn = vm.type_name(v);
             Err(vm.type_error(format!("unsupported format string passed to {}.__format__", tn)))

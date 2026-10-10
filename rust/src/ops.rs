@@ -1389,7 +1389,11 @@ impl Vm {
         let ca = self.class_of(a);
         let cb = self.class_of(b);
         // the right operand's reflected method first when it is a subclass
-        let b_first = b_inst && !Rc::ptr_eq(&ca, &cb) && cb.is_subclass(&ca) && cb.lookup(&rev).is_some();
+        // that overrides it
+        let b_first = b_inst && !Rc::ptr_eq(&ca, &cb) && cb.is_subclass(&ca) && match (cb.lookup(&rev), ca.lookup(&rev)) {
+            (Some(x), Some(y)) => !x.is(&y),
+            (x, _) => x.is_some(),
+        };
         if b_first {
             if let Some(r) = self.try_dunder(b, &rev, a)? {
                 return Ok(r);
@@ -1971,24 +1975,8 @@ impl Vm {
         Ok(match (a, b) {
             (Int(x), Int(y)) => Some(x.cmp(y)),
             (Float(x), Float(y)) => x.partial_cmp(y),
-            (Int(x), Float(y)) => {
-                if y.is_nan() {
-                    Option::None
-                } else if (*x as f64) == *y {
-                    // exact comparison for large values
-                    let yi = *y as i128;
-                    Some((*x as i128).cmp(&yi))
-                } else {
-                    (*x as f64).partial_cmp(y)
-                }
-            }
-            (Float(x), Int(y)) => {
-                if x.is_nan() {
-                    Option::None
-                } else {
-                    x.partial_cmp(&(*y as f64))
-                }
-            }
+            (Int(x), Float(y)) => crate::bigint::cmp_i64_f64(*x, *y),
+            (Float(x), Int(y)) => crate::bigint::cmp_i64_f64(*y, *x).map(Ordering::reverse),
             (Bool(_), _) | (_, Bool(_)) if matches!(a, Bool(_) | Int(_) | Float(_) | Big(_)) && matches!(b, Bool(_) | Int(_) | Float(_) | Big(_)) => {
                 let x = match a {
                     Bool(v) => Int(*v as i64),
@@ -2001,8 +1989,8 @@ impl Vm {
                 return self.order_builtin(&x, &y);
             }
             (Big(_), Int(_) | Big(_)) | (Int(_), Big(_)) => Some(big_of(a).unwrap().cmp(&big_of(b).unwrap())),
-            (Big(x), Float(y)) => x.to_f64().partial_cmp(y),
-            (Float(x), Big(y)) => x.partial_cmp(&y.to_f64()),
+            (Big(x), Float(y)) => x.cmp_f64(*y),
+            (Float(x), Big(y)) => y.cmp_f64(*x).map(Ordering::reverse),
             (Str(x), Str(y)) => Some(x.s.cmp(&y.s)),
             (Bytes(x), Bytes(y)) => Some(x.cmp(y)),
             (ByteArray(_), Bytes(_) | ByteArray(_)) | (Bytes(_), ByteArray(_)) => Some(bytes_vec(a).cmp(&bytes_vec(b))),

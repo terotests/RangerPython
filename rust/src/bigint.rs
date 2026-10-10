@@ -208,6 +208,15 @@ fn divmod_mag(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     (q, r)
 }
 
+/// exact comparison of an int with a float; None when f is a NaN
+pub fn cmp_i64_f64(x: i64, f: f64) -> Option<Ordering> {
+    if x.unsigned_abs() < 1 << 53 {
+        // exactly representable
+        return (x as f64).partial_cmp(&f);
+    }
+    BigInt::from_i64(x).cmp_f64(f)
+}
+
 impl BigInt {
     pub fn zero() -> BigInt {
         BigInt { neg: false, mag: vec![] }
@@ -301,6 +310,18 @@ impl BigInt {
         let mut r = if exp >= 0 { BigInt { neg: false, mag: shl_mag(&m.mag, exp as usize) } } else { BigInt { neg: false, mag: shr_mag(&m.mag, (-exp) as usize) } };
         r.neg = neg && !r.mag.is_empty();
         Some(r)
+    }
+    /// exact comparison with a float; None when f is a NaN
+    pub fn cmp_f64(&self, f: f64) -> Option<Ordering> {
+        if f.is_nan() {
+            return None;
+        }
+        if f.is_infinite() {
+            return Some(if f > 0.0 { Ordering::Less } else { Ordering::Greater });
+        }
+        // compare with the integer part, then let a fraction break a tie
+        let fl = f.floor();
+        Some(self.cmp(&BigInt::from_f64(fl)?).then(if f > fl { Ordering::Less } else { Ordering::Equal }))
     }
     pub fn from_radix(s: &str, radix: u32) -> Option<BigInt> {
         let s = s.trim();

@@ -35,6 +35,10 @@ class ABCMeta(type):
 
     def __new__(mcls, name, bases, namespace, /, **kwargs):
         cls = super().__new__(mcls, name, bases, namespace, **kwargs)
+        # as the C _abc_init: the pattern-matching flags exclude each other
+        flags = namespace.get("__abc_tpflags__")
+        if isinstance(flags, int) and flags & (1 << 5 | 1 << 6) == (1 << 5 | 1 << 6):
+            raise TypeError("__abc_tpflags__ cannot be both Py_TPFLAGS_SEQUENCE and Py_TPFLAGS_MAPPING")
         # Compute set of abstract method names
         abstracts = {name
                      for name, value in namespace.items()

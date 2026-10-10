@@ -27,7 +27,7 @@ class Template:
         if "pattern" in cls.__dict__ and not isinstance(cls.__dict__["pattern"], str):
             return cls.__dict__["pattern"]
         d = _re.escape(cls.delimiter)
-        ident = cls.idpattern.replace("(?a:", "(?:")
+        ident = cls.idpattern
         bid = cls.braceidpattern or ident
         src = cls.__dict__.get("pattern")
         if not isinstance(src, str):

@@ -867,10 +867,10 @@ pub fn fast_eq(a: &Value, b: &Value) -> Option<bool> {
         (Bool(x), Bool(y)) => x == y,
         (Bool(x), Int(y)) | (Int(y), Bool(x)) => (*x as i64) == *y,
         (Float(x), Float(y)) => x == y,
-        (Int(x), Float(y)) | (Float(y), Int(x)) => (*x as f64) == *y && (*y as i64) == *x,
+        (Int(x), Float(y)) | (Float(y), Int(x)) => crate::bigint::cmp_i64_f64(*x, *y) == Some(std::cmp::Ordering::Equal),
         (Bool(x), Float(y)) | (Float(y), Bool(x)) => (*x as i64 as f64) == *y,
         (Big(x), Big(y)) => x == y,
-        (Big(x), Float(y)) | (Float(y), Big(x)) => x.to_f64() == *y,
+        (Big(x), Float(y)) | (Float(y), Big(x)) => x.cmp_f64(*y) == Some(std::cmp::Ordering::Equal),
         (Big(_), Int(_)) | (Int(_), Big(_)) => false,
         (Tuple(x), Tuple(y)) => {
             if Rc::ptr_eq(x, y) {

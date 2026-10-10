@@ -202,6 +202,10 @@ class array:
     def __deepcopy__(self, memo):
         return array(self.typecode, self._a)
 
+    def __buffer__(self, flags, /):
+        # a snapshot: this array's items are not shared memory
+        return memoryview(self.tobytes())
+
     def tobytes(self):
         import struct
         if self.typecode in "uw":
@@ -230,3 +234,7 @@ class array:
 
 
 ArrayType = array
+
+import _collections_abc
+_collections_abc.MutableSequence.register(array)
+del _collections_abc

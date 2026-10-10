@@ -156,6 +156,10 @@ class memoryview:
     def release(self):
         self._released = True
 
+    def __buffer__(self, flags, /):
+        self._check()
+        return memoryview(self)
+
     def tobytes(self, order="C"):
         return self._bytes()
 

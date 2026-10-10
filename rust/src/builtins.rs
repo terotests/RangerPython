@@ -903,6 +903,12 @@ pub fn func_attr(vm: &mut Vm, f: &Rc<Function>, name: &str) -> Option<Value> {
             }
             Value::Dict(d.as_ref().unwrap().clone())
         }
+        // the builtins the function runs with, as a dict
+        "__builtins__" => match f.globals.borrow().get_s("__builtins__") {
+            Some(Value::Module(m)) => Value::Dict(m.dict.clone()),
+            Some(d @ Value::Dict(_)) => d,
+            _ => Value::Dict(vm.builtins.clone()),
+        },
         "__annotations__" => {
             let a = f.annotations.borrow().clone();
             if a.is_undef() {
@@ -1157,6 +1163,13 @@ fn type_flags(vm: &mut Vm, c: &Rc<Class>) -> PyResult<i64> {
         Builtin::Range => 1 << 5,
         _ => 0,
     };
+    // the sequence/mapping flags an ABC declares, inherited down the MRO
+    for k in c.mro.borrow().iter() {
+        if let Some(Value::Int(v)) = k.dict.borrow().get_s("__abc_tpflags__") {
+            f |= v & ((1 << 5) | (1 << 6));
+            break;
+        }
+    }
     let am = c.dict.borrow().get_s("__abstractmethods__");
     if let Some(am) = am {
         if vm.truthy(&am)? {
@@ -3038,7 +3051,10 @@ fn bi_pow(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn mod_inverse(a: &BigInt, m: &BigInt) -> Option<BigInt> {
-    let (mut old_r, mut r) = (a.clone(), m.clone());
+    // work modulo |m| so the remainders stay non-negative, then take the
+    // result's sign from m
+    let am = m.abs();
+    let (mut old_r, mut r) = (a.divmod(&am).unwrap().1, am);
     let (mut old_s, mut s) = (BigInt::from_i64(1), BigInt::zero());
     while !r.is_zero() {
         let (q, rem) = old_r.divmod(&r).unwrap();

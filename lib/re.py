@@ -797,15 +797,17 @@ def _in_set(ch, items, icase, asc):
         if k == "ch":
             if ch == it[1]:
                 return True
-            if icase and (ch.lower() == it[1].lower() or ch.upper() == it[1].upper()):
+            if icase and (not asc or ch < "\x80") and (ch.lower() == it[1].lower() or ch.upper() == it[1].upper()):
                 return True
         elif k == "range":
             if it[1] <= ch <= it[2]:
                 return True
-            if icase:
-                lo = ch.lower()
+            if icase and (not asc or ch < "\x80"):
+                # sre folds with the simple (one-character) case mappings;
+                # U+0130 is the only character whose full lowercase is longer
+                lo = ch.lower()[0]
                 up = ch.upper()
-                if it[1] <= lo <= it[2] or it[1] <= up <= it[2]:
+                if it[1] <= lo <= it[2] or (len(up) == 1 and it[1] <= up <= it[2]):
                     return True
         elif _in_cls(ch, it[1], asc):
             return True
