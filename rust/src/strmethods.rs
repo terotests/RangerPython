@@ -195,11 +195,13 @@ pub fn install(vm: &mut Vm) {
             ("isupper", b_isupper),
             ("istitle", b_istitle),
             ("isspace", b_isspace),
+            ("translate", b_translate),
         ];
         for (n, f) in fs {
             def(&cls, leak!(tname, n), *f);
         }
         def_class(&cls, leak!(tname, "fromhex"), b_fromhex);
+        def_static(&cls, leak!(tname, "maketrans"), b_maketrans);
     }
     def(&vm.t.bytes.clone(), "bytes.__new__", bytes_new);
     let ba = vm.t.bytearray.clone();
@@ -960,7 +962,7 @@ fn str_ge(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 fn str_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "__hash__")?;
-    Ok(Value::Int((x.hash() >> 1) as i64))
+    Ok(Value::Int(x.hash() as i64))
 }
 fn str_repr_m(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = me(vm, a, "__repr__")?;
@@ -2064,7 +2066,7 @@ fn b_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 fn b_hash(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = vm.base_of(&a[0]);
-    Ok(Value::Int((vm.hash(&x)? >> 1) as i64))
+    Ok(Value::Int(vm.hash(&x)? as i64))
 }
 fn b_decode(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let x = bme(vm, a)?;
@@ -2099,7 +2101,24 @@ fn b_fromhex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn b_join(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let sep = bme(vm, a)?;
-    let items = vm.to_vec(&a[1])?;
+    // bytearray.join holds an export of itself while it consumes the iterable
+    let held = match vm.base_of(&a[0]) {
+        Value::ByteArray(b) => Some(Rc::as_ptr(&b) as usize),
+        _ => None,
+    };
+    if let Some(p) = held {
+        BA_EXPORTS.with(|e| e.borrow_mut().push(p));
+    }
+    let items = vm.to_vec(&a[1]);
+    if let Some(p) = held {
+        BA_EXPORTS.with(|e| {
+            let mut e = e.borrow_mut();
+            if let Some(i) = e.iter().rposition(|x| *x == p) {
+                e.remove(i);
+            }
+        });
+    }
+    let items = items?;
     let mut out = vec![];
     for (i, x) in items.iter().enumerate() {
         if i > 0 {
@@ -2269,6 +2288,47 @@ fn b_lower(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = bme(vm, a)?;
     Ok(same_type(&vm.base_of(&a[0]), x.to_ascii_lowercase()))
 }
+/// bytes.translate(table, /, delete=b''): drop the bytes in `delete`, map the rest through `table`
+fn b_translate(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    let x = bme(vm, a)?;
+    if a.len() > 3 {
+        return Err(vm.type_error(format!("translate() takes at most 2 arguments ({} given)", a.len() - 1)));
+    }
+    let table = match a.get(1) {
+        Some(Value::None) => None,
+        Some(t) => {
+            let t = bytes_of(vm, t)?;
+            if t.len() != 256 {
+                return Err(vm.value_error("translation table must be 256 characters long"));
+            }
+            Some(t)
+        }
+        None => return Err(vm.type_error("translate() takes at least 1 argument (0 given)")),
+    };
+    let delete = match a.get(2).cloned().or_else(|| kwarg(k, "delete")) {
+        Some(d) => bytes_of(vm, &d)?,
+        None => vec![],
+    };
+    let out = x.iter().filter(|c| !delete.contains(c)).map(|&c| table.as_ref().map_or(c, |t| t[c as usize])).collect();
+    Ok(same_type(&vm.base_of(&a[0]), out))
+}
+
+/// bytes.maketrans(frm, to): a 256-byte table mapping each byte of `frm` to the one of `to`
+fn b_maketrans(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    if a.len() != 2 {
+        return Err(vm.type_error(format!("maketrans expected 2 arguments, got {}", a.len())));
+    }
+    let (frm, to) = (bytes_of(vm, &a[0])?, bytes_of(vm, &a[1])?);
+    if frm.len() != to.len() {
+        return Err(vm.value_error("maketrans arguments must have same length"));
+    }
+    let mut table: Vec<u8> = (0..=255).collect();
+    for (f, t) in frm.iter().zip(&to) {
+        table[*f as usize] = *t;
+    }
+    Ok(Value::Bytes(Rc::new(table)))
+}
+
 fn b_isdigit(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let x = bme(vm, a)?;
     Ok(Value::Bool(!x.is_empty() && x.iter().all(|c| c.is_ascii_digit())))
@@ -2288,6 +2348,20 @@ fn ba_of(vm: &mut Vm, a: &[Value]) -> PyResult<Rc<RefCell<Vec<u8>>>> {
         _ => Err(vm.type_error("descriptor requires a 'bytearray' object")),
     }
 }
+
+thread_local! {
+    /// bytearrays whose buffer is exported (held by a running join), by address
+    static BA_EXPORTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// the bytearray of `a[0]`, for an operation that changes its size
+fn ba_resizable(vm: &mut Vm, a: &[Value]) -> PyResult<Rc<RefCell<Vec<u8>>>> {
+    let b = ba_of(vm, a)?;
+    if BA_EXPORTS.with(|e| e.borrow().contains(&(Rc::as_ptr(&b) as usize))) {
+        return Err(vm.err("BufferError", "Existing exports of data: object cannot be re-sized"));
+    }
+    Ok(b)
+}
 fn ba_setitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 3)?;
     let x = vm.base_of(&a[0]);
@@ -2302,14 +2376,14 @@ fn ba_delitem(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 fn ba_iadd(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
-    let b = ba_of(vm, a)?;
+    let b = ba_resizable(vm, a)?;
     let y = bytes_of(vm, &a[1])?;
     b.borrow_mut().extend(y);
     Ok(a[0].clone())
 }
 fn ba_append(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
-    let b = ba_of(vm, a)?;
+    let b = ba_resizable(vm, a)?;
     let i = vm.to_index(&a[1])?;
     if !(0..256).contains(&i) {
         return Err(vm.value_error("byte must be in range(0, 256)"));
@@ -2319,13 +2393,13 @@ fn ba_append(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 fn ba_extend(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
-    let b = ba_of(vm, a)?;
+    let b = ba_resizable(vm, a)?;
     let y = bytes_from(vm, Some(&a[1]), None, None)?;
     b.borrow_mut().extend(y);
     Ok(Value::None)
 }
 fn ba_pop(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    let b = ba_of(vm, a)?;
+    let b = ba_resizable(vm, a)?;
     let n = b.borrow().len();
     if n == 0 {
         return Err(vm.index_error("pop from empty bytearray"));
@@ -2344,13 +2418,13 @@ fn ba_pop(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(v as i64))
 }
 fn ba_clear(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    let b = ba_of(vm, a)?;
+    let b = ba_resizable(vm, a)?;
     b.borrow_mut().clear();
     Ok(Value::None)
 }
 fn ba_insert(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 3)?;
-    let b = ba_of(vm, a)?;
+    let b = ba_resizable(vm, a)?;
     let n = b.borrow().len() as i64;
     let i = vm.to_index(&a[1])?;
     let i = if i < 0 { (i + n).max(0) } else { i.min(n) } as usize;

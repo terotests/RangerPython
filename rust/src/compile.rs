@@ -35,6 +35,11 @@ struct Scope {
     used: HashSet<Name>,
     is_gen: bool,
     is_comp: bool,
+    /// an `async def`
+    is_async: bool,
+    /// awaits (CPython's ste_coroutine): an async comprehension, or the
+    /// module under PyCF_ALLOW_TOP_LEVEL_AWAIT
+    coro: bool,
     // results
     cells: HashSet<Name>,
     frees: HashSet<Name>,
@@ -53,6 +58,8 @@ impl Scope {
             used: HashSet::new(),
             is_gen: false,
             is_comp: false,
+            is_async: false,
+            coro: false,
             cells: HashSet::new(),
             frees: HashSet::new(),
             order: vec![],
@@ -84,6 +91,10 @@ struct Collector<'a> {
     cur: usize,
     /// enclosing class names, for private name mangling
     cls: Vec<String>,
+    /// compile()'s PyCF_ALLOW_TOP_LEVEL_AWAIT
+    top_await: bool,
+    /// the line of the statement being visited, for errors
+    line: u32,
 }
 
 impl<'a> Collector<'a> {
@@ -160,6 +171,7 @@ impl<'a> Collector<'a> {
         let id = self.new_scope(ScopeKind::Function, Rc::as_ptr(f) as usize);
         let save = self.cur;
         self.cur = id;
+        self.sc().is_async = f.is_async;
         let p = &f.params;
         let mut names: Vec<Name> = p.args.iter().map(|a| self.mg(&a.name)).collect();
         if let Some(v) = &p.vararg {
@@ -176,6 +188,7 @@ impl<'a> Collector<'a> {
     }
 
     fn stmt(&mut self, s: &Stmt) -> CResult<()> {
+        self.line = s.line;
         match &s.kind {
             StmtKind::Expr(e) => self.expr(e)?,
             StmtKind::Assign(ts, v) => {
@@ -405,7 +418,7 @@ impl<'a> Collector<'a> {
         Ok(())
     }
 
-    fn comp(&mut self, node: usize, elts: &[&Expr], comps: &[Comp]) -> CResult<()> {
+    fn comp(&mut self, node: usize, elts: &[&Expr], comps: &[Comp], genexp: bool) -> CResult<()> {
         // the first iterable is evaluated in the enclosing scope
         self.expr(&comps[0].iter)?;
         let id = self.new_scope(ScopeKind::Function, node);
@@ -426,6 +439,19 @@ impl<'a> Collector<'a> {
             self.expr(e)?;
         }
         self.cur = save;
+        // an async comprehension is a coroutine the enclosing scope awaits;
+        // an async generator expression is fine anywhere
+        if comps.iter().any(|c| c.is_async) || self.st.scopes[id].coro {
+            self.st.scopes[id].coro = true;
+            if !genexp {
+                let outer = &self.st.scopes[save];
+                let ok = outer.is_async || outer.is_comp || (self.top_await && outer.kind == ScopeKind::Module);
+                if !ok {
+                    return Err(CompileError { msg: "asynchronous comprehension outside of an asynchronous function".into(), line: self.line });
+                }
+                self.st.scopes[save].coro = true;
+            }
+        }
         Ok(())
     }
 
@@ -454,7 +480,20 @@ impl<'a> Collector<'a> {
                 self.expr(a)?;
                 self.expr(b)?;
             }
-            Expr::Unary(_, a) | Expr::Starred(a) | Expr::Await(a) | Expr::Attr(a, _) => self.expr(a)?,
+            Expr::Await(a) => {
+                let sc = &self.st.scopes[self.cur];
+                if !(self.top_await && sc.kind == ScopeKind::Module) {
+                    if sc.kind != ScopeKind::Function {
+                        return Err(CompileError { msg: "'await' outside function".into(), line: self.line });
+                    }
+                    if !sc.is_async && !sc.is_comp {
+                        return Err(CompileError { msg: "'await' outside async function".into(), line: self.line });
+                    }
+                }
+                self.sc().coro = true;
+                self.expr(a)?;
+            }
+            Expr::Unary(_, a) | Expr::Starred(a) | Expr::Attr(a, _) => self.expr(a)?,
             Expr::Compare(a, rest) => {
                 self.expr(a)?;
                 for (_, b) in rest {
@@ -493,13 +532,13 @@ impl<'a> Collector<'a> {
                 }
             }
             Expr::Lambda(f) => self.func(f)?,
-            Expr::ListComp(elt, comps) | Expr::SetComp(elt, comps) => self.comp(key(e), &[elt], comps)?,
+            Expr::ListComp(elt, comps) | Expr::SetComp(elt, comps) => self.comp(key(e), &[elt], comps, false)?,
             Expr::GenExp(elt, comps) => {
-                self.comp(key(e), &[elt], comps)?;
+                self.comp(key(e), &[elt], comps, true)?;
                 let id = self.st.by_node[&key(e)];
                 self.st.scopes[id].is_gen = true;
             }
-            Expr::DictComp(k, v, comps) => self.comp(key(e), &[k, v], comps)?,
+            Expr::DictComp(k, v, comps) => self.comp(key(e), &[k, v], comps, false)?,
             Expr::NamedExpr(n, v) => {
                 self.expr(v)?;
                 // in a comprehension the name binds in the enclosing function
@@ -537,10 +576,10 @@ impl<'a> Collector<'a> {
 }
 
 impl SymTable {
-    fn build(body: &[Stmt]) -> CResult<SymTable> {
+    fn build(body: &[Stmt], top_await: bool) -> CResult<SymTable> {
         let mut st = SymTable { scopes: vec![Scope::new(ScopeKind::Module, None)], by_node: HashMap::new(), future_annotations: false };
         {
-            let mut c = Collector { st: &mut st, cur: 0, cls: vec![] };
+            let mut c = Collector { st: &mut st, cur: 0, cls: vec![], top_await, line: 1 };
             c.stmts(body)?;
         }
         st.resolve()?;
@@ -660,7 +699,13 @@ pub struct Compiler<'a> {
 }
 
 pub fn compile_module(body: &[Stmt], filename: &str) -> CResult<Rc<Code>> {
-    let st = SymTable::build(body)?;
+    compile_module_flags(body, filename, false)
+}
+
+/// compile_module with compile()'s PyCF_ALLOW_TOP_LEVEL_AWAIT: a module that
+/// awaits becomes a coroutine
+pub fn compile_module_flags(body: &[Stmt], filename: &str, top_await: bool) -> CResult<Rc<Code>> {
+    let st = SymTable::build(body, top_await)?;
     let mut c = Compiler { st, units: vec![], filename: Rc::from(filename) };
     c.push_unit(0, "<module>".into());
     let has_ann = has_annotations(body);
@@ -699,8 +744,12 @@ fn has_annotations(body: &[Stmt]) -> bool {
 
 /// compiles an expression for eval()
 pub fn compile_eval(e: &Expr, filename: &str) -> CResult<Rc<Code>> {
+    compile_eval_flags(e, filename, false)
+}
+
+pub fn compile_eval_flags(e: &Expr, filename: &str, top_await: bool) -> CResult<Rc<Code>> {
     let body = vec![Stmt { line: 1, kind: StmtKind::Return(Some(e.clone())) }];
-    let st = SymTable::build(&body)?;
+    let st = SymTable::build(&body, top_await)?;
     let mut c = Compiler { st, units: vec![], filename: Rc::from(filename) };
     c.push_unit(0, "<module>".into());
     // the symbol table is keyed by node address: compile the copy it saw
@@ -779,7 +828,9 @@ impl<'a> Compiler<'a> {
             varargs: false,
             varkw: false,
             generator: s.is_gen,
-            coroutine: false,
+            // a module awaiting at top level, or an async comprehension (with
+            // is_gen, an async generator expression)
+            coroutine: s.coro && (s.is_comp || s.kind == ScopeKind::Module),
             iterable_coroutine: false,
             is_class: u.kind == ScopeKind::Class,
             cell_from_arg: u.cellvars.iter().map(|c| u.var_map.get(c).copied()).collect(),
@@ -1745,7 +1796,11 @@ impl<'a> Compiler<'a> {
         };
         let qual = self.child_qualname(name);
         self.expr(&comps[0].iter)?;
-        self.emit(Op::GetIter);
+        if comps[0].is_async {
+            self.call_dunder("__aiter__");
+        } else {
+            self.emit(Op::GetIter);
+        }
         let line = self.u().line;
         self.push_unit(scope, qual);
         self.u().line = line;
@@ -1768,10 +1823,24 @@ impl<'a> Compiler<'a> {
         }
         self.emit(Op::Return);
         let code = self.pop_unit(name, line, None, Value::None);
+        let coro = code.coroutine && !code.generator;
         self.emit_closure_and_make(code, 0)?;
         self.emit(Op::Rot2);
         self.emit(Op::Call(1));
+        if coro {
+            self.emit(Op::GetAwaitable);
+            let k = self.const_val(Value::None);
+            self.emit(Op::LoadConst(k));
+            self.emit(Op::YieldFrom);
+        }
         Ok(())
+    }
+
+    /// [obj] -> [obj.<name>()]
+    fn call_dunder(&mut self, name: &str) {
+        let i = self.name_idx(&Rc::from(name));
+        self.emit(Op::LoadAttr(i));
+        self.emit(Op::Call(0));
     }
 
     fn comp_loop(&mut self, comps: &'a [Comp], i: usize, kind: u8, elt: &'a Expr, val: Option<&'a Expr>) -> CResult<()> {
@@ -1780,10 +1849,28 @@ impl<'a> Compiler<'a> {
             self.emit(Op::LoadFast(0));
         } else {
             self.expr(&c.iter)?;
-            self.emit(Op::GetIter);
+            if c.is_async {
+                self.call_dunder("__aiter__");
+            } else {
+                self.emit(Op::GetIter);
+            }
         }
         let start = self.here();
-        let fi = self.emit(Op::ForIter(0));
+        // `async for`: await __anext__() until StopAsyncIteration; the
+        // handler leaves [iterator, exception] on the stack
+        let (fi, setup) = if c.is_async {
+            let setup = self.emit(Op::SetupExcept(0));
+            self.emit(Op::Dup);
+            self.call_dunder("__anext__");
+            self.emit(Op::GetAwaitable);
+            let k = self.const_val(Value::None);
+            self.emit(Op::LoadConst(k));
+            self.emit(Op::YieldFrom);
+            self.emit(Op::PopBlock);
+            (None, Some(setup))
+        } else {
+            (Some(self.emit(Op::ForIter(0))), None)
+        };
         self.store(&c.target)?;
         let mut skips = vec![];
         for f in &c.ifs {
@@ -1821,7 +1908,26 @@ impl<'a> Compiler<'a> {
         }
         self.emit(Op::Jump(start as u32));
         let h = self.here();
-        self.patch(fi, h);
+        if let Some(fi) = fi {
+            self.patch(fi, h);
+        }
+        if let Some(setup) = setup {
+            self.patch(setup, h);
+            self.emit(Op::Dup);
+            let n = self.name_idx(&Rc::from("StopAsyncIteration"));
+            self.emit(Op::LoadGlobal(n));
+            self.emit(Op::ExcMatch);
+            let other = self.emit(Op::PopJumpIfFalse(0));
+            self.emit(Op::Pop);
+            self.emit(Op::PopExcept);
+            self.emit(Op::Pop);
+            let end = self.emit(Op::Jump(0));
+            let h = self.here();
+            self.patch(other, h);
+            self.emit(Op::Reraise);
+            let h = self.here();
+            self.patch(end, h);
+        }
         Ok(())
     }
 

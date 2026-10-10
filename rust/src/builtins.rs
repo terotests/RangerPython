@@ -799,7 +799,15 @@ fn code_attr(c: &Rc<crate::code::Code>, name: &str) -> Option<Value> {
         "co_freevars" => Value::tuple(c.freevars.iter().map(|n| Value::str(n)).collect()),
         "co_names" => Value::tuple(c.names.iter().map(|n| Value::Str(n.clone())).collect()),
         "co_consts" => Value::tuple(c.consts.iter().filter(|v| !matches!(v, Value::Obj(_))).cloned().collect()),
-        "co_flags" => Value::Int(((c.varargs as i64) << 2) | ((c.varkw as i64) << 3) | ((c.generator as i64) << 5) | ((c.coroutine as i64) << 7) | ((c.iterable_coroutine as i64) << 8)),
+        "co_flags" => {
+            // CO_GENERATOR, CO_COROUTINE, or both as CO_ASYNC_GENERATOR
+            let kind = match (c.generator, c.coroutine) {
+                (true, true) => 0x200,
+                (g, co) => ((g as i64) << 5) | ((co as i64) << 7),
+            };
+            Value::Int(((c.varargs as i64) << 2) | ((c.varkw as i64) << 3) | kind | ((c.iterable_coroutine as i64) << 8))
+        }
+        "co_linetable" => Value::Bytes(Rc::new(crate::code::encode_linetable(c))),
         _ => return None,
     })
 }
@@ -2159,12 +2167,40 @@ pub fn dir_of(vm: &mut Vm, v: &Value) -> PyResult<Vec<String>> {
                 add(&mut names, &k.dict.borrow());
             }
         }
-        Value::Instance(i) => {
-            add(&mut names, &i.dict.borrow());
-            let c = i.class.borrow().clone();
-            for k in c.mro.borrow().iter() {
-                add(&mut names, &k.dict.borrow());
+        // module.__dir__ for a module subclass: the keys of its __dict__ only
+        Value::Instance(i) if i.class.borrow().is_subclass(&vm.t.module) => match vm.getattr(v, &ps("__dict__"))? {
+            Value::Dict(d) => add(&mut names, &d.borrow()),
+            _ => {
+                let mn = match vm.getattr(v, &ps("__name__")) {
+                    Ok(n) => vm.str_of(&n)?,
+                    Err(_) => "?".into(),
+                };
+                return Err(vm.type_error(format!("{mn}.__dict__ is not a dictionary")));
             }
+        },
+        Value::Instance(_) => {
+            // object.__dir__: the instance's __dict__ and its __class__'s
+            // attributes, each skipped when the lookup fails
+            match vm.getattr(v, &ps("__dict__")) {
+                Ok(Value::Dict(d)) => add(&mut names, &d.borrow()),
+                Ok(_) => {}
+                Err(e) if vm.exc_is(&e, "AttributeError") => {}
+                Err(e) => return Err(e),
+            }
+            match vm.getattr(v, &ps("__class__")) {
+                Ok(Value::Class(c)) => {
+                    for k in c.mro.borrow().iter() {
+                        add(&mut names, &k.dict.borrow());
+                    }
+                }
+                Ok(_) => {}
+                Err(e) if vm.exc_is(&e, "AttributeError") => {}
+                Err(e) => return Err(e),
+            }
+        }
+        // traceback.__dir__ lists only its four attributes
+        Value::Obj(o) if matches!(&*o.kind.borrow(), ObjKind::Traceback { .. }) => {
+            names.extend(["tb_frame", "tb_lasti", "tb_lineno", "tb_next"].map(String::from));
         }
         _ => {
             let c = vm.class_of(v);
@@ -2415,12 +2451,39 @@ fn bi_id(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(ptr_id(&a[0]) as i64 & 0x7fff_ffff_ffff))
 }
 
+/// input(): the prompt to sys.stdout, then a line from sys.stdin.readline()
 fn bi_input(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "input", a, 0, 1)?;
+    let sys = vm.modules.borrow().get_s("sys");
+    let stream = |name: &str| match &sys {
+        Some(Value::Module(m)) => m.dict.borrow().get_s(name).filter(|v| !v.is_none()),
+        _ => None,
+    };
+    let (fin, fout) = (stream("stdin"), stream("stdout"));
+    let Some(fin) = fin else {
+        return Err(vm.err("RuntimeError", "input(): lost sys.stdin"));
+    };
+    let Some(fout) = fout else {
+        return Err(vm.err("RuntimeError", "input(): lost sys.stdout"));
+    };
     if let Some(p) = a.first() {
         let s = vm.str_of(p)?;
         write_stdout(vm, &s)?;
     }
-    Err(vm.err("EOFError", "EOF when reading a line"))
+    // a failing flush is ignored, as CPython does
+    if let Ok(f) = vm.getattr(&fout, &ps("flush")) {
+        let _ = vm.call_vec(&f, vec![], &[]);
+    }
+    let rl = vm.getattr(&fin, &ps("readline"))?;
+    let line = vm.call_vec(&rl, vec![], &[])?;
+    let Value::Str(line) = line else {
+        return Err(vm.type_error("object.readline() returned non-string"));
+    };
+    match line.s.strip_suffix('\n') {
+        _ if line.s.is_empty() => Err(vm.err("EOFError", "EOF when reading a line")),
+        Some(l) => Ok(Value::str(l)),
+        None => Ok(Value::Str(line.clone())),
+    }
 }
 
 /// isinstance(v, spec) with tuples, unions and __instancecheck__
@@ -3217,7 +3280,19 @@ fn bi_eval(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 
 fn bi_exec(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     check_nargs(vm, "exec", a, 1, 3)?;
+    let closure = kwarg(k, "closure").filter(|v| !v.is_none());
+    let k: Vec<_> = k.iter().filter(|(n, _)| &*n.s != "closure").cloned().collect();
+    let k = &k[..];
     let (g, l, ext) = eval_scopes(vm, a, k, "exec")?;
+    if let Value::Code(c) = &a[0] {
+        if closure.is_some() || !c.freevars.is_empty() {
+            let cells = exec_closure(vm, c, closure)?;
+            vm.run_code_closure(c.clone(), g, l, ext, cells)?;
+            return Ok(Value::None);
+        }
+    } else if closure.is_some() {
+        return Err(vm.type_error("closure can only be used when source is a code object"));
+    }
     let code = match source_of(vm, &a[0], "exec")? {
         Some(src) => {
             vm.compile_source(&src, "<string>", false)?
@@ -3236,15 +3311,73 @@ fn bi_exec(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     Ok(Value::None)
 }
 
+/// checks exec()'s `closure=` against the free variables of `code`
+fn exec_closure(vm: &mut Vm, code: &crate::code::Code, closure: Option<Value>) -> PyResult<Vec<Cellv>> {
+    let n = code.freevars.len();
+    let Some(closure) = closure else {
+        return Err(vm.type_error(format!("code object requires a closure of exactly length {n}")));
+    };
+    if n == 0 {
+        return Err(vm.type_error("cannot use a closure with this code object"));
+    }
+    let Value::Tuple(items) = &closure else {
+        return Err(vm.type_error("closure must be a tuple of cells"));
+    };
+    if items.len() != n {
+        return Err(vm.type_error(format!("code object requires a closure of exactly length {n}")));
+    }
+    items
+        .iter()
+        .map(|c| match c {
+            Value::Cell(c) => Ok(c.clone()),
+            _ => Err(vm.type_error("closure can only contain cells")),
+        })
+        .collect()
+}
+
 fn bi_compile(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    const PARAMS: [&str; 7] = ["source", "filename", "mode", "flags", "dont_inherit", "optimize", "_feature_version"];
+    check_nargs(vm, "compile", a, 0, 6)?;
+    for (n, _) in k {
+        match PARAMS.iter().position(|p| *p == &*n.s) {
+            Some(i) if i < a.len() => {
+                return Err(vm.type_error(format!("argument for compile() given by name ('{}') and position ({})", n.s, i + 1)));
+            }
+            Some(_) => {}
+            None => return Err(vm.type_error(format!("compile() got an unexpected keyword argument '{}'", n.s))),
+        }
+    }
+    for (i, p) in PARAMS[..3].iter().enumerate() {
+        if arg_or_kw(a, i, k, p).is_none() {
+            return Err(vm.type_error(format!("compile() missing required argument '{}' (pos {})", p, i + 1)));
+        }
+    }
     let src = arg_or_kw(a, 0, k, "source").unwrap_or(Value::None);
     let file = arg_or_kw(a, 1, k, "filename").map(|v| v.as_str().unwrap_or("<string>").to_string()).unwrap_or("<string>".into());
     let mode = arg_or_kw(a, 2, k, "mode").map(|v| v.as_str().unwrap_or("exec").to_string()).unwrap_or("exec".into());
+    let flags = match arg_or_kw(a, 3, k, "flags") {
+        Some(v) => vm.to_index(&v)?,
+        None => 0,
+    };
+    // PyCF_MASK (the __future__ flags) and the PyCF_* compile() accepts
+    const ALLOWED: i64 = 0x1fe0000 | 0x100 | 0x200 | 0x400 | 0x1000 | 0x2000 | 0x4000 | 0x8000;
+    if flags & !ALLOWED != 0 {
+        return Err(vm.value_error("compile(): unrecognised flags"));
+    }
+    if let Some(o) = arg_or_kw(a, 5, k, "optimize") {
+        if !(-1..=2).contains(&vm.to_index(&o)?) {
+            return Err(vm.value_error("compile(): invalid optimize value"));
+        }
+    }
+    if !matches!(mode.as_str(), "exec" | "eval" | "single" | "func_type") {
+        return Err(vm.value_error("compile() mode must be 'exec', 'eval' or 'single'"));
+    }
+    let top_await = flags & 0x2000 != 0;
     let s = match source_of(vm, &src, "compile")? {
         Some(s) => s,
         None => return Ok(src),
     };
-    let code = if mode == "eval" { vm.compile_source(s.trim(), &file, true)? } else { vm.compile_source(&s, &file, false)? };
+    let code = if mode == "eval" { vm.compile_source_flags(s.trim(), &file, true, top_await)? } else { vm.compile_source_flags(&s, &file, false, top_await)? };
     Ok(Value::Code(code))
 }
 
@@ -3259,18 +3392,33 @@ fn bi_open(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
 }
 
 fn bi_import(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    const PARAMS: [&str; 5] = ["name", "globals", "locals", "fromlist", "level"];
+    check_nargs(vm, "__import__", a, 0, 5)?;
+    for (n, _) in k {
+        match PARAMS.iter().position(|p| *p == &*n.s) {
+            Some(i) if i < a.len() => {
+                return Err(vm.type_error(format!("argument for __import__() given by name ('{}') and position ({})", n.s, i + 1)));
+            }
+            Some(_) => {}
+            None => return Err(vm.type_error(format!("__import__() got an unexpected keyword argument '{}'", n.s))),
+        }
+    }
     let name = match arg_or_kw(a, 0, k, "name") {
         Some(Value::Str(s)) => s.s.clone(),
-        _ => return Err(vm.type_error("__import__() argument 1 must be str")),
+        Some(v) => return Err(vm.type_error(format!("module name must be str, not {}", vm.type_name(&v)))),
+        None => return Err(vm.type_error("__import__() missing required argument 'name' (pos 1)")),
     };
-    if name.is_empty() {
-        return Err(vm.value_error("Empty module name"));
-    }
     let fromlist = arg_or_kw(a, 3, k, "fromlist").unwrap_or(Value::None);
     let level = match arg_or_kw(a, 4, k, "level") {
-        Some(Value::Int(i)) => i,
-        _ => 0,
+        Some(v) => vm.to_index(&v)?,
+        None => 0,
     };
+    if level < 0 {
+        return Err(vm.value_error("level must be >= 0"));
+    }
+    if name.is_empty() && level == 0 {
+        return Err(vm.value_error("Empty module name"));
+    }
     let g = match arg_or_kw(a, 1, k, "globals") {
         Some(Value::Dict(d)) => d,
         _ => vm.main_globals.clone(),
@@ -3303,8 +3451,21 @@ fn bi_aiter(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 fn bi_anext(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "anext", a, 1, 2)?;
-    let f = vm.getattr(&a[0], &ps("__anext__"))?;
-    vm.call_vec(&f, vec![], &[])
+    let Some(f) = vm.lookup_special(&a[0], &ps("__anext__")) else {
+        let tn = vm.type_name(&a[0]);
+        return Err(vm.type_error(format!("'{tn}' object is not an async iterator")));
+    };
+    let r = vm.call_vec(&f, vec![], &[])?;
+    match a.get(1) {
+        // with a default: pylib/_asyncgen.py's wrapper of the awaitable
+        Some(d) => {
+            let g = vm.main_globals.clone();
+            let m = vm.import("_asyncgen", &Value::None, 0, &g)?;
+            let w = vm.getattr(&m, &ps("_ANextDefault"))?;
+            vm.call_vec(&w, vec![r, d.clone()], &[])
+        }
+        None => Ok(r),
+    }
 }
 
 /// the module a native function belongs to, from its dotted name

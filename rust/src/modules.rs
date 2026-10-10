@@ -238,7 +238,10 @@ fn install_file_class(vm: &mut Vm) {
 pub fn open_file(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     install_file_class(vm);
     let file = match arg_or_kw(a, 0, k, "file") {
+        Some(Value::Str(s)) if s.s.contains('\0') => return Err(vm.value_error("embedded null character")),
         Some(Value::Str(s)) => s.s.clone(),
+        Some(Value::Bytes(b)) if b.contains(&0) => return Err(vm.value_error("embedded null byte")),
+        Some(Value::Bytes(b)) => String::from_utf8_lossy(&b).into_owned(),
         Some(v) => {
             if let Some(f) = vm.getattr_opt(&v, &ps("__fspath__"))? {
                 let r = vm.call_vec(&f, vec![], &[])?;
@@ -698,6 +701,13 @@ fn sys_structseqs(vm: &mut Vm, d: &Rc<RefCell<Dict>>) {
             d.borrow_mut().set_s(name, v);
         }
     }
+    // sys.UnraisableHookArgs is the type, not an instance
+    let fields = ["exc_type", "exc_value", "exc_traceback", "err_msg", "object"];
+    let fl = Value::list(fields.iter().map(|x| Value::str(x)).collect());
+    let kw = vec![(ps("module"), Value::str("sys"))];
+    if let Ok(v) = vm.call_vec(&make, vec![Value::str("UnraisableHookArgs"), fl, Value::tuple(vec![Value::None; 5])], &kw) {
+        d.borrow_mut().set_s("UnraisableHookArgs", Value::Class(vm.class_of(&v)));
+    }
 }
 
 fn sys_module(vm: &mut Vm) -> Value {
@@ -717,8 +727,12 @@ fn sys_module(vm: &mut Vm) -> Value {
         b.set_s("byteorder", Value::str("little"));
         b.set_s("maxsize", Value::Int(i64::MAX));
         b.set_s("maxunicode", Value::Int(0x10ffff));
+        // repr(float) is the shortest string that round-trips
+        b.set_s("float_repr_style", Value::str("short"));
         b.set_s("executable", Value::str(""));
-        b.set_s("prefix", Value::str("/"));
+        for k in ["prefix", "base_prefix", "exec_prefix", "base_exec_prefix"] {
+            b.set_s(k, Value::str("/"));
+        }
         b.set_s("path", Value::list(vec![Value::str("/")]));
         b.set_s("modules", Value::Dict(vm.modules.clone()));
         b.set_s("stdout", stdout.clone());
@@ -766,6 +780,8 @@ fn sys_module(vm: &mut Vm) -> Value {
             ("sys.unraisablehook", sys_unraisablehook),
             ("sys.__unraisablehook__", sys_unraisablehook),
             ("sys.__excepthook__", sys_excepthook),
+            ("sys.unraisablehook", sys_unraisablehook),
+            ("sys.__unraisablehook__", sys_unraisablehook),
             ("sys.exception", sys_exception),
             ("sys.getsizeof", sys_getsizeof),
             ("sys.intern", sys_intern),
@@ -1251,7 +1267,12 @@ fn os_walk(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(mk_iter(Iter::Vec(out.into_iter())))
 }
 fn os_urandom(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    let n = vm.to_index(&a[0])?.max(0) as usize;
+    crate::builtins::need(vm, a, 1)?;
+    let n = vm.to_index(&a[0])?;
+    if n < 0 {
+        return Err(vm.value_error("negative argument not allowed"));
+    }
+    let n = n as usize;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push((vm.random.genrand() >> 24) as u8);
@@ -2228,7 +2249,9 @@ fn r_getstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn r_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 2)?;
     let o = rng_of(vm, &a[0])?;
-    let items = vm.to_vec(&a[1])?;
+    let Value::Tuple(items) = &a[1] else {
+        return Err(vm.type_error("state vector must be a tuple"));
+    };
     if items.len() != 625 {
         return Err(vm.value_error("state vector is the wrong size"));
     }
@@ -2236,7 +2259,11 @@ fn r_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     for x in &items[..624] {
         mt.push(vm.to_index(x)? as u32);
     }
-    let mti = vm.to_index(&items[624])? as usize;
+    let mti = vm.to_index(&items[624])?;
+    if !(0..=624).contains(&mti) {
+        return Err(vm.value_error("invalid state"));
+    }
+    let mti = mti as usize;
     if let ObjKind::Rng(r) = &mut *o.kind.borrow_mut() {
         r.mt = mt;
         r.mti = mti;

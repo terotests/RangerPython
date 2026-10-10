@@ -936,6 +936,9 @@ impl Vm {
                 if immutable_type(c) {
                     return Err(self.immutable_type_error(c, name));
                 }
+                if matches!(&*name.s, "__name__" | "__qualname__" | "__module__" | "__doc__" | "__bases__" | "__type_params__") {
+                    return Err(self.type_error(format!("cannot delete '{}' attribute of immutable type '{}'", name.s, c.name())));
+                }
                 if c.dict.borrow_mut().remove_str(name).is_none() {
                     return Err(self.no_attr(obj, name));
                 }
@@ -2135,6 +2138,10 @@ impl Vm {
                 }
                 true
             }
+            Value::NotImplemented => {
+                crate::tb::warn(self, "DeprecationWarning", "NotImplemented should not be used in a boolean context")?;
+                true
+            }
             _ => true,
         })
     }
@@ -2193,7 +2200,9 @@ impl Vm {
                     _ => {
                         // a class defining __eq__ without __hash__ is unhashable
                         let user_eq = cls.mro.borrow().iter().take_while(|c| c.builtin.get() == Builtin::User || !c.dict.borrow().is_empty()).any(|c| matches!(c.dict.borrow().get_str(&self.n.eq), Some(Value::Func(_))));
-                        let has_hash = cls.mro.borrow().iter().any(|c| matches!(c.dict.borrow().get_str(&self.n.hash), Some(Value::Func(_))));
+                        // `__hash__ = object.__hash__` beside __eq__ keeps the class hashable
+                        let own_hash = matches!(cls.dict.borrow().get_str(&self.n.hash), Some(h) if !h.is_none());
+                        let has_hash = own_hash || cls.mro.borrow().iter().any(|c| matches!(c.dict.borrow().get_str(&self.n.hash), Some(Value::Func(_))));
                         let eq_def = cls.dict.borrow().get_str(&self.n.eq).is_some();
                         if eq_def && !has_hash && user_eq {
                             let tn = cls.name();

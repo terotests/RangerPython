@@ -33,14 +33,18 @@ const TIMEOUT_MS = Number(process.env.CONFORMANCE_TIMEOUT_MS || 180000);
 
 const entries = fs.readFileSync(path.join(HERE, "files.txt"), "utf8").split("\n")
   .map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-const testFiles = entries.filter((e) => !e.startsWith("helper:")).filter((n) => only.length === 0 || only.includes(n));
+const isTest = (e) => !e.startsWith("helper:") && !e.startsWith("data:");
+const testFiles = entries.filter(isTest).filter((n) => only.length === 0 || only.includes(n));
 const helpers = entries.filter((e) => e.startsWith("helper:")).map((e) => e.slice(7));
+// data files the tests read (Lib/test/<path>, fetched as they are)
+const dataFiles = entries.filter((e) => e.startsWith("data:")).map((e) => e.slice(5));
 
 async function fetchAll() {
-  for (const rel of [...entries.filter((e) => !e.startsWith("helper:")), ...helpers]) {
-    const dest = path.join(CACHE, "test", rel + ".py");
+  const sources = [...entries.filter(isTest), ...helpers].map((rel) => rel + ".py");
+  for (const rel of [...sources, ...dataFiles]) {
+    const dest = path.join(CACHE, "test", rel);
     if (fs.existsSync(dest)) continue;
-    const url = `https://raw.githubusercontent.com/python/cpython/${TAG}/Lib/test/${rel}.py`;
+    const url = `https://raw.githubusercontent.com/python/cpython/${TAG}/Lib/test/${rel}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`fetch ${url}: HTTP ${res.status}`);
     fs.mkdirSync(path.dirname(dest), { recursive: true });

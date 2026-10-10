@@ -62,3 +62,9 @@ helper:typinganndata/__init__
 helper:typinganndata/ann_module
 helper:typinganndata/ann_module2
 helper:typinganndata/ann_module3
+# data files those tests read (fetched as they are)
+data:mathdata/cmath_testcases.txt
+data:mathdata/math_testcases.txt
+data:mathdata/formatfloat_testcases.txt
+data:mathdata/floating_points.txt
+data:mathdata/ieee754.txt

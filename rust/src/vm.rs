@@ -511,20 +511,32 @@ impl Vm {
     }
 
     pub fn run_code_ext(&mut self, code: Rc<Code>, globals: Rc<RefCell<Dict>>, ns: Rc<RefCell<Dict>>, ext: Option<Rc<FrameExt>>) -> PyResult<Value> {
+        self.run_code_closure(code, globals, ns, ext, vec![])
+    }
+
+    /// runs `code` with `closure` as the cells of its free variables (exec's `closure=`)
+    pub fn run_code_closure(&mut self, code: Rc<Code>, globals: Rc<RefCell<Dict>>, ns: Rc<RefCell<Dict>>, ext: Option<Rc<FrameExt>>, closure: Vec<Cellv>) -> PyResult<Value> {
         let n = code.varnames.len();
         let mut stack = Vec::with_capacity(16 + n);
         stack.resize(n, Value::Undef);
+        let mut cells: Vec<Cellv> = code.cellvars.iter().map(|_| Rc::new(RefCell::new(Value::Undef))).collect();
+        cells.extend(closure);
         let mut f = Frame {
             code: code.clone(),
             ip: 0,
             stack,
-            cells: code.cellvars.iter().map(|_| Rc::new(RefCell::new(Value::Undef))).collect(),
+            cells,
             blocks: vec![],
             globals,
             ns: Some(ns),
             reraise_line: None,
             ext,
         };
+        // code compiled with PyCF_ALLOW_TOP_LEVEL_AWAIT gives a coroutine to await
+        if code.coroutine && !code.generator {
+            let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: code.name.clone(), qualname: code.qualname.clone(), coroutine: true, handled: vec![], code: code.clone(), frame_obj: None };
+            return Ok(Value::Gen(Rc::new(RefCell::new(g))));
+        }
         match self.run_frame(&mut f)? {
             Exit::Return(v) | Exit::Yield(v) => Ok(v),
         }
@@ -648,6 +660,21 @@ impl Vm {
             None => self.builtins.borrow().get_str(name).cloned(),
         };
         v.ok_or_else(|| self.name_error(name))
+    }
+
+    /// a builtin as the running frame sees it (its `__builtins__` mapping);
+    /// AttributeError when missing, as CPython's _PyEval_GetBuiltin
+    pub fn frame_builtin(&mut self, name: &str) -> PyResult<Value> {
+        let key = crate::builtins::ps(name);
+        let v = match self.current_frame().and_then(|f| f.ext.as_ref()).and_then(|x| x.builtins.clone()) {
+            Some(b) => self.map_get(&b, &key)?,
+            // a full lookup: the key may be a str subclass or str-alike
+            None => {
+                let b = self.builtins.clone();
+                self.dict_get(&b, &Value::Str(key))?
+            }
+        };
+        v.ok_or_else(|| self.err("AttributeError", name))
     }
 
     pub fn current_frame(&self) -> Option<&Frame> {
@@ -2050,7 +2077,15 @@ impl Vm {
         let f = Frame { code: code.clone(), ip: 0, stack: locals, cells, blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         if code.generator || code.coroutine {
             let g = Generator { frame: Some(Box::new(f)), started: false, running: false, name: func.name.borrow().clone(), qualname: func.qualname.borrow().clone(), coroutine: code.coroutine && !code.generator, handled: vec![], code: code.clone(), frame_obj: None };
-            return Ok(Value::Gen(Rc::new(RefCell::new(g))));
+            let g = Value::Gen(Rc::new(RefCell::new(g)));
+            if code.coroutine && code.generator {
+                // an async generator: pylib/_asyncgen.py drives the generator
+                let g0 = self.main_globals.clone();
+                let m = self.import("_asyncgen", &Value::None, 0, &g0)?;
+                let cls = self.getattr(&m, &crate::builtins::ps("async_generator"))?;
+                return self.call_vec(&cls, vec![g], &[]);
+            }
+            return Ok(g);
         }
         let mut f = f;
         self.depth += 1;
@@ -2588,13 +2623,31 @@ impl Vm {
                 if !ident {
                     return Err(self.type_error("__slots__ must be identifiers"));
                 }
-                if names.iter().any(|x| **x == *n) && n != "__dict__" && n != "__weakref__" {
-                    return Err(self.type_error(format!("duplicate slot name '{}'", n)));
-                }
-                names.push(Rc::from(n.as_str()));
                 if n == "__dict__" || n == "__weakref__" {
+                    // one each, and none when a base already provides it
+                    let bases = cls.bases.borrow().clone();
+                    let inherited = bases.iter().any(|b| {
+                        b.mro.borrow().iter().any(|c| match &*c.slots.borrow() {
+                            Some(s) => s.iter().any(|x| **x == *n),
+                            None => matches!(c.dict.borrow().get_s("__module__"), Some(Value::Str(m)) if &*m.s != "builtins"),
+                        })
+                    });
+                    if inherited || names.iter().any(|x| **x == *n) {
+                        return Err(self.type_error(format!("{} slot disallowed: we already got one", n)));
+                    }
+                    names.push(Rc::from(n.as_str()));
                     continue;
                 }
+                if names.iter().any(|x| **x == *n) {
+                    return Err(self.type_error(format!("duplicate slot name '{}'", n)));
+                }
+                // variable-size instances have no room for slots (CPython also
+                // refuses tuple, but the struct sequences here are tuples with slots)
+                let varsize = cls.mro.borrow().iter().rev().find(|c| matches!(c.builtin.get(), Builtin::Int | Builtin::Bytes)).cloned();
+                if let Some(b) = varsize {
+                    return Err(self.type_error(format!("nonempty __slots__ not supported for subtype of '{}'", b.name())));
+                }
+                names.push(Rc::from(n.as_str()));
                 let m = crate::compile::mangle(name, &n);
                 let key = Rc::new(PyStr::new(m.clone()));
                 if cls.dict.borrow().get_str(&key).is_some() {
@@ -2829,22 +2882,44 @@ impl Vm {
 
     pub fn import(&mut self, name: &str, fromlist: &Value, level: i64, globals: &Rc<RefCell<Dict>>) -> PyResult<Value> {
         let full = if level > 0 {
-            let pkg = globals.borrow().get_s("__package__").and_then(|v| v.as_str().map(|s| s.to_string()));
-            let modname = globals.borrow().get_s("__name__").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+            let pkg = globals.borrow().get_s("__package__").filter(|v| !v.is_none());
             let mut base = match pkg {
-                Some(p) if !p.is_empty() => p,
-                _ => modname.clone(),
+                Some(p) => match p.as_str() {
+                    Some(p) => p.to_string(),
+                    None => return Err(self.type_error("package must be a string")),
+                },
+                None => {
+                    // importlib's _calc___package__ without a usable __spec__
+                    let spec = globals.borrow().get_s("__spec__").filter(|v| !v.is_none());
+                    let parent = match spec {
+                        Some(spec) => self.getattr(&spec, &crate::builtins::ps("parent")).ok().and_then(|v| v.as_str().map(|s| s.to_string())),
+                        None => None,
+                    };
+                    match parent {
+                        Some(p) => p,
+                        None => {
+                            crate::tb::warn(self, "ImportWarning", "can't resolve package from __spec__ or __package__, falling back on __name__ and __path__")?;
+                            let modname = globals.borrow().get_s("__name__").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                            if globals.borrow().get_s("__path__").is_some() {
+                                modname
+                            } else {
+                                modname.rsplit_once('.').map(|(p, _)| p.to_string()).unwrap_or_default()
+                            }
+                        }
+                    }
+                }
             };
+            if base.is_empty() {
+                return Err(self.err("ImportError", "attempted relative import with no known parent package"));
+            }
             for _ in 1..level {
                 base = match base.rfind('.') {
                     Some(i) => base[..i].to_string(),
-                    None => String::new(),
+                    None => return Err(self.err("ImportError", "attempted relative import beyond top-level package")),
                 };
             }
             if name.is_empty() {
                 base
-            } else if base.is_empty() {
-                name.to_string()
             } else {
                 format!("{}.{}", base, name)
             }
@@ -2964,11 +3039,16 @@ impl Vm {
     /// SyntaxWarnings found go through the warnings machinery first; one
     /// that a filter turns into an error is raised as a SyntaxError.
     pub fn compile_source(&mut self, src: &str, file: &str, eval: bool) -> PyResult<Rc<Code>> {
+        self.compile_source_flags(src, file, eval, false)
+    }
+
+    /// compile_source with compile()'s PyCF_ALLOW_TOP_LEVEL_AWAIT
+    pub fn compile_source_flags(&mut self, src: &str, file: &str, eval: bool, top_await: bool) -> PyResult<Rc<Code>> {
         crate::lexer::take_warnings();
         let code = if eval {
-            crate::parser::parse_expression(src).map(|e| crate::compile::compile_eval(&e, file))
+            crate::parser::parse_expression(src).map(|e| crate::compile::compile_eval_flags(&e, file, top_await))
         } else {
-            crate::parser::parse_module(src).map(|b| crate::compile::compile_module(&b, file))
+            crate::parser::parse_module(src).map(|b| crate::compile::compile_module_flags(&b, file, top_await))
         };
         for w in crate::lexer::take_warnings() {
             self.syntax_warning(&w, src, file)?;

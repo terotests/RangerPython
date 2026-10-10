@@ -2,7 +2,7 @@
 //! rpy [options] script.py [outdir]: runs a script and prints its output;
 //! the files it wrote are saved under outdir as a__b.txt for /a/b.txt.
 //!
-//!   --mount HOST=VFS   put HOST's .py files (recursively) at VFS
+//!   --mount HOST=VFS   put HOST's text files (recursively) at VFS
 //!   --path VFS         a folder imports look in after /
 //!   --arg X            append X to sys.argv
 //!   --echo             stream output as it is written
@@ -15,10 +15,9 @@ fn mount(rt: &mut rpy::Runtime, host: &std::path::Path, vfs: &str) {
         let target = format!("{}/{}", vfs.trim_end_matches('/'), name);
         if p.is_dir() {
             mount(rt, &p, &target);
-        } else if name.ends_with(".py") {
-            if let Ok(t) = std::fs::read_to_string(&p) {
-                rt.write_file(&target, &t);
-            }
+        } else if let Ok(t) = std::fs::read_to_string(&p) {
+            // modules and the data files tests read; the VFS holds text only
+            rt.write_file(&target, &t);
         }
     }
 }

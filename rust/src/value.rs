@@ -27,11 +27,7 @@ impl PyStr {
         if h != 0 {
             return h;
         }
-        let mut f = FxHasher::default();
-        f.write(self.s.as_bytes());
-        // already reduced as hash_int would, so an object whose __hash__
-        // returns hash(some_str) collides with that str
-        let h = (f.finish() % MODULUS).max(1);
+        let h = hash_bytes(self.s.as_bytes());
         self.hash.set(h);
         h
     }
@@ -42,6 +38,15 @@ impl PyStr {
             self.s.chars().count()
         }
     }
+}
+
+/// hash of bytes, and of an ASCII str with those bytes (hash('a') == hash(b'a'))
+pub fn hash_bytes(b: &[u8]) -> u64 {
+    let mut f = FxHasher::default();
+    f.write(b);
+    // already reduced as hash_int would, so an object whose __hash__
+    // returns hash(some_str) collides with that str
+    (f.finish() % MODULUS).max(1)
 }
 
 #[derive(Default, Clone, Copy)]
@@ -786,11 +791,7 @@ pub fn fast_hash(v: &Value) -> Option<u64> {
         Value::Big(b) => hash_big(b),
         Value::Float(f) => hash_float(*f),
         Value::Str(s) => s.hash(),
-        Value::Bytes(b) => {
-            let mut h = FxHasher::default();
-            h.write(b);
-            h.finish() >> 1
-        }
+        Value::Bytes(b) => hash_bytes(b),
         Value::Tuple(items) => {
             // xxHash-style combination as CPython does
             let mut acc: u64 = 0x27D4EB2F165667C5;

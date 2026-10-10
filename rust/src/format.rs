@@ -160,7 +160,13 @@ pub fn fmt_float(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
             } else {
                 exp_fix(e)
             };
-            let s = if alt { s } else { strip_zeros(&s) };
+            let s = match s.find('e') {
+                _ if !alt => strip_zeros(&s),
+                // '#' always keeps the decimal point
+                _ if s.contains('.') => s,
+                Some(i) => format!("{}.{}", &s[..i], &s[i..]),
+                None => format!("{s}."),
+            };
             if ty == 'G' {
                 s.to_uppercase()
             } else {
@@ -435,8 +441,11 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
         Value::Instance(inst) => return instance_repr(vm, v, inst),
         Value::Module(m) => {
             let file = m.dict.borrow().get_s("__file__");
+            // ModuleType(name) has neither a spec nor a loader to name
+            let bare = m.dict.borrow().get_s("__loader__").is_some_and(|l| l.is_none()) && m.dict.borrow().get_s("__spec__").is_some_and(|s| s.is_none());
             match file {
                 Some(Value::Str(f)) => format!("<module '{}' from '{}'>", m.name.s, f.s),
+                _ if bare => format!("<module '{}'>", m.name.s),
                 _ => format!("<module '{}' (built-in)>", m.name.s),
             }
         }

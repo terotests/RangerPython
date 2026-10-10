@@ -8,7 +8,8 @@
 import sys
 import unittest
 
-verbose = 0
+# CPython leaves it 1 unless regrtest lowers it
+verbose = 1
 is_jython = False
 is_android = False
 is_emscripten = False
@@ -96,7 +97,8 @@ refcount_test = unittest.skip("reference counts")
 bigaddrspacetest = unittest.skip("big address space")
 requires_subprocess = _skipper("no subprocesses")
 requires_fork = _skipper("no fork")
-requires_mac_ver = _skipper("not macOS")
+# as CPython's on any platform but macOS (sys.platform is "linux" here)
+requires_mac_ver = lambda *version: (lambda f: f)
 requires_resource = _skipper("resource not enabled")
 requires_docstrings = unittest.skip("no docstrings")
 no_tracing = lambda f: f

@@ -148,3 +148,92 @@ impl Code {
         self.cellvars.len() + self.freevars.len()
     }
 }
+
+// co_linetable in CPython's location table format, taking each op here as
+// one code unit; a line of 0 is "no location"
+
+/// entries of "line, no columns" (code 13) and "no location" (code 15)
+pub fn encode_linetable(c: &Code) -> Vec<u8> {
+    let mut out = vec![];
+    let mut prev = c.firstline as i64;
+    let mut i = 0;
+    while i < c.lines.len() {
+        let line = c.lines[i];
+        let mut n = 1;
+        while n < 8 && i + n < c.lines.len() && c.lines[i + n] == line {
+            n += 1;
+        }
+        if line == 0 {
+            out.push(0x80 | (15 << 3) | (n as u8 - 1));
+        } else {
+            out.push(0x80 | (13 << 3) | (n as u8 - 1));
+            let d = line as i64 - prev;
+            let mut v = if d < 0 { ((-d as u64) << 1) | 1 } else { (d as u64) << 1 };
+            while v >= 64 {
+                out.push(0x40 | (v & 63) as u8);
+                v >>= 6;
+            }
+            out.push(v as u8);
+            prev = line as i64;
+        }
+        i += n;
+    }
+    out
+}
+
+/// the line of each op from a location table; ops past its end have none
+pub fn decode_linetable(table: &[u8], firstline: u32, nops: usize) -> Vec<u32> {
+    let mut lines = Vec::with_capacity(nops);
+    let mut line = firstline as i64;
+    let mut i = 0;
+    let varint = |i: &mut usize| -> u64 {
+        let (mut v, mut shift) = (0u64, 0);
+        while *i < table.len() {
+            let b = table[*i];
+            *i += 1;
+            v |= ((b & 63) as u64) << shift;
+            shift += 6;
+            if b & 64 == 0 {
+                break;
+            }
+        }
+        v
+    };
+    let svarint = |i: &mut usize| -> i64 {
+        let v = varint(i);
+        if v & 1 != 0 { -((v >> 1) as i64) } else { (v >> 1) as i64 }
+    };
+    while i < table.len() {
+        let b = table[i];
+        i += 1;
+        let (code, len) = ((b >> 3) & 15, (b & 7) as usize + 1);
+        let here = match code {
+            15 => None,
+            13 => {
+                line += svarint(&mut i);
+                Some(line)
+            }
+            14 => {
+                line += svarint(&mut i);
+                for _ in 0..3 {
+                    varint(&mut i);
+                }
+                Some(line)
+            }
+            10..=12 => {
+                line += (code - 10) as i64;
+                i += 2;
+                Some(line)
+            }
+            _ => {
+                i += 1;
+                Some(line)
+            }
+        };
+        for _ in 0..len {
+            lines.push(here.map_or(0, |l| l.max(0) as u32));
+        }
+    }
+    lines.resize(nops, 0);
+    lines
+}

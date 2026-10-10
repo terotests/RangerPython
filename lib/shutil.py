@@ -57,7 +57,18 @@ def which(cmd, mode=None, path=None):
 
 
 def get_terminal_size(fallback=(80, 24)):
-    return os.terminal_size(fallback) if hasattr(os, "terminal_size") else fallback
+    # No terminal to ask: $COLUMNS and $LINES, else the fallback, as CPython
+    size = []
+    for name, default in zip(("COLUMNS", "LINES"), fallback):
+        try:
+            value = int(os.environ[name])
+        except (KeyError, ValueError):
+            value = 0
+        size.append(value if value > 0 else default)
+    if hasattr(os, "terminal_size"):
+        return os.terminal_size(size)
+    import _structseq
+    return _structseq.make("terminal_size", ("columns", "lines"), tuple(size), module="os")
 
 
 def disk_usage(path):

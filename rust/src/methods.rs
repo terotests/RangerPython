@@ -386,6 +386,7 @@ pub fn install_types(vm: &mut Vm) {
     def(&fl, "float.conjugate", float_float);
     def(&fl, "float.hex", float_hex);
     def_class(&fl, "float.fromhex", float_fromhex);
+    def_class(&fl, "float.__getformat__", float_getformat);
     let cx = t.complex.clone();
     def(&cx, "complex.__new__", complex_new);
     def_arith(&cx, "complex");
@@ -572,6 +573,7 @@ pub fn install_types(vm: &mut Vm) {
     def(&t.ellipsis, "ellipsis.__new__", ellipsis_new);
     let f = t.function.clone();
     def_static(&f, "function.__new__", function_new);
+    def_static(&t.cell.clone(), "cell.__new__", cell_new);
     def(&f, "function.__get__", function_get);
     def(&f, "function.__repr__", d_repr);
     def(&f, "function.__call__", function_call);
@@ -734,7 +736,6 @@ fn object_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     Ok(Value::None)
 }
 
-/// types.FunctionType(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None)
 /// types.MethodType(function, instance)
 fn method_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     if !k.is_empty() {
@@ -752,6 +753,18 @@ fn method_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     Ok(Value::Method(Rc::new((a[2].clone(), a[1].clone()))))
 }
 
+/// types.CellType([contents]): an empty cell, or one holding `contents`
+fn cell_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    if !k.is_empty() {
+        return Err(vm.type_error("cell() takes no keyword arguments"));
+    }
+    if a.len() > 2 {
+        return Err(vm.type_error(format!("cell expected at most 1 argument, got {}", a.len() - 1)));
+    }
+    Ok(Value::Cell(Rc::new(RefCell::new(a.get(1).cloned().unwrap_or(Value::Undef)))))
+}
+
+/// types.FunctionType(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None)
 fn function_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let arg = |i: usize, n: &str| arg_or_kw(a, i, k, n).unwrap_or(Value::None);
     let code = match arg(1, "code") {
@@ -974,8 +987,9 @@ fn code_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             "co_firstlineno" => c.firstline = int(vm)?,
             "co_flags" => {
                 let f = int(vm)?;
-                c.generator = f & 0x20 != 0;
-                c.coroutine = f & 0x80 != 0;
+                // CO_ASYNC_GENERATOR is both
+                c.generator = f & 0x220 != 0;
+                c.coroutine = f & 0x280 != 0;
                 c.iterable_coroutine = f & 0x100 != 0;
             }
             "co_consts" => {
@@ -989,7 +1003,12 @@ fn code_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
                     *slot = x;
                 }
             }
-            "co_names" | "co_varnames" | "co_freevars" | "co_cellvars" | "co_code" | "co_linetable" | "co_exceptiontable"
+            // CPython's location table, one op here taken as one code unit
+            "co_linetable" => {
+                let t = crate::builtins::bytes_of(vm, v)?;
+                c.lines = crate::code::decode_linetable(&t, c.firstline, c.ops.len());
+            }
+            "co_names" | "co_varnames" | "co_freevars" | "co_cellvars" | "co_code" | "co_exceptiontable"
             | "co_argcount" | "co_posonlyargcount" | "co_kwonlyargcount" | "co_nlocals" | "co_stacksize" => {
                 // the bytecode is this interpreter's own; only an unchanged value is accepted
                 let cur = crate::builtins::special_attr(vm, &a[0], &name.s)?;
@@ -1004,6 +1023,8 @@ fn code_replace(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             _ => return Err(vm.type_error(format!("replace() got an unexpected keyword argument '{}'", name.s))),
         }
     }
+    // the fast call path would skip making the generator
+    c.simple = c.simple && !c.generator && !c.coroutine;
     Ok(Value::Code(Rc::new(c)))
 }
 
@@ -1817,6 +1838,18 @@ fn float_ratio(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let (n, d) = float_ratio_parts(vm, f)?;
     Ok(Value::tuple(vec![Value::from_big(n), Value::from_big(d)]))
 }
+/// float.__getformat__(typestr): how C doubles and floats are stored
+fn float_getformat(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    if a.len() != 2 {
+        return Err(vm.type_error(format!("float.__getformat__() takes exactly one argument ({} given)", a.len().saturating_sub(1))));
+    }
+    match &a[1] {
+        Value::Str(t) if matches!(&*t.s, "double" | "float") => Ok(Value::str("IEEE, little-endian")),
+        Value::Str(_) => Err(vm.value_error("__getformat__() argument 1 must be 'double' or 'float'")),
+        v => Err(vm.type_error(format!("__getformat__() argument must be str, not {}", vm.type_name(v)))),
+    }
+}
+
 fn float_hex(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let f = fself(vm, a)?;
     if f.is_nan() {
@@ -2947,13 +2980,26 @@ fn module_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         Some(Value::Str(s)) => s,
         _ => return Err(vm.type_error("module.__new__() missing required argument 'name'")),
     };
-    let d = new_dict();
+    // an instance of a subclass shares its __dict__ with the module it wraps
+    let module_cls = vm.t.module.clone();
+    let inst = wrap_new(vm, &a[0], &module_cls, Value::None);
+    let d = match &inst {
+        Value::Instance(i) => i.dict.clone(),
+        _ => new_dict(),
+    };
     d.borrow_mut().set_s("__name__", Value::Str(name.clone()));
     d.borrow_mut().set_s("__doc__", arg_or_kw(a, 2, k, "doc").unwrap_or(Value::None));
     d.borrow_mut().set_s("__package__", Value::None);
     d.borrow_mut().set_s("__spec__", Value::None);
     d.borrow_mut().set_s("__loader__", Value::None);
-    Ok(Value::Module(Rc::new(Module { name, dict: d })))
+    let m = Value::Module(Rc::new(Module { name, dict: d }));
+    match &inst {
+        Value::Instance(i) => {
+            *i.base.borrow_mut() = m;
+            Ok(inst)
+        }
+        _ => Ok(m),
+    }
 }
 
 fn iter_next(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -3388,17 +3434,11 @@ fn iter_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Value::Iter(it) => it.clone(),
         _ => return object_reduce(vm, a, &[]),
     };
-    let bd = vm.builtins.clone();
-    let iter_fn = match vm.dict_get(&bd, &Value::str("iter"))? {
-        Some(f) => f,
-        None => return Err(vm.err("RuntimeError", "lost builtins.iter")),
-    };
+    let iter_fn = vm.frame_builtin("iter")?;
     let own = Value::Class(vm.class_of(&a[0]));
     let mut rev = Value::Class(vm.t.reversed.clone());
     if matches!(&*it.borrow(), Iter::ListRev(..)) {
-        if let Some(f) = vm.dict_get(&bd, &Value::str("reversed"))? {
-            rev = f;
-        }
+        rev = vm.frame_builtin("reversed")?;
     }
     let tn = vm.type_name(&a[0]);
     let t3 = |f: Value, args: Vec<Value>, state: Option<Value>| match state {

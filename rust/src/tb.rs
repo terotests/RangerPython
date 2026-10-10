@@ -163,14 +163,15 @@ pub fn obj_attr(vm: &mut Vm, o: &NativeObj, name: &str) -> PyResult<Option<Value
     Ok(match &*o.kind.borrow() {
         ObjKind::Traceback { frame, line, next, lasti } => match name {
             "tb_frame" => Some(frame.clone()),
-            "tb_lineno" => Some(Value::Int(*line as i64)),
+            // 0: an op without a location (co_linetable says so)
+            "tb_lineno" => Some(if *line == 0 { Value::None } else { Value::Int(*line as i64) }),
             "tb_next" => Some(next.clone()),
             "tb_lasti" => Some(Value::Int(*lasti)),
             _ => None,
         },
         ObjKind::Frame { code, line, globals, locals, back } => match name {
             "f_code" => Some(Value::Code(code.clone())),
-            "f_lineno" => Some(Value::Int(*line as i64)),
+            "f_lineno" => Some(if *line == 0 { Value::None } else { Value::Int(*line as i64) }),
             "f_globals" => Some(Value::Dict(globals.clone())),
             "f_locals" => Some(match locals {
                 Value::None => Value::dict(Dict::new()),
