@@ -98,6 +98,7 @@ impl Drop for Generator {
 }
 
 /// interned names the VM looks up often
+#[derive(Clone)]
 pub struct Names {
     pub init: Rc<PyStr>,
     pub new: Rc<PyStr>,
@@ -246,6 +247,7 @@ impl Names {
     }
 }
 
+#[derive(Clone)]
 pub struct Types {
     pub object: Rc<Class>,
     pub type_: Rc<Class>,
@@ -295,7 +297,7 @@ pub struct Types {
     pub base_exception: Rc<Class>,
 }
 
-thread_local! {
+crate::gil_static! {
     static OBJ_CLASS: RefCell<Option<Rc<Class>>> = const { RefCell::new(None) };
 }
 
@@ -353,6 +355,9 @@ pub struct Vm {
     pub classes: NameMap<Rc<Class>>,
     /// how the interpreter was started (sys.executable, sys.flags)
     pub host: crate::process::Host,
+    /// one of the interpreter's threads, switching the GIL (a
+    /// sub-interpreter's Vm runs inside its creator's turn)
+    pub in_gil: bool,
 }
 
 impl Vm {
@@ -386,6 +391,7 @@ impl Vm {
             echo: false,
             search_path: vec![],
             host: Default::default(),
+            in_gil: false,
         };
         crate::builtins::install(&mut vm);
         let fc = vm.t.function.clone();
@@ -567,6 +573,7 @@ impl Vm {
     }
 
     pub fn run_frame(&mut self, f: &mut Frame) -> PyResult<Exit> {
+        self.eval_breaker()?;
         if crate::value::HAS_PENDING_DEL.with(|h| h.get()) {
             self.run_finalizers();
         }
@@ -662,6 +669,15 @@ impl Vm {
 
     /// reports an exception nothing can catch through sys.unraisablehook
     pub fn unraisable(&mut self, e: Exc, obj: &Value) {
+        self.unraisable_with(e, obj, None)
+    }
+
+    /// unraisable() with the hook's err_msg, which says what was running
+    pub fn unraisable_msg(&mut self, e: Exc, obj: &Value, msg: &str) {
+        self.unraisable_with(e, obj, Some(msg))
+    }
+
+    fn unraisable_with(&mut self, e: Exc, obj: &Value, msg: Option<&str>) {
         let hook = match self.modules.borrow().get_s("sys") {
             Some(Value::Module(m)) => m.dict.borrow().get_s("unraisablehook"),
             _ => None,
@@ -671,7 +687,7 @@ impl Vm {
         d.set_s("exc_type", Value::Class(self.class_of(&e.value)));
         d.set_s("exc_value", e.value.clone());
         d.set_s("exc_traceback", tb);
-        d.set_s("err_msg", Value::None);
+        d.set_s("err_msg", msg.map_or(Value::None, Value::str));
         d.set_s("object", obj.clone());
         let ns = self.namespace_class();
         let args = Rc::new(Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(d)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()), gc: Default::default() });
@@ -1225,7 +1241,13 @@ impl Vm {
                     let n = f.stack.len();
                     f.stack.insert(n - 3, v);
                 }
-                Op::Jump(t) => f.ip = t as usize,
+                Op::Jump(t) => {
+                    // a loop's way back: where other threads get their turn
+                    if (t as usize) < f.ip {
+                        self.eval_breaker()?;
+                    }
+                    f.ip = t as usize
+                }
                 Op::PopJumpIfFalse(t) => {
                     let v = Self::pop(f);
                     let b = match v {

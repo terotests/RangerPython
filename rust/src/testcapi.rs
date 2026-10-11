@@ -11,7 +11,7 @@ use crate::vm::Vm;
 use std::cell::Cell;
 use std::rc::Rc;
 
-thread_local! {
+crate::gil_static! {
     /// set_nomemory's fault injection: (allocations counted, start, stop)
     static NOMEM: Cell<Option<(i64, i64, i64)>> = const { Cell::new(None) };
 }

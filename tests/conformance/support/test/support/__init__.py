@@ -182,7 +182,44 @@ Py_C_RECURSION_LIMIT = 150
 
 
 def setswitchinterval(interval):
-    pass
+    import sys
+    return sys.setswitchinterval(interval)
+
+
+def busy_retry(timeout, err_msg=None, /, *, error=True):
+    import time
+    if timeout <= 0:
+        raise ValueError("timeout must be greater than zero")
+    start_time = time.monotonic()
+    deadline = start_time + timeout
+    while True:
+        yield
+        if time.monotonic() >= deadline:
+            break
+    if error:
+        dt = time.monotonic() - start_time
+        msg = f"timeout ({dt:.1f} seconds)"
+        if err_msg:
+            msg = f"{msg}: {err_msg}"
+        raise AssertionError(msg)
+
+
+def sleeping_retry(timeout, err_msg=None, /, *, init_delay=0.010, max_delay=1.0, error=True):
+    import time
+    delay = init_delay
+    for _ in busy_retry(timeout, err_msg, error=error):
+        yield
+        time.sleep(delay)
+        delay = min(delay * 2, max_delay)
+
+
+def print_warning(msg):
+    import sys
+    for line in msg.splitlines():
+        print(f"Warning -- {line}", file=sys.__stderr__, flush=True)
+
+
+environment_altered = False
 
 
 def get_attribute(obj, name):

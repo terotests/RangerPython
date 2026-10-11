@@ -7,6 +7,10 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     entries.sort();
     for p in entries {
         if p.is_dir() {
+            // modules that need OS threads have a folder of their own
+            if p.ends_with("pylib/threads") {
+                continue;
+            }
             walk(root, &p, out);
         } else if p.extension().map_or(false, |e| e == "py") {
             let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
@@ -17,7 +21,11 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
 
 fn main() {
     let mut files = Vec::new();
-    for root in ["pylib", "../lib"] {
+    // threading on OS threads, ahead of lib's single-thread one, where the
+    // target has threads (the native _thread module is built there too)
+    let threads = std::env::var("CARGO_CFG_TARGET_FAMILY").map_or(true, |f| f != "wasm");
+    let roots: &[&str] = if threads { &["pylib/threads", "pylib", "../lib"] } else { &["pylib", "../lib"] };
+    for &root in roots {
         let r = Path::new(root);
         println!("cargo:rerun-if-changed={}", root);
         if r.is_dir() {

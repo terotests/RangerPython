@@ -288,7 +288,7 @@ pub struct Instance {
     pub gc: crate::gc::Slot,
 }
 
-thread_local! {
+crate::gil_static! {
     /// instances whose __del__ is still to run, kept alive until then
     pub static PENDING_DEL: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
     pub static HAS_PENDING_DEL: Cell<bool> = const { Cell::new(false) };
@@ -361,6 +361,8 @@ pub enum ObjKind {
     TupleGetter(usize, Value),
     /// an ABC's registry and subclass caches (_abc._abc_data)
     Abc(Box<crate::abcmod::AbcData>),
+    /// a lock or thread handle of _thread
+    Thread(crate::threadmod::ThreadObj),
     Other(Value),
 }
 
@@ -421,7 +423,7 @@ pub struct Entry {
     pub value: Value,
 }
 
-thread_local! {
+crate::gil_static! {
     /// bumped when a class dict gains or loses keys or an MRO changes;
     /// Class::lookup's cache entries hold while it stays the same
     static TYPE_VERSION: Cell<u64> = const { Cell::new(1) };

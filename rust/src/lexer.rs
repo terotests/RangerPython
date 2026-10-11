@@ -65,7 +65,7 @@ pub struct SyntaxWarn {
     pub col: u32,
 }
 
-thread_local! {
+crate::gil_static! {
     static WARNINGS: RefCell<Vec<SyntaxWarn>> = const { RefCell::new(Vec::new()) };
 }
 

@@ -286,7 +286,7 @@ mod imp {
         status: Option<i64>,
     }
 
-    thread_local! {
+    crate::gil_static! {
         static CHILDREN: RefCell<HashMap<i64, Running>> = RefCell::new(HashMap::new());
     }
 
@@ -423,25 +423,29 @@ mod imp {
             Some(v) => Some(bytes_of(vm, v)?),
         };
         let mut r = take(vm, h)?;
-        // stdin is written while the pipes are read, so that neither side blocks
-        let feeder = r.child.stdin.take().map(|mut w| {
-            std::thread::spawn(move || {
-                if let Some(b) = input {
-                    let _ = w.write_all(&b);
-                }
-            })
+        // stdin is written while the pipes are read, so that neither side
+        // blocks; other threads run meanwhile
+        let (out, err, st) = vm.allow_threads(|| {
+            let feeder = r.child.stdin.take().map(|mut w| {
+                std::thread::spawn(move || {
+                    if let Some(b) = input {
+                        let _ = w.write_all(&b);
+                    }
+                })
+            });
+            let err_pipe = r.child.stderr.take();
+            let err_reader = err_pipe.map(|p| std::thread::spawn(move || read_all(Some(p))));
+            let out = match r.merged.take() {
+                Some(m) => read_all(Some(m)),
+                None => read_all(r.child.stdout.take()),
+            };
+            let err = err_reader.and_then(|t| t.join().ok().flatten());
+            if let Some(t) = feeder {
+                let _ = t.join();
+            }
+            let st = r.child.wait();
+            (out, err, st)
         });
-        let err_pipe = r.child.stderr.take();
-        let err_reader = err_pipe.map(|p| std::thread::spawn(move || read_all(Some(p))));
-        let out = match r.merged.take() {
-            Some(m) => read_all(Some(m)),
-            None => read_all(r.child.stdout.take()),
-        };
-        let err = err_reader.and_then(|t| t.join().ok().flatten());
-        if let Some(t) = feeder {
-            let _ = t.join();
-        }
-        let st = r.child.wait();
         put(h, r);
         let rc = match st {
             Ok(st) => finished(vm, h, st),
@@ -459,7 +463,7 @@ mod imp {
             return Ok(Value::Int(rc));
         }
         drop(r.child.stdin.take());
-        let st = r.child.wait();
+        let st = vm.allow_threads(|| r.child.wait());
         put(h, r);
         match st {
             Ok(st) => Ok(Value::Int(finished(vm, h, st))),

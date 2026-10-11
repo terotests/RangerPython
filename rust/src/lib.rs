@@ -23,6 +23,7 @@ pub mod format;
 pub mod interpmod;
 pub mod fs;
 pub mod gc;
+pub mod gil;
 pub mod lexer;
 pub mod lower;
 pub mod mathmod;
@@ -40,6 +41,7 @@ pub mod value;
 pub mod vm;
 pub mod tb;
 pub mod testcapi;
+pub mod threadmod;
 pub mod unidata;
 pub mod wtf8;
 
@@ -147,6 +149,9 @@ impl Runtime {
         vm.echo = self.echo;
         vm.search_path = self.search_path.clone();
         vm.host = self.host.clone();
+        vm.in_gil = true;
+        vm.take_gil();
+        gil::MAIN_IDENT.store(gil::ident(), std::sync::atomic::Ordering::Relaxed);
         let globals = vm.main_globals.clone();
         globals.borrow_mut().set_s("__file__", Value::str(filename));
         let r = run(&mut vm, globals);
@@ -163,10 +168,14 @@ impl Runtime {
         if let Err(e) = r {
             report(&mut vm, &e.value, &mut res);
         }
+        vm.shutdown_threads();
         vm.finalize();
         res.stdout = std::mem::take(&mut vm.out);
         res.stderr = std::mem::take(&mut vm.err_out);
         self.fs = std::mem::replace(&mut vm.fs, fs::Fs::new());
+        // the objects go while the GIL is still held
+        drop(vm);
+        gil::release_main();
         res
     }
 }

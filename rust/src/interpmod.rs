@@ -75,7 +75,7 @@ struct Interps {
     running: Vec<i64>,
 }
 
-thread_local! {
+crate::gil_static! {
     static INTERPS: RefCell<Interps> = const { RefCell::new(Interps { next: 1, map: BTreeMap::new(), running: Vec::new() }) };
 }
 

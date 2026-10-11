@@ -55,6 +55,8 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_rpyframe" => crate::tb::frame_module(),
         "_testcapi" => crate::testcapi::testcapi_module(vm)?,
         "_testlimitedcapi" => crate::testcapi::testlimitedcapi_module(),
+        #[cfg(not(target_family = "wasm"))]
+        "_rpythread" => crate::threadmod::thread_module(vm),
         _ => return Ok(None),
     }))
 }
@@ -250,7 +252,7 @@ fn itertools_module() -> Value {
 const IT_FIELDS: [&str; 10] = ["_source", "_active", "_index", "_dataobj", "_values", "_running", "_it", "_jumplink", "_cnt", "_element"];
 
 fn it_name(name: &str) -> Rc<PyStr> {
-    thread_local! {
+    crate::gil_static! {
         static NAMES: Vec<Rc<PyStr>> = IT_FIELDS.iter().map(|n| crate::value::intern(n)).collect();
     }
     let i = IT_FIELDS.iter().position(|n| *n == name).expect("an itertools field");
@@ -1125,6 +1127,8 @@ fn sys_module(vm: &mut Vm) -> Value {
             ("sys.get_int_max_str_digits", sys_get_int_max_str_digits),
             ("sys.set_int_max_str_digits", sys_set_int_max_str_digits),
             ("sys.setrecursionlimit", sys_setrecursionlimit),
+            ("sys.getswitchinterval", sys_getswitchinterval),
+            ("sys.setswitchinterval", sys_setswitchinterval),
             ("sys.exc_info", sys_exc_info),
             ("sys.excepthook", sys_excepthook),
             ("sys.unraisablehook", sys_unraisablehook),
@@ -1181,6 +1185,20 @@ fn sys_setrecursionlimit(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     }
     // the Rust stack bounds how deep frames may go
     vm.max_depth = (n as u32).min(crate::MAX_DEPTH);
+    Ok(Value::None)
+}
+fn sys_getswitchinterval(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::check_nargs(vm, "getswitchinterval", a, 0, 0)?;
+    Ok(Value::Float(crate::gil::switch_interval()))
+}
+/// how long a thread runs before it lets a waiting one have the GIL
+fn sys_setswitchinterval(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::check_nargs(vm, "setswitchinterval", a, 1, 1)?;
+    let t = vm.to_f64(&a[0])?;
+    if t <= 0.0 {
+        return Err(vm.value_error("switch interval must be strictly positive"));
+    }
+    crate::gil::set_switch_interval(t);
     Ok(Value::None)
 }
 fn sys_exc_info(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
@@ -1356,7 +1374,17 @@ fn t_perf(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 fn t_perf_ns(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(vm.start_time.elapsed().as_nanos() as i64))
 }
-fn t_sleep(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
+/// sleep(secs): a program on its own does not wait (nothing else would
+/// run meanwhile); with other threads it lets them have the GIL that long
+fn t_sleep(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    if crate::gil::THREADS.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+        let secs = match a.first() {
+            Some(v) => vm.to_f64(v)?,
+            None => 0.0,
+        };
+        let d = std::time::Duration::from_secs_f64(secs.clamp(0.0, 1e9));
+        vm.allow_threads(|| std::thread::sleep(d));
+    }
     Ok(Value::None)
 }
 

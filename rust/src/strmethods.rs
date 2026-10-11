@@ -2571,7 +2571,7 @@ fn ba_of(vm: &mut Vm, a: &[Value]) -> PyResult<Rc<RefCell<Vec<u8>>>> {
     }
 }
 
-thread_local! {
+crate::gil_static! {
     /// bytearrays whose buffer is exported (held by a running join), by address
     static BA_EXPORTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }

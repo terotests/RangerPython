@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-thread_local! {
+crate::gil_static! {
     /// bumped by every register() on any ABC; negative caches older than it are stale
     static INVALIDATION: Cell<u64> = const { Cell::new(0) };
 }
@@ -65,7 +65,7 @@ pub fn abc_module() -> Value {
     m
 }
 
-thread_local! {
+crate::gil_static! {
     static ABC_IMPL: Rc<PyStr> = ps("_abc_impl");
 }
 

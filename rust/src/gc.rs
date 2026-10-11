@@ -144,7 +144,7 @@ impl Registry {
 
 type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
-thread_local! {
+crate::gil_static! {
     static OWNED: RefCell<Vec<Owned>> = const { RefCell::new(Vec::new()) };
     static REGISTRY: RefCell<Registry> = const { RefCell::new(Registry { objs: Vec::new(), old: 0, old_limit: 1024 }) };
     /// the tuples a collection found holding nothing it tracks, which
@@ -523,7 +523,7 @@ fn referents(v: &Value, out: &mut Visit) -> bool {
                     push(out, back);
                 }
                 ObjKind::Other(x) | ObjKind::TupleGetter(_, x) => push(out, x),
-                ObjKind::File { .. } | ObjKind::StringIO { .. } | ObjKind::MatchPat(_) | ObjKind::Rng(_) | ObjKind::Weak(_) | ObjKind::Abc(_) => {}
+                ObjKind::File { .. } | ObjKind::StringIO { .. } | ObjKind::MatchPat(_) | ObjKind::Rng(_) | ObjKind::Weak(_) | ObjKind::Abc(_) | ObjKind::Thread(_) => {}
             }
         }
         _ => {}

@@ -80,7 +80,7 @@ pub fn set_from(d: Dict) -> Value {
     Value::Set(Rc::new(RefCell::new(d)))
 }
 
-thread_local! {
+crate::gil_static! {
     static CHARS: Vec<Rc<PyStr>> = (0u8..128).map(|b| Rc::new(PyStr::new((b as char).to_string()))).collect();
 }
 
@@ -1305,7 +1305,7 @@ fn exc_setup(vm: &mut Vm, inst: &Instance, args: &[Value], k: Kw) -> PyResult<Ve
 
 /// the str for an exception field name, made once
 fn exc_field_name(n: &str) -> Rc<PyStr> {
-    thread_local! {
+    crate::gil_static! {
         static NAMES: RefCell<Vec<Rc<PyStr>>> = const { RefCell::new(Vec::new()) };
     }
     NAMES.with(|names| {

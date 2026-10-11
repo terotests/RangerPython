@@ -34,7 +34,7 @@ struct State {
     signals: Vec<(&'static str, Value)>,
 }
 
-thread_local! {
+crate::gil_static! {
     static STATE: RefCell<Option<Rc<State>>> = const { RefCell::new(None) };
 }
 
