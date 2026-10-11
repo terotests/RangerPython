@@ -508,8 +508,10 @@ pub struct NativeObj {
 
 pub enum ObjKind {
     /// an open file: its bytes and the byte position; a text file's
-    /// encoding and errors handler turn them into str and back
-    File { path: String, mode: String, buf: Vec<u8>, pos: usize, closed: bool, writable: bool, binary: bool, encoding: String, errors: String },
+    /// encoding and errors handler turn them into str and back. A file on
+    /// a host descriptor (`fd`) has in `buf` what was read and not taken
+    /// yet, and `closefd` says whether closing it closes the descriptor.
+    File { path: String, mode: String, buf: Vec<u8>, pos: usize, closed: bool, writable: bool, binary: bool, encoding: String, errors: String, fd: Option<i32>, closefd: bool },
     StringIO { buf: Vec<char>, pos: usize, closed: bool },
     Deque(std::collections::VecDeque<Value>, Option<usize>),
     MatchPat(Rc<crate::ast::Pattern>),

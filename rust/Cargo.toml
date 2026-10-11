@@ -13,6 +13,10 @@ crate-type = ["rlib"]
 name = "rpy"
 path = "src/main.rs"
 
+# fork, signals, terminals and sockets of the host (not on WebAssembly)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 opt-level = 3
 lto = true

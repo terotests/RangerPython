@@ -578,8 +578,14 @@ impl Vm {
         }
         self.frames.push(f as *mut Frame);
         self.frame_objs.push(Value::Undef);
+        // the signals that came run their handlers as a function starts
+        let mut first = if f.ip == 0 && crate::posix::signals_pending() { crate::posix::check_signals(self).err() } else { None };
         let r = loop {
-            match self.exec(f) {
+            let step = match first.take() {
+                Some(e) => Err(e),
+                None => self.exec(f),
+            };
+            match step {
                 Ok(x) => break Ok(x),
                 Err(e) => {
                     if let Err(e) = self.handle_exc(f, e) {
@@ -1241,9 +1247,13 @@ impl Vm {
                     f.stack.insert(n - 3, v);
                 }
                 Op::Jump(t) => {
-                    // a loop's way back: where other threads get their turn
+                    // a loop's way back: where other threads get their turn,
+                    // and signal handlers run
                     if (t as usize) < f.ip {
                         self.eval_breaker()?;
+                        if crate::posix::signals_pending() {
+                            crate::posix::check_signals(self)?;
+                        }
                     }
                     f.ip = t as usize
                 }
@@ -2360,6 +2370,15 @@ impl Vm {
                     return Ok(None);
                 }
             }
+        };
+        // and as a generator resumes at a `yield` (not in `yield from`,
+        // where the iterator it delegates to resumes): a handler's
+        // exception is raised at the `yield`
+        let throw = match throw {
+            None if crate::posix::signals_pending() && frame.ip > 0 && !matches!(frame.code.ops.get(frame.ip), Some(Op::YieldFrom)) => {
+                crate::posix::check_signals(self).err().map(|e| e.value)
+            }
+            t => t,
         };
         self.depth += 1;
         let r = match throw {

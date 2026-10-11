@@ -76,6 +76,8 @@ pub fn testcapi_module(vm: &mut Vm) -> PyResult<Value> {
         &d,
         &[
             ("_testcapi.raise_exception", raise_exception),
+            #[cfg(unix)]
+            ("_testcapi.raise_SIGINT_then_send_None", raise_sigint_then_send_none),
             ("_testcapi.raise_memoryerror", raise_memoryerror),
             ("_testcapi.make_exception_with_doc", make_exception_with_doc),
             ("_testcapi.set_nomemory", set_nomemory),
@@ -118,6 +120,22 @@ fn recursing_init(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 /// raise_exception(exc, nargs): PyErr_SetObject(exc, (0, 1, ..., nargs-1))
 /// and its normalization, which instantiates exc in the caller's frame
+/// raise(SIGINT), then gen.send(None) with the signal still unhandled: the
+/// generator chain is entered with a signal pending (bpo-30039)
+#[cfg(unix)]
+fn raise_sigint_then_send_none(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "raise_SIGINT_then_send_None", a, 1, 1)?;
+    if !matches!(a[0], Value::Gen(_)) {
+        let tn = vm.type_name(&a[0]);
+        return Err(vm.type_error(format!("raise_SIGINT_then_send_None() argument must be generator, not {}", tn)));
+    }
+    if let Err(e) = crate::posix::raise_only(libc::SIGINT) {
+        return Err(crate::posix::os_err(vm, e));
+    }
+    let send = vm.getattr(&a[0], &ps("send"))?;
+    vm.call_vec(&send, vec![Value::None], &[])
+}
+
 fn raise_exception(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "raise_exception", a, 2, 2)?;
     let n = vm.to_index(&a[1])?;

@@ -32,9 +32,12 @@ pub mod methods;
 pub mod modules;
 pub mod ops;
 pub mod parser;
+pub mod posix;
 pub mod process;
 pub mod pyast;
 pub mod range;
+#[cfg(unix)]
+pub mod socketmod;
 pub mod stdlib;
 pub mod strmethods;
 pub mod value;

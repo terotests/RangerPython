@@ -218,6 +218,29 @@ pub fn alive(ident: u64) -> bool {
     ident == MAIN_IDENT.load(Relaxed) || ALIVE.lock().unwrap_or_else(|e| e.into_inner()).contains(&ident)
 }
 
+/// Runs `fork` (which returns 0 in the child) holding the GIL's and the
+/// thread table's locks, so that the child gets them unlocked; in the child
+/// the forking thread becomes the main and only one.
+#[cfg(unix)]
+pub fn fork_with(fork: impl FnOnce() -> i32) -> i32 {
+    let mut g = lock();
+    let mut alive = ALIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let pid = fork();
+    if pid == 0 {
+        let me = ident();
+        alive.clear();
+        THREADS.store(0, Relaxed);
+        MAIN_IDENT.store(me, Relaxed);
+        if g.locked {
+            g.holder = me;
+        }
+        EVAL_BREAKER.fetch_and(!DROP_REQUEST, Relaxed);
+    }
+    drop(alive);
+    drop(g);
+    pid
+}
+
 /// makes the main thread see KeyboardInterrupt (_thread.interrupt_main)
 pub fn interrupt_main() {
     EVAL_BREAKER.fetch_or(INTERRUPT, Relaxed);

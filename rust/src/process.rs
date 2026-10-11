@@ -428,13 +428,22 @@ mod imp {
         let (out, err, st) = vm.allow_threads(|| {
             let feeder = r.child.stdin.take().map(|mut w| {
                 std::thread::spawn(move || {
+                    // the process's signals are the interpreter thread's
+                    #[cfg(unix)]
+                    crate::posix::block_signals();
                     if let Some(b) = input {
                         let _ = w.write_all(&b);
                     }
                 })
             });
             let err_pipe = r.child.stderr.take();
-            let err_reader = err_pipe.map(|p| std::thread::spawn(move || read_all(Some(p))));
+            let err_reader = err_pipe.map(|p| {
+                std::thread::spawn(move || {
+                    #[cfg(unix)]
+                    crate::posix::block_signals();
+                    read_all(Some(p))
+                })
+            });
             let out = match r.merged.take() {
                 Some(m) => read_all(Some(m)),
                 None => read_all(r.child.stdout.take()),

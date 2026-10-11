@@ -57,6 +57,14 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_testlimitedcapi" => crate::testcapi::testlimitedcapi_module(),
         #[cfg(not(target_family = "wasm"))]
         "_rpythread" => crate::threadmod::thread_module(vm),
+        #[cfg(unix)]
+        "_signal" => crate::posix::signal_module(vm),
+        #[cfg(unix)]
+        "select" => crate::posix::select_module(vm),
+        #[cfg(unix)]
+        "termios" => crate::posix::termios_module(vm),
+        #[cfg(unix)]
+        "_rpysocket" => crate::socketmod::socket_module(vm),
         _ => return Ok(None),
     }))
 }
@@ -107,11 +115,53 @@ fn weak_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 // -------------------------------------------------------------------------
+// capsules: the C API objects modules export (datetime.datetime_CAPI,
+// _socket.CAPI), opaque to Python code; there is no C API behind them here
+
+pub fn capsule(vm: &mut Vm, name: &str) -> Value {
+    let c = vm.native_class("PyCapsule");
+    if c.dict.borrow().get_s("__repr__").is_none() {
+        def(&c, "PyCapsule.__repr__", capsule_repr);
+        def_static(&c, "PyCapsule.__new__", capsule_new);
+    }
+    vm.native_obj("PyCapsule", ObjKind::Other(Value::str(name)))
+}
+
+fn capsule_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let Value::Obj(o) = &a[0] else { return Ok(Value::str("<capsule object NULL>")) };
+    let name = match &*o.kind.borrow() {
+        ObjKind::Other(Value::Str(s)) => s.s.to_string(),
+        _ => String::new(),
+    };
+    Ok(Value::string(format!("<capsule object \"{}\" at {:#x}>", name, Rc::as_ptr(o) as usize)))
+}
+
+fn capsule_new(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
+    Err(vm.type_error("cannot create 'PyCapsule' instances"))
+}
+
+/// capsule(name): a module's capsule, for the modules written in Python
+fn internal_capsule(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "capsule", a, 1, 1)?;
+    let name = as_pystr(vm, &a[0], "capsule")?;
+    Ok(capsule(vm, &name.s))
+}
+
+// -------------------------------------------------------------------------
 // support for the _testinternalcapi stand-in of the test harness
 
 fn internal_module() -> Value {
     let (d, m) = module("_rpyinternal");
-    put_fns(&d, &[("_rpyinternal.dict_getitem_knownhash", dict_getitem_knownhash), ("_rpyinternal.get_recursion_depth", get_recursion_depth), ("_rpyinternal.has_inline_values", has_inline_values)]);
+    put_fns(
+        &d,
+        &[
+            ("_rpyinternal.dict_getitem_knownhash", dict_getitem_knownhash),
+            ("_rpyinternal.get_recursion_depth", get_recursion_depth),
+            ("_rpyinternal.has_inline_values", has_inline_values),
+            ("_rpyinternal.capsule", internal_capsule),
+        ],
+    );
     m
 }
 
@@ -499,6 +549,10 @@ fn install_file_class(vm: &mut Vm) {
 
 pub fn open_file(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     install_file_class(vm);
+    #[cfg(unix)]
+    if let Some(Value::Int(fd)) = arg_or_kw(a, 0, k, "file") {
+        return open_fd(vm, fd, a, k);
+    }
     let file = match arg_or_kw(a, 0, k, "file") {
         Some(Value::Str(s)) if s.s.contains('\0') => return Err(vm.value_error("embedded null character")),
         Some(Value::Str(s)) => s.s.clone(),
@@ -567,8 +621,94 @@ pub fn open_file(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     } else {
         return Err(vm.value_error(format!("invalid mode: '{}'", mode)));
     };
-    let kind = ObjKind::File { path: file.clone(), mode, buf, pos, closed: false, writable, binary, encoding, errors };
+    let kind = ObjKind::File { path: file.clone(), mode, buf, pos, closed: false, writable, binary, encoding, errors, fd: None, closefd: false };
     Ok(Value::Obj(Rc::new(NativeObj { class: vm.t.file.clone(), gc: Default::default(), kind: RefCell::new(kind) })))
+}
+
+/// open(fd, ...): a file on a host descriptor, read and written as it goes
+#[cfg(unix)]
+fn open_fd(vm: &mut Vm, fd: i64, a: &[Value], k: Kw) -> PyResult<Value> {
+    let text_arg = |i: usize, name: &str, default: &str| match arg_or_kw(a, i, k, name) {
+        Some(Value::Str(s)) => s.s.clone(),
+        _ => default.to_string(),
+    };
+    let mode = text_arg(1, "mode", "r");
+    if mode.chars().filter(|c| "rwax".contains(*c)).count() != 1 {
+        return Err(vm.value_error("Must have exactly one of create/read/write/append mode and at most one plus"));
+    }
+    let closefd = match arg_or_kw(a, 6, k, "closefd") {
+        Some(v) => vm.truthy(&v)?,
+        None => true,
+    };
+    if fd < 0 {
+        return Err(vm.value_error("negative file descriptor"));
+    }
+    let fd = i32::try_from(fd).map_err(|_| vm.err("OverflowError", "fd is greater than maximum"))?;
+    crate::posix::fd_check(vm, fd)?;
+    let (binary, writable) = (mode.contains('b'), !mode.contains('r') || mode.contains('+'));
+    let (encoding, errors) = (text_arg(3, "encoding", "UTF-8"), text_arg(4, "errors", "strict"));
+    let kind = ObjKind::File { path: String::new(), mode, buf: vec![], pos: 0, closed: false, writable, binary, encoding, errors, fd: Some(fd), closefd };
+    Ok(Value::Obj(Rc::new(NativeObj { class: vm.t.file.clone(), gc: Default::default(), kind: RefCell::new(kind) })))
+}
+
+/// sys.stdin: the host's standard input where there is one
+fn stdin_stream(vm: &mut Vm) -> Value {
+    if cfg!(not(unix)) {
+        return stream(vm, "<stdin>");
+    }
+    let kind = ObjKind::File {
+        path: "<stdin>".into(),
+        mode: "r".into(),
+        buf: vec![],
+        pos: 0,
+        closed: false,
+        writable: false,
+        binary: false,
+        encoding: "utf-8".into(),
+        errors: "strict".into(),
+        fd: Some(0),
+        closefd: false,
+    };
+    Value::Obj(Rc::new(NativeObj { class: vm.t.file.clone(), gc: Default::default(), kind: RefCell::new(kind) }))
+}
+
+/// how many whole characters (bytes for a binary file) `buf` holds
+fn whole_units(buf: &[u8], binary: bool, encoding: &str) -> usize {
+    if binary || !is_utf8(encoding) {
+        return buf.len();
+    }
+    let starts = buf.iter().filter(|c| **c & 0xc0 != 0x80).count();
+    // a last character whose bytes have not all come yet
+    let partial = buf.iter().rposition(|c| *c & 0xc0 != 0x80).is_some_and(|i| {
+        let lead = buf[i];
+        let len = if lead < 0x80 { 1 } else if lead >= 0xf0 { 4 } else if lead >= 0xe0 { 3 } else { 2 };
+        buf.len() - i < len
+    });
+    starts - partial as usize
+}
+
+/// Reads from a file's descriptor until its buffer holds what file_take
+/// will take: a line, `max` characters (bytes), or all up to the end.
+fn fd_fill(vm: &mut Vm, o: &NativeObj, max: i64, line: bool) -> PyResult<()> {
+    loop {
+        let fd = {
+            let mut kind = o.kind.borrow_mut();
+            let ObjKind::File { buf, pos, fd: Some(fd), closed: false, binary, encoding, .. } = &mut *kind else { return Ok(()) };
+            buf.drain(..(*pos).min(buf.len()));
+            *pos = 0;
+            if (line && buf.contains(&b'\n')) || (max >= 0 && whole_units(buf, *binary, encoding) >= max as usize) {
+                return Ok(());
+            }
+            *fd
+        };
+        let chunk = crate::posix::fd_read(vm, fd, 8192)?;
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        if let ObjKind::File { buf, .. } = &mut *o.kind.borrow_mut() {
+            buf.extend_from_slice(&chunk);
+        }
+    }
 }
 
 fn parent(p: &str) -> String {
@@ -597,6 +737,9 @@ fn is_utf8(encoding: &str) -> bool {
 /// characters (bytes for a binary file) when `max` >= 0, and only up to the
 /// end of the line when `line`. A text file's part is decoded.
 fn file_take(vm: &mut Vm, o: &NativeObj, max: i64, line: bool) -> PyResult<Value> {
+    if matches!(&*o.kind.borrow(), ObjKind::File { fd: Some(_), mode, .. } if mode.contains('r') || mode.contains('+')) {
+        fd_fill(vm, o, max, line)?;
+    }
     let mut kind = o.kind.borrow_mut();
     let ObjKind::File { buf, pos, closed, binary, mode, encoding, errors, .. } = &mut *kind else {
         return Ok(Value::str(""));
@@ -730,8 +873,8 @@ fn f_write(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         }
         return Ok(Value::Int(text.chars().count() as i64));
     }
-    let (closed, writable, binary, encoding, errors) = match &*o.kind.borrow() {
-        ObjKind::File { closed, writable, binary, encoding, errors, .. } => (*closed, *writable, *binary, encoding.clone(), errors.clone()),
+    let (closed, writable, binary, encoding, errors, fd) = match &*o.kind.borrow() {
+        ObjKind::File { closed, writable, binary, encoding, errors, fd, .. } => (*closed, *writable, *binary, encoding.clone(), errors.clone(), *fd),
         _ => return Ok(Value::Int(0)),
     };
     if closed {
@@ -754,6 +897,10 @@ fn f_write(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             (b, n)
         }
     };
+    if let Some(fd) = fd {
+        crate::posix::fd_write_all(vm, fd, &data)?;
+        return Ok(Value::Int(n as i64));
+    }
     let (path, buf) = {
         let mut kind = o.kind.borrow_mut();
         let ObjKind::File { path, buf, pos, mode, .. } = &mut *kind else { unreachable!() };
@@ -784,10 +931,18 @@ fn f_writelines(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn f_close(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
-    if let ObjKind::File { closed, .. } = &mut *o.kind.borrow_mut() {
+    close_kind(&mut o.kind.borrow_mut());
+    Ok(Value::None)
+}
+
+/// closes a file, and its descriptor when the file owns it
+fn close_kind(kind: &mut ObjKind) {
+    if let ObjKind::File { closed, fd, closefd, .. } = kind {
+        if let (false, Some(fd), true) = (*closed, *fd, *closefd) {
+            crate::posix::fd_close(fd);
+        }
         *closed = true;
     }
-    Ok(Value::None)
 }
 
 /// what an open file does when it is lost: a ResourceWarning naming it,
@@ -801,9 +956,7 @@ pub fn file_finalize(vm: &mut Vm, o: &Rc<NativeObj>) {
         let cat = Value::Class(vm.exc_class("ResourceWarning"));
         vm.call_vec(&warn, vec![Value::string(msg), cat], &[(ps("source"), v.clone())])
     });
-    if let ObjKind::File { closed, .. } = &mut *o.kind.borrow_mut() {
-        *closed = true;
-    }
+    close_kind(&mut o.kind.borrow_mut());
     if let Err(e) = r {
         vm.unraisable(e, &v);
     }
@@ -835,6 +988,15 @@ fn f_seek(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Some(v) => vm.to_index(v)?,
         None => 0,
     };
+    if let Some((fd, unread)) = fd_unread(&o) {
+        let off = if whence == 1 { off - unread } else { off };
+        let r = crate::posix::fd_seek(vm, fd, off, whence)?;
+        if let ObjKind::File { buf, pos, .. } = &mut *o.kind.borrow_mut() {
+            buf.clear();
+            *pos = 0;
+        }
+        return Ok(Value::Int(r));
+    }
     if let ObjKind::File { pos, buf, .. } = &mut *o.kind.borrow_mut() {
         let base = match whence {
             1 => *pos as i64,
@@ -847,9 +1009,20 @@ fn f_seek(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Int(0))
 }
 
+/// a descriptor file's descriptor and how many bytes it read ahead
+fn fd_unread(o: &NativeObj) -> Option<(i32, i64)> {
+    match &*o.kind.borrow() {
+        ObjKind::File { fd: Some(fd), buf, pos, .. } => Some((*fd, buf.len().saturating_sub(*pos) as i64)),
+        _ => None,
+    }
+}
+
 fn f_tell(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
+    if let Some((fd, unread)) = fd_unread(&o) {
+        return Ok(Value::Int(crate::posix::fd_seek(vm, fd, 0, 1)? - unread));
+    }
     if let ObjKind::File { pos, .. } = &*o.kind.borrow() {
         return Ok(Value::Int(*pos as i64));
     }
@@ -862,6 +1035,9 @@ fn f_truncate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Some(Value::None) | None => None,
         Some(v) => Some(vm.to_index(v)? as usize),
     };
+    if fd_unread(&o).is_some() {
+        return Err(vm.err("UnsupportedOperation", "truncate"));
+    }
     let target = if let ObjKind::File { pos, buf, path, .. } = &mut *o.kind.borrow_mut() {
         let n = size.unwrap_or(*pos).min(buf.len());
         buf.truncate(n);
@@ -894,11 +1070,29 @@ fn f_writable(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Bool(r))
 }
 
-fn f_isatty(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
-    Ok(Value::Bool(false))
+/// a descriptor file's descriptor; the standard output streams' when they
+/// write to the host's own
+fn host_fd(vm: &Vm, v: &Value) -> Option<i32> {
+    let Value::Obj(o) = v else { return None };
+    match &*o.kind.borrow() {
+        ObjKind::File { fd, .. } => *fd,
+        ObjKind::Other(_) if vm.echo && is_std_stream(v) => Some(if is_stderr(v) { 2 } else { 1 }),
+        _ => None,
+    }
 }
 
-fn f_fileno(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+fn f_isatty(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    Ok(Value::Bool(host_fd(vm, &a[0]).is_some_and(crate::posix::fd_isatty)))
+}
+
+fn f_fileno(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    if let Value::Obj(o) = &a[0] {
+        if let ObjKind::File { fd: Some(fd), .. } = &*o.kind.borrow() {
+            return Ok(Value::Int(*fd as i64));
+        }
+    }
     Ok(Value::Int(if is_stderr(&a[0]) {
         2
     } else if is_std_stream(&a[0]) {
@@ -912,11 +1106,15 @@ fn f_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let o = file_of(vm, &a[0])?;
     let r = match &*o.kind.borrow() {
-        ObjKind::File { path, mode, binary, encoding, .. } => {
+        ObjKind::File { path, mode, binary, encoding, fd, .. } => {
+            let name = match fd {
+                Some(fd) if path.is_empty() => fd.to_string(),
+                _ => format!("'{}'", path),
+            };
             if *binary {
-                format!("<_io.BufferedReader name='{}'>", path)
+                format!("<_io.BufferedReader name={}>", name)
             } else {
-                format!("<_io.TextIOWrapper name='{}' mode='{}' encoding='{}'>", path, mode, encoding)
+                format!("<_io.TextIOWrapper name={} mode='{}' encoding='{}'>", name, mode, encoding)
             }
         }
         ObjKind::Other(Value::Str(s)) => format!("<_io.TextIOWrapper name='{}' mode='w' encoding='utf-8'>", s.s),
@@ -928,7 +1126,8 @@ fn f_repr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 /// attributes of native objects (files)
 pub fn obj_attr(_vm: &mut Vm, _obj: &Value, o: &Rc<NativeObj>, name: &str) -> PyResult<Option<Value>> {
     Ok(match &*o.kind.borrow() {
-        ObjKind::File { path, mode, closed, encoding, errors, .. } => match name {
+        ObjKind::File { path, mode, closed, encoding, errors, fd, .. } => match name {
+            "name" if path.is_empty() && fd.is_some() => fd.map(|fd| Value::Int(fd as i64)),
             "name" => Some(Value::str(path)),
             "mode" => Some(Value::str(mode)),
             "closed" => Some(Value::Bool(*closed)),
@@ -1068,7 +1267,7 @@ fn sys_module(vm: &mut Vm) -> Value {
     let argv: Vec<Value> = vm.argv.iter().map(|s| Value::str(s)).collect();
     let stdout = stream(vm, "<stdout>");
     let stderr = stream(vm, "<stderr>");
-    let stdin = stream(vm, "<stdin>");
+    let stdin = stdin_stream(vm);
     {
         let mut b = d.borrow_mut();
         b.set_s("argv", Value::list(if argv.is_empty() { vec![Value::str("")] } else { argv }));
@@ -1095,7 +1294,8 @@ fn sys_module(vm: &mut Vm) -> Value {
         b.set_s("modules", Value::Dict(vm.modules.clone()));
         b.set_s("stdout", stdout.clone());
         b.set_s("stderr", stderr.clone());
-        b.set_s("stdin", stdin);
+        b.set_s("stdin", stdin.clone());
+        b.set_s("__stdin__", stdin);
         b.set_s("__stdout__", stdout);
         b.set_s("__stderr__", stderr);
         let names = Rc::new(RefCell::new(Dict::new()));
@@ -1322,7 +1522,7 @@ fn sys_false(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
 }
 
 /// the running frame `depth` calls up, with a fresh f_locals snapshot
-fn sys_getframe(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+pub(crate) fn sys_getframe(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let depth = match a.first() {
         Some(v) => vm.to_index(v)?,
         None => 0,
@@ -1537,12 +1737,27 @@ fn os_module(vm: &mut Vm) -> PyResult<Value> {
             ("os.fspath", os_fspath),
             ("os.stat", os_stat),
             ("os.scandir", os_listdir),
+            ("os._get_exports_list", os_get_exports_list),
         ],
     );
+    #[cfg(unix)]
+    crate::posix::extend_os(&d);
     let p = os_path_module();
     vm.modules.borrow_mut().set_s("os.path", p.clone());
     d.borrow_mut().set_s("path", p);
     Ok(m)
+}
+
+/// a module's __all__, or else its public names (os.py's helper)
+fn os_get_exports_list(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    check_nargs(vm, "_get_exports_list", a, 1, 1)?;
+    if let Some(all) = vm.getattr_opt(&a[0], &ps("__all__"))? {
+        return Ok(Value::list(vm.to_vec(&all)?));
+    }
+    let Some(dir) = vm.builtins.borrow().get_s("dir") else { return Ok(Value::list(vec![])) };
+    let names = vm.call_vec(&dir, vec![a[0].clone()], &[])?;
+    let public = vm.to_vec(&names)?.into_iter().filter(|n| !matches!(n, Value::Str(s) if s.s.starts_with('_'))).collect();
+    Ok(Value::list(public))
 }
 
 fn path_arg(vm: &mut Vm, a: &[Value], i: usize) -> PyResult<String> {
@@ -2600,15 +2815,24 @@ fn r_new(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(Value::Obj(Rc::new(NativeObj { class: vm.t.obj.clone(), gc: Default::default(), kind: RefCell::new(ObjKind::Rng(Box::new(r))) })))
 }
 
+/// what seed(None) seeds with: the host's random bytes where it has them,
+/// as CPython, else the time
+fn seed_entropy() -> BigInt {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    let host = cfg!(unix) && std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_ok();
+    if !host {
+        return BigInt::from_i64((now_secs() * 1e6) as i64);
+    }
+    bytes.iter().fold(BigInt::zero(), |b, byte| b.shl(8).add(&BigInt::from_i64(*byte as i64)))
+}
+
 fn r_seed(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     let o = rng_of(vm, &a[0])?;
     let s = a.get(1).cloned().unwrap_or(Value::None);
     let key: BigInt = match &s {
-        Value::None => {
-            let t = (now_secs() * 1e6) as i64;
-            BigInt::from_i64(t)
-        }
+        Value::None => seed_entropy(),
         Value::Int(_) | Value::Big(_) | Value::Bool(_) => crate::ops::big_of(&s).unwrap(),
         Value::Float(f) => {
             // hash(float), as CPython

@@ -103,7 +103,9 @@ def cpython_only(f):
 refcount_test = unittest.skip("reference counts")
 bigaddrspacetest = unittest.skip("big address space")
 requires_subprocess = _skipper("no subprocesses", not has_subprocess_support)
-requires_fork = _skipper("no fork")
+# os.fork is there where the host has processes
+has_fork_support = hasattr(__import__("os"), "fork")
+requires_fork = _skipper("no fork", not has_fork_support)
 # a macOS version only matters on macOS
 requires_mac_ver = _skipper("not macOS", sys.platform == "darwin")
 # as regrtest without -u: the resources ('cpu' among them) are not used, as
@@ -237,6 +239,19 @@ def run_unittest(*classes):
     suite.run(result)
     if not result.wasSuccessful():
         raise TestFailed("tests failed")
+
+
+def wait_process(pid, *, exitcode, timeout=None):
+    # as CPython's, waiting without a timeout: the runtime's time.sleep
+    # does not wait
+    import os
+    pid2, status = os.waitpid(pid, 0)
+    exitcode2 = os.waitstatus_to_exitcode(status)
+    if exitcode2 != exitcode:
+        raise AssertionError(f"process {pid} exited with code {exitcode2}, "
+                             f"but exit code {exitcode} is expected")
+    if pid2 != pid:
+        raise AssertionError(f"pid {pid2} != pid {pid}")
 
 
 class _NullContext:

@@ -118,6 +118,22 @@ impl Handle {
 
 /// the handles of the non-daemon threads, which _shutdown() waits for
 static NON_DAEMON: Mutex<Vec<Arc<Handle>>> = Mutex::new(Vec::new());
+/// every handle there is, for a forked child to mark its threads done
+static HANDLES: Mutex<Vec<std::sync::Weak<Handle>>> = Mutex::new(Vec::new());
+
+/// In the child of a fork: only the forking thread lives on, so the handles
+/// of the others are done (as CPython's _PyThread_AfterFork has it).
+#[cfg(unix)]
+pub fn after_fork_child() {
+    let me = gil::ident();
+    for h in HANDLES.lock().unwrap_or_else(|e| e.into_inner()).iter().filter_map(|w| w.upgrade()) {
+        if h.ident.load(Relaxed) != me && h.state() != NOT_STARTED {
+            h.set_state(DONE);
+        }
+    }
+    NON_DAEMON.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
 /// the stack size new threads get (stack_size()); 0 for the default
 static STACK_SIZE: AtomicUsize = AtomicUsize::new(0);
 /// the Rust stack of a thread: room for the recursion limit's frames
@@ -216,7 +232,25 @@ fn handle_class(vm: &mut Vm) -> Rc<Class> {
         ("_ThreadHandle._set_done", handle_set_done),
         ("_ThreadHandle.__repr__", handle_repr),
     ];
-    class(vm, "_thread._ThreadHandle", "_ThreadHandle", methods, handle_new)
+    let fresh = vm.classes.get("_thread._ThreadHandle").is_none();
+    let c = class(vm, "_thread._ThreadHandle", "_ThreadHandle", methods, handle_new);
+    if fresh {
+        // ident, a read-only property
+        def(&c, "_thread._ThreadHandle.ident", handle_ident);
+        let getter = c.dict.borrow_mut().remove_str(&ps("ident"));
+        let prop = vm.builtins.borrow().get_s("property");
+        if let (Some(g), Some(prop)) = (getter, prop) {
+            if let Ok(p) = vm.call_vec(&prop, vec![g], &[]) {
+                c.dict.borrow_mut().set_s("ident", p);
+            }
+        }
+    }
+    c
+}
+
+fn handle_ident(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    let h = handle_of(vm, a)?;
+    Ok(Value::Int(h.ident.load(Relaxed) as i64))
 }
 
 fn new_obj(cls: Rc<Class>, kind: ThreadObj) -> Value {
@@ -231,6 +265,11 @@ fn new_lock(vm: &mut Vm) -> Value {
 }
 
 fn new_handle(vm: &mut Vm, h: Arc<Handle>) -> Value {
+    {
+        let mut l = HANDLES.lock().unwrap_or_else(|e| e.into_inner());
+        l.retain(|w| w.strong_count() > 0);
+        l.push(Arc::downgrade(&h));
+    }
     let c = handle_class(vm);
     new_obj(c, ThreadObj::Handle(h))
 }

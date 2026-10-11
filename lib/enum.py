@@ -410,6 +410,26 @@ class Enum(metaclass=EnumType):
     def _missing_(cls, value):
         return None
 
+    @classmethod
+    def _convert_(cls, name, module, filter, source=None, *, boundary=None, as_global=False):
+        # an enum of the module's names that pass filter, put in the module
+        import sys
+        module_globals = sys.modules[module].__dict__
+        source = source.__dict__ if source else module_globals
+        members = [(n, v) for n, v in source.items() if filter(n)]
+        try:
+            # the lowest name of equal values is the member, the others aliases
+            members.sort(key=lambda t: (t[1], t[0]))
+        except TypeError:
+            members.sort(key=lambda t: t[0])
+        enum_cls = cls(name, members, module=module, boundary=boundary)
+        if as_global:
+            global_enum(enum_cls)
+        else:
+            module_globals.update(enum_cls.__members__)
+        module_globals[name] = enum_cls
+        return enum_cls
+
     def __repr__(self):
         v_repr = self.__class__._value_repr_ if hasattr(self.__class__, "_value_repr_") else repr
         return "<%s.%s: %s>" % (self.__class__.__name__, self._name_, v_repr(self._value_))

@@ -37,6 +37,8 @@ fn add_mount(rt: &mut rpy::Runtime, host: &str, vfs: &str) {
 }
 
 fn run() -> i32 {
+    #[cfg(unix)]
+    rpy::posix::install_default_handlers();
     let mut rt = rpy::Runtime::new();
     #[cfg(not(target_family = "wasm"))]
     {
@@ -151,6 +153,18 @@ fn run() -> i32 {
     if !r.ok && !r.traceback.is_empty() {
         let _ = writeln!(err, "{}", r.traceback);
     }
+    // a child of os.fork ends here, its changes to the files left for its parent
+    #[cfg(unix)]
+    if rpy::posix::is_forked_child() {
+        rpy::posix::hand_back(&rt.fs);
+        let code = if r.ok { 0 } else { r.exit_code };
+        let _ = out.flush();
+        drop(out);
+        if !r.ok && r.error_type == "KeyboardInterrupt" {
+            rpy::posix::exit_by_sigint();
+        }
+        std::process::exit(code);
+    }
     if let Some(dir) = outdir {
         for p in rt.changed_files() {
             if let Some(text) = rt.read_file(&p) {
@@ -164,6 +178,12 @@ fn run() -> i32 {
         let back = std::path::Path::new(p).with_extension("out");
         let _ = std::fs::write(back, Sandbox::changes(&rt.fs).encode());
     }
+    // an uncaught KeyboardInterrupt ends the process as SIGINT would have, as in CPython
+    #[cfg(unix)]
+    if !r.ok && r.error_type == "KeyboardInterrupt" {
+        let _ = out.flush();
+        rpy::posix::exit_by_sigint();
+    }
     if r.ok {
         0
     } else {
@@ -175,6 +195,9 @@ fn run() -> i32 {
 fn main() {
     // deep Python recursion runs on the Rust stack
     let h = std::thread::Builder::new().stack_size(1 << 30).spawn(run).unwrap();
+    // the process's signals go to the interpreter's thread
+    #[cfg(unix)]
+    rpy::posix::block_signals();
     let code = h.join().unwrap_or(1);
     std::process::exit(code);
 }
