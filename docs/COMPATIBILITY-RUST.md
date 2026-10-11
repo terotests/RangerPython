@@ -8,7 +8,7 @@ score is out of the tests CPython (Python 3.13.16) passes with the same
 driver. Tests that need CPython internals (reference counts, object sizes,
 subprocesses) are skipped by the test.support stand-in and are not counted.
 
-**3557 of 3586 tests pass: 99.2 %**
+**3585 of 3586 tests pass: 100.0 %**
 
 | file | pass | of | score | note |
 |---|---:|---:|---:|---|
@@ -16,29 +16,29 @@ subprocesses) are skipped by the test.support stand-in and are not counted.
 | test_baseexception | 10 | 10 | 100.0 % |  |
 | test_binop | 12 | 12 | 100.0 % |  |
 | test_bool | 31 | 31 | 100.0 % |  |
-| test_builtin | 114 | 115 | 99.1 % |  |
-| test_class | 26 | 33 | 78.8 % |  |
+| test_builtin | 115 | 115 | 100.0 % |  |
+| test_class | 32 | 33 | 97.0 % |  |
 | test_collections | 99 | 99 | 100.0 % |  |
 | test_compare | 16 | 16 | 100.0 % |  |
 | test_contains | 4 | 4 | 100.0 % |  |
 | test_copy | 81 | 81 | 100.0 % |  |
 | test_decorators | 16 | 16 | 100.0 % |  |
-| test_dict | 110 | 111 | 99.1 % |  |
+| test_dict | 111 | 111 | 100.0 % |  |
 | test_dictviews | 16 | 16 | 100.0 % |  |
 | test_enumerate | 92 | 92 | 100.0 % |  |
 | test_exceptions | 95 | 95 | 100.0 % |  |
 | test_float | 49 | 49 | 100.0 % |  |
 | test_format | 18 | 18 | 100.0 % |  |
-| test_fstring | 83 | 84 | 98.8 % |  |
-| test_functools | 266 | 273 | 97.4 % |  |
-| test_generators | 39 | 40 | 97.5 % |  |
+| test_fstring | 84 | 84 | 100.0 % |  |
+| test_functools | 273 | 273 | 100.0 % |  |
+| test_generators | 40 | 40 | 100.0 % |  |
 | test_genexps | 0 | 0 | 0.0 % |  |
 | test_grammar | 78 | 78 | 100.0 % |  |
 | test_index | 55 | 55 | 100.0 % |  |
 | test_int | 46 | 46 | 100.0 % |  |
 | test_isinstance | 23 | 23 | 100.0 % |  |
 | test_iter | 57 | 57 | 100.0 % |  |
-| test_itertools | 131 | 137 | 95.6 % |  |
+| test_itertools | 137 | 137 | 100.0 % |  |
 | test_keywordonlyarg | 11 | 11 | 100.0 % |  |
 | test_list | 63 | 63 | 100.0 % |  |
 | test_listcomps | 57 | 57 | 100.0 % |  |
@@ -48,7 +48,7 @@ subprocesses) are skipped by the test.support stand-in and are not counted.
 | test_pow | 7 | 7 | 100.0 % |  |
 | test_property | 29 | 29 | 100.0 % |  |
 | test_raise | 37 | 37 | 100.0 % |  |
-| test_random | 100 | 101 | 99.0 % |  |
+| test_random | 101 | 101 | 100.0 % |  |
 | test_range | 28 | 28 | 100.0 % |  |
 | test_scope | 41 | 41 | 100.0 % |  |
 | test_set | 623 | 623 | 100.0 % |  |
@@ -56,12 +56,12 @@ subprocesses) are skipped by the test.support stand-in and are not counted.
 | test_slice | 11 | 11 | 100.0 % |  |
 | test_sort | 21 | 21 | 100.0 % |  |
 | test_statistics | 370 | 370 | 100.0 % |  |
-| test_str | 127 | 128 | 99.2 % |  |
+| test_str | 128 | 128 | 100.0 % |  |
 | test_string | 38 | 38 | 100.0 % |  |
 | test_string_literals | 15 | 15 | 100.0 % |  |
-| test_super | 35 | 36 | 97.2 % |  |
+| test_super | 36 | 36 | 100.0 % |  |
 | test_tuple | 36 | 36 | 100.0 % |  |
-| test_types | 116 | 118 | 98.3 % |  |
+| test_types | 118 | 118 | 100.0 % |  |
 | test_unary | 6 | 6 | 100.0 % |  |
 | test_unpack | 1 | 1 | 100.0 % |  |
 | test_userdict | 25 | 25 | 100.0 % |  |
@@ -73,17 +73,7 @@ The most common reasons, by the error a failing test ends with:
 
 | tests | reason |
 |---:|---|
-| 9 | skipped here: no threads |
-| 7 | wrong result (AssertionError) |
-| 5 | skipped here: object sizes are CPython's |
-| 1 | skipped here: the pty and signal modules must be available |
 | 1 | --- |
-| 1 | NotImplementedError: dis: this runtime'…'s |
-| 1 | skipped here: requires _decimal |
-| 1 | skipped here: needs _testcapi.raise_SIGINT_then_send_None |
-| 1 | skipped here: no fork |
-| 1 | setUpClass: ModuleNotFoundError: No module named '…' |
-| 1 | ModuleNotFoundError: No module named '…' |
 
 Run `node tests/conformance/run.mjs` for the full list in
 tests/conformance/results.json.

@@ -3,7 +3,7 @@
  "cpython": "Python 3.13.16",
  "files": {
   "test_augassign": {
-   "ms": 25,
+   "ms": 21,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -45,7 +45,7 @@
    }
   },
   "test_baseexception": {
-   "ms": 23,
+   "ms": 22,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -107,7 +107,7 @@
    }
   },
   "test_binop": {
-   "ms": 30,
+   "ms": 28,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -174,7 +174,7 @@
    }
   },
   "test_bool": {
-   "ms": 71,
+   "ms": 66,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -336,7 +336,7 @@
    }
   },
   "test_class": {
-   "ms": 112,
+   "ms": 96,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -462,28 +462,28 @@
     },
     "TestInlineValues.test_has_inline_values": {
      "cpython": "pass",
-     "ours": "fail",
-     "detail": "AssertionError: False is not true"
+     "ours": "pass",
+     "detail": ""
     },
     "TestInlineValues.test_inspect_dict": {
      "cpython": "pass",
-     "ours": "fail",
-     "detail": "AssertionError: False is not true"
+     "ours": "pass",
+     "detail": ""
     },
     "TestInlineValues.test_instances": {
      "cpython": "pass",
-     "ours": "fail",
-     "detail": "AssertionError: False is not true"
+     "ours": "pass",
+     "detail": ""
     },
     "TestInlineValues.test_many_attributes": {
      "cpython": "pass",
-     "ours": "fail",
-     "detail": "AssertionError: False is not true"
+     "ours": "pass",
+     "detail": ""
     },
     "TestInlineValues.test_many_attributes_with_dict": {
      "cpython": "pass",
-     "ours": "fail",
-     "detail": "AssertionError: False is not true"
+     "ours": "pass",
+     "detail": ""
     },
     "TestInlineValues.test_rematerialize_object_dict": {
      "cpython": "pass",
@@ -502,13 +502,13 @@
     },
     "TestInlineValues.test_update_dict": {
      "cpython": "pass",
-     "ours": "fail",
-     "detail": "AssertionError: False is not true"
+     "ours": "pass",
+     "detail": ""
     }
    }
   },
   "test_compare": {
-   "ms": 135,
+   "ms": 100,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -595,7 +595,7 @@
    }
   },
   "test_contains": {
-   "ms": 40,
+   "ms": 38,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -622,7 +622,7 @@
    }
   },
   "test_copy": {
-   "ms": 88,
+   "ms": 83,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -1121,7 +1121,7 @@
    }
   },
   "test_builtin": {
-   "ms": 635,
+   "ms": 620,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -1567,38 +1567,38 @@
     },
     "PtyTests.test_input_no_stdout_fileno": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "the pty and signal modules must be available"
+     "ours": "pass",
+     "detail": ""
     },
     "PtyTests.test_input_tty": {
      "cpython": "skip",
      "ours": "skip",
-     "detail": "the pty and signal modules must be available"
+     "detail": "stdin and stdout must be ttys"
     },
     "PtyTests.test_input_tty_non_ascii": {
      "cpython": "skip",
      "ours": "skip",
-     "detail": "the pty and signal modules must be available"
+     "detail": "stdin and stdout must be ttys"
     },
     "PtyTests.test_input_tty_non_ascii_unicode_errors": {
      "cpython": "skip",
      "ours": "skip",
-     "detail": "the pty and signal modules must be available"
+     "detail": "stdin and stdout must be ttys"
     },
     "PtyTests.test_input_tty_nondecodable_input": {
      "cpython": "skip",
      "ours": "skip",
-     "detail": "the pty and signal modules must be available"
+     "detail": "stdin and stdout must be ttys"
     },
     "PtyTests.test_input_tty_nonencodable_prompt": {
      "cpython": "skip",
      "ours": "skip",
-     "detail": "the pty and signal modules must be available"
+     "detail": "stdin and stdout must be ttys"
     },
     "PtyTests.test_input_tty_null_in_prompt": {
      "cpython": "skip",
      "ours": "skip",
-     "detail": "the pty and signal modules must be available"
+     "detail": "stdin and stdout must be ttys"
     },
     "ShutdownTest.test_cleanup": {
      "cpython": "pass",
@@ -1738,7 +1738,7 @@
    }
   },
   "test_dictviews": {
-   "ms": 65,
+   "ms": 73,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -1825,7 +1825,7 @@
    }
   },
   "test_dict": {
-   "ms": 487,
+   "ms": 492,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -2176,8 +2176,8 @@
     },
     "DictTest.test_splittable_popitem": {
      "cpython": "pass",
-     "ours": "fail",
-     "detail": "AssertionError: 112 not greater than 136"
+     "ours": "pass",
+     "detail": ""
     },
     "DictTest.test_splittable_setdefault": {
      "cpython": "pass",
@@ -2392,7 +2392,7 @@
    }
   },
   "test_enumerate": {
-   "ms": 205,
+   "ms": 215,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -2859,7 +2859,7 @@
    }
   },
   "test_collections": {
-   "ms": 1036,
+   "ms": 1015,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -3361,7 +3361,7 @@
    }
   },
   "test_format": {
-   "ms": 38,
+   "ms": 35,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -3458,7 +3458,7 @@
    }
   },
   "test_float": {
-   "ms": 256,
+   "ms": 282,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -3715,7 +3715,7 @@
    }
   },
   "test_fstring": {
-   "ms": 299,
+   "ms": 286,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -3926,8 +3926,8 @@
     },
     "TestCase.test_fstring_without_formatting_bytecode": {
      "cpython": "pass",
-     "ours": "error",
-     "detail": "NotImplementedError: dis: this runtime's bytecode is not CPython's"
+     "ours": "pass",
+     "detail": ""
     },
     "TestCase.test_global": {
      "cpython": "pass",
@@ -4147,7 +4147,7 @@
    }
   },
   "test_generators": {
-   "ms": 73,
+   "ms": 74,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -4343,8 +4343,8 @@
     },
     "SignalAndYieldFromTest.test_raise_and_yield_from": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "needs _testcapi.raise_SIGINT_then_send_None"
+     "ours": "pass",
+     "detail": ""
     },
     "YieldFromTests.test_generator_gi_yieldfrom": {
      "cpython": "pass",
@@ -4354,13 +4354,13 @@
    }
   },
   "test_genexps": {
-   "ms": 15,
+   "ms": 18,
    "importError": null,
    "crashed": null,
    "tests": {}
   },
   "test_grammar": {
-   "ms": 86,
+   "ms": 99,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -5039,7 +5039,7 @@
    }
   },
   "test_functools": {
-   "ms": 828,
+   "ms": 931,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -5230,18 +5230,18 @@
     },
     "TestLRUC.test_lru_cache_threaded": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestLRUC.test_lru_cache_threaded2": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestLRUC.test_lru_cache_threaded3": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestLRUC.test_lru_cache_typed_is_not_recursive": {
      "cpython": "pass",
@@ -5375,18 +5375,18 @@
     },
     "TestLRUPy.test_lru_cache_threaded": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestLRUPy.test_lru_cache_threaded2": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestLRUPy.test_lru_cache_threaded3": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestLRUPy.test_lru_cache_typed_is_not_recursive": {
      "cpython": "pass",
@@ -6135,8 +6135,8 @@
     },
     "TestSingleDispatch.test_c_classes": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "requires _decimal"
+     "ours": "pass",
+     "detail": ""
     },
     "TestSingleDispatch.test_cache_invalidation": {
      "cpython": "pass",
@@ -6411,7 +6411,7 @@
    }
   },
   "test_isinstance": {
-   "ms": 75,
+   "ms": 80,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -6533,7 +6533,7 @@
    }
   },
   "test_iter": {
-   "ms": 198,
+   "ms": 220,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -6825,7 +6825,7 @@
    }
   },
   "test_exceptions": {
-   "ms": 1880,
+   "ms": 2100,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -7384,7 +7384,7 @@
    }
   },
   "test_list": {
-   "ms": 203,
+   "ms": 241,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -7706,7 +7706,7 @@
    }
   },
   "test_listcomps": {
-   "ms": 79,
+   "ms": 82,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -7998,7 +7998,7 @@
    }
   },
   "test_long": {
-   "ms": 2370,
+   "ms": 2420,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -8225,7 +8225,7 @@
    }
   },
   "test_int": {
-   "ms": 17685,
+   "ms": 9332,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -8462,7 +8462,7 @@
    }
   },
   "test_opcodes": {
-   "ms": 56,
+   "ms": 61,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -8508,8 +8508,404 @@
     }
    }
   },
+  "test_pow": {
+   "ms": 15657,
+   "importError": null,
+   "crashed": null,
+   "tests": {
+    "PowTest.test_big_exp": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PowTest.test_bug643260": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PowTest.test_bug705231": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PowTest.test_negative_exponent": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PowTest.test_other": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PowTest.test_powfloat": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PowTest.test_powint": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    }
+   }
+  },
+  "test_property": {
+   "ms": 32,
+   "importError": null,
+   "crashed": null,
+   "tests": {
+    "PropertySubclassTests.test_docstring_copy": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_docstring_copy2": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_issue41287": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_prefer_explicit_doc": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_property_new_getter_new_docstring": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_property_no_doc_on_getter": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_property_setter_copies_getter_docstring": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_property_with_slots_and_doc_slot_docstring_present": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_property_with_slots_docstring_silently_dropped": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_property_with_slots_no_docstring": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertySubclassTests.test_slots_docstring_copy_exception": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_gh_115618": {
+     "cpython": "skip",
+     "ours": "skip",
+     "detail": "reference counts"
+    },
+    "PropertyTests.test_property___isabstractmethod__descriptor": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_builtin_doc_writable": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_decorator_baseclass": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_decorator_baseclass_doc": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_decorator_doc": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_decorator_doc_writable": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_decorator_subclass": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_decorator_subclass_doc": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_getter_doc_override": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_name": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_set_name_incorrect_args": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_property_setname_on_property_subclass": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyTests.test_refleaks_in___init__": {
+     "cpython": "skip",
+     "ours": "skip",
+     "detail": "reference counts"
+    },
+    "PropertyUnreachableAttributeNoName.test_del_property": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyUnreachableAttributeNoName.test_get_property": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyUnreachableAttributeNoName.test_set_property": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyUnreachableAttributeWithName.test_del_property": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyUnreachableAttributeWithName.test_get_property": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "PropertyUnreachableAttributeWithName.test_set_property": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    }
+   }
+  },
+  "test_raise": {
+   "ms": 32,
+   "importError": null,
+   "crashed": null,
+   "tests": {
+    "TestCause.testCauseSyntax": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestCause.test_class_cause": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestCause.test_class_cause_nonexception_result": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestCause.test_erroneous_cause": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestCause.test_instance_cause": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestCause.test_invalid_cause": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_3118": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_3611": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_c_exception_context": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_c_exception_raise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_class_context_class_raise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_class_context_instance_raise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_context_manager": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_cycle_broken": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_instance_context_instance_raise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_noraise_finally": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_not_last": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_raise_finally": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestContext.test_reraise_cycle_broken": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_assert_with_tuple_arg": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_erroneous_exception": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_except_reraise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_finally_reraise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_invalid_reraise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_nested_reraise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_new_returns_invalid_instance": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_raise_from_None": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_reraise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_with_reraise1": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_with_reraise2": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRaise.test_yield_reraise": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRemovedFunctionality.test_strings": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestRemovedFunctionality.test_tuples": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestTraceback.test_accepts_traceback": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestTraceback.test_sets_traceback": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestTracebackType.test_attrs": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "TestTracebackType.test_constructor": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    }
+   }
+  },
   "test_itertools": {
-   "ms": 20411,
+   "ms": 24601,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -8550,23 +8946,23 @@
     },
     "SizeofTest.test_combinations_sizeof": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "object sizes are CPython's"
+     "ours": "pass",
+     "detail": ""
     },
     "SizeofTest.test_combinations_with_replacement_sizeof": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "object sizes are CPython's"
+     "ours": "pass",
+     "detail": ""
     },
     "SizeofTest.test_permutations_sizeof": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "object sizes are CPython's"
+     "ours": "pass",
+     "detail": ""
     },
     "SizeofTest.test_product_sizeof": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "object sizes are CPython's"
+     "ours": "pass",
+     "detail": ""
     },
     "SubclassWithKwargsTest.test_keywords_in_subclass": {
      "cpython": "pass",
@@ -8670,8 +9066,8 @@
     },
     "TestBasicOps.test_count_threading": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestBasicOps.test_count_with_step": {
      "cpython": "pass",
@@ -8835,8 +9231,8 @@
     },
     "TestBasicOps.test_tee_concurrent": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestBasicOps.test_tee_dealloc_segfault": {
      "cpython": "pass",
@@ -9225,362 +9621,8 @@
     }
    }
   },
-  "test_property": {
-   "ms": 33,
-   "importError": null,
-   "crashed": null,
-   "tests": {
-    "PropertySubclassTests.test_docstring_copy": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_docstring_copy2": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_issue41287": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_prefer_explicit_doc": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_property_new_getter_new_docstring": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_property_no_doc_on_getter": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_property_setter_copies_getter_docstring": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_property_with_slots_and_doc_slot_docstring_present": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_property_with_slots_docstring_silently_dropped": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_property_with_slots_no_docstring": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertySubclassTests.test_slots_docstring_copy_exception": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_gh_115618": {
-     "cpython": "skip",
-     "ours": "skip",
-     "detail": "reference counts"
-    },
-    "PropertyTests.test_property___isabstractmethod__descriptor": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_builtin_doc_writable": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_decorator_baseclass": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_decorator_baseclass_doc": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_decorator_doc": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_decorator_doc_writable": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_decorator_subclass": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_decorator_subclass_doc": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_getter_doc_override": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_name": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_set_name_incorrect_args": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_property_setname_on_property_subclass": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyTests.test_refleaks_in___init__": {
-     "cpython": "skip",
-     "ours": "skip",
-     "detail": "reference counts"
-    },
-    "PropertyUnreachableAttributeNoName.test_del_property": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyUnreachableAttributeNoName.test_get_property": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyUnreachableAttributeNoName.test_set_property": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyUnreachableAttributeWithName.test_del_property": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyUnreachableAttributeWithName.test_get_property": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "PropertyUnreachableAttributeWithName.test_set_property": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    }
-   }
-  },
-  "test_raise": {
-   "ms": 22,
-   "importError": null,
-   "crashed": null,
-   "tests": {
-    "TestCause.testCauseSyntax": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestCause.test_class_cause": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestCause.test_class_cause_nonexception_result": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestCause.test_erroneous_cause": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestCause.test_instance_cause": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestCause.test_invalid_cause": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_3118": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_3611": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_c_exception_context": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_c_exception_raise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_class_context_class_raise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_class_context_instance_raise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_context_manager": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_cycle_broken": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_instance_context_instance_raise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_noraise_finally": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_not_last": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_raise_finally": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestContext.test_reraise_cycle_broken": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_assert_with_tuple_arg": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_erroneous_exception": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_except_reraise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_finally_reraise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_invalid_reraise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_nested_reraise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_new_returns_invalid_instance": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_raise_from_None": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_reraise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_with_reraise1": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_with_reraise2": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRaise.test_yield_reraise": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRemovedFunctionality.test_strings": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestRemovedFunctionality.test_tuples": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestTraceback.test_accepts_traceback": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestTraceback.test_sets_traceback": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestTracebackType.test_attrs": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "TestTracebackType.test_constructor": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    }
-   }
-  },
   "test_random": {
-   "ms": 1888,
+   "ms": 2160,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -10076,8 +10118,8 @@
     },
     "TestModule.test_after_fork": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no fork"
+     "ours": "pass",
+     "detail": ""
     },
     "TestRandomSubclassing.test_random_subclass_with_kwargs": {
      "cpython": "pass",
@@ -10095,153 +10137,6 @@
      "detail": ""
     },
     "TestRawMersenneTwister.test_bug_42008": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    }
-   }
-  },
-  "test_range": {
-   "ms": 6409,
-   "importError": null,
-   "crashed": null,
-   "tests": {
-    "RangeTest.test_attributes": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_comparison": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_contains": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_count": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_empty": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_exhausted_iterator_pickling": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_index": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_invalid_invocation": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_issue11845": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_iterator_pickling": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_iterator_pickling_overflowing_index": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_iterator_setstate": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_iterator_unpickle_compat": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_large_exhausted_iterator_pickling": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_large_operands": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_large_range": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_odd_bug": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_pickling": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_range": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_range_constructor_error_messages": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_range_iterators": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_range_iterators_invocation": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_repr": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_reverse_iteration": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_slice": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_strided_limits": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_types": {
-     "cpython": "pass",
-     "ours": "pass",
-     "detail": ""
-    },
-    "RangeTest.test_user_index_method": {
      "cpython": "pass",
      "ours": "pass",
      "detail": ""
@@ -10460,42 +10355,147 @@
     }
    }
   },
-  "test_pow": {
-   "ms": 16892,
+  "test_range": {
+   "ms": 5848,
    "importError": null,
    "crashed": null,
    "tests": {
-    "PowTest.test_big_exp": {
+    "RangeTest.test_attributes": {
      "cpython": "pass",
      "ours": "pass",
      "detail": ""
     },
-    "PowTest.test_bug643260": {
+    "RangeTest.test_comparison": {
      "cpython": "pass",
      "ours": "pass",
      "detail": ""
     },
-    "PowTest.test_bug705231": {
+    "RangeTest.test_contains": {
      "cpython": "pass",
      "ours": "pass",
      "detail": ""
     },
-    "PowTest.test_negative_exponent": {
+    "RangeTest.test_count": {
      "cpython": "pass",
      "ours": "pass",
      "detail": ""
     },
-    "PowTest.test_other": {
+    "RangeTest.test_empty": {
      "cpython": "pass",
      "ours": "pass",
      "detail": ""
     },
-    "PowTest.test_powfloat": {
+    "RangeTest.test_exhausted_iterator_pickling": {
      "cpython": "pass",
      "ours": "pass",
      "detail": ""
     },
-    "PowTest.test_powint": {
+    "RangeTest.test_index": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_invalid_invocation": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_issue11845": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_iterator_pickling": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_iterator_pickling_overflowing_index": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_iterator_setstate": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_iterator_unpickle_compat": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_large_exhausted_iterator_pickling": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_large_operands": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_large_range": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_odd_bug": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_pickling": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_range": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_range_constructor_error_messages": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_range_iterators": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_range_iterators_invocation": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_repr": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_reverse_iteration": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_slice": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_strided_limits": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_types": {
+     "cpython": "pass",
+     "ours": "pass",
+     "detail": ""
+    },
+    "RangeTest.test_user_index_method": {
      "cpython": "pass",
      "ours": "pass",
      "detail": ""
@@ -10503,7 +10503,7 @@
    }
   },
   "test_setcomps": {
-   "ms": 47,
+   "ms": 44,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -10515,7 +10515,7 @@
    }
   },
   "test_slice": {
-   "ms": 167,
+   "ms": 168,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -10577,7 +10577,7 @@
    }
   },
   "test_sort": {
-   "ms": 560,
+   "ms": 557,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -10689,7 +10689,7 @@
    }
   },
   "test_set": {
-   "ms": 13105,
+   "ms": 13269,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -13811,7 +13811,7 @@
    }
   },
   "test_str": {
-   "ms": 14831,
+   "ms": 15208,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -14297,8 +14297,8 @@
     },
     "StrTest.test_raiseMemError": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "object sizes are CPython's"
+     "ours": "pass",
+     "detail": ""
     },
     "StrTest.test_removeprefix": {
      "cpython": "pass",
@@ -14483,7 +14483,7 @@
    }
   },
   "test_string": {
-   "ms": 39,
+   "ms": 50,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -14680,7 +14680,7 @@
    }
   },
   "test_string_literals": {
-   "ms": 44,
+   "ms": 54,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -14782,7 +14782,7 @@
    }
   },
   "test_super": {
-   "ms": 66,
+   "ms": 83,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -14803,8 +14803,8 @@
     },
     "TestSuper.test___class___modification_multithreaded": {
      "cpython": "pass",
-     "ours": "skip",
-     "detail": "no threads"
+     "ours": "pass",
+     "detail": ""
     },
     "TestSuper.test___class___mro": {
      "cpython": "pass",
@@ -14969,7 +14969,7 @@
    }
   },
   "test_tuple": {
-   "ms": 267,
+   "ms": 285,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -15156,7 +15156,7 @@
    }
   },
   "test_types": {
-   "ms": 142,
+   "ms": 303,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -15497,8 +15497,8 @@
     },
     "SubinterpreterTests.test_static_types_inherited_slots": {
      "cpython": "pass",
-     "ours": "error",
-     "detail": "setUpClass: ModuleNotFoundError: No module named 'test.support.interpreters'"
+     "ours": "pass",
+     "detail": ""
     },
     "TypesTests.test_boolean_ops": {
      "cpython": "pass",
@@ -15507,8 +15507,8 @@
     },
     "TypesTests.test_capsule_type": {
      "cpython": "pass",
-     "ours": "error",
-     "detail": "ModuleNotFoundError: No module named '_socket'"
+     "ours": "pass",
+     "detail": ""
     },
     "TypesTests.test_comparisons": {
      "cpython": "pass",
@@ -15805,7 +15805,7 @@
    }
   },
   "test_unpack": {
-   "ms": 17,
+   "ms": 16,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -15817,7 +15817,7 @@
    }
   },
   "test_userdict": {
-   "ms": 102,
+   "ms": 123,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -15949,7 +15949,7 @@
    }
   },
   "test_with": {
-   "ms": 61,
+   "ms": 89,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -16211,7 +16211,7 @@
    }
   },
   "test_statistics": {
-   "ms": 64543,
+   "ms": 64977,
    "importError": null,
    "crashed": null,
    "tests": {
@@ -18068,7 +18068,7 @@
    }
   },
   "test_math": {
-   "ms": 118663,
+   "ms": 108572,
    "importError": null,
    "crashed": null,
    "tests": {
