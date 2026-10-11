@@ -11,11 +11,13 @@
 //! The filesystem is in memory: the host puts files in before the run and
 //! reads the ones the script changed after it (Sliqtly's deck is the sandbox).
 
+pub mod abcmod;
 pub mod ast;
 pub mod bigint;
 pub mod builtins;
 pub mod code;
 pub mod compile;
+pub mod decimalmod;
 pub mod format;
 pub mod fs;
 pub mod gc;

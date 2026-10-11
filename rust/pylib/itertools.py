@@ -4,6 +4,7 @@
 
 from operator import index as _index
 from _rpyitertools import immutable as _immutable, reuse as _reuse
+from _rpyitertools import chain_next as _chain_next, tee_next as _tee_next, repeat_next as _repeat_next
 
 _NULL = object()
 _MAXSIZE = (1 << 63) - 1
@@ -218,13 +219,9 @@ class _tee:
     def __iter__(self):
         return self
 
-    def __next__(self):
-        if self._index >= _LINKCELLS:
-            self._dataobj = self._dataobj._jumplink()
-            self._index = 0
-        value = self._dataobj._getitem(self._index)
-        self._index += 1
-        return value
+    # native, as CPython's tee_next: item _index of _dataobj, as
+    # _tee_dataobject._getitem gives it
+    __next__ = _tee_next
 
     def __copy__(self):
         new = _object_new(type(self))
@@ -505,25 +502,9 @@ class chain:
     def __iter__(self):
         return self
 
-    def __next__(self):
-        while self._source is not None:
-            if self._active is None:
-                try:
-                    iterable = next(self._source)
-                except BaseException:
-                    self._source = None
-                    raise
-                try:
-                    self._active = iter(iterable)
-                except BaseException:
-                    self._source = None
-                    raise
-            try:
-                return next(self._active)
-            except StopIteration:
-                pass
-            self._active = None
-        raise StopIteration
+    # native, as CPython's chain_next: next item of _active, moving on
+    # along _source as each is exhausted
+    __next__ = _chain_next
 
     def __reduce__(self):
         _deprecated()
@@ -1021,12 +1002,8 @@ class repeat:
     def __iter__(self):
         return self
 
-    def __next__(self):
-        if self._cnt == 0:
-            raise StopIteration
-        if self._cnt > 0:
-            self._cnt -= 1
-        return self._element
+    # native, as CPython's repeat_next
+    __next__ = _repeat_next
 
     def __length_hint__(self):
         if self._cnt == -1:

@@ -122,8 +122,5 @@ class ContextVar:
     def __repr__(self):
         return f"<ContextVar name={self._name!r} at {id(self):#x}>"
 
-    def __hash__(self):
-        return id(self)
-
     def __class_getitem__(cls, item):
         return cls

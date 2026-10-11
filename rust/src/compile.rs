@@ -1136,7 +1136,7 @@ impl<'a> Compiler<'a> {
             return i;
         }
         let u = self.u();
-        u.names.push(Rc::new(PyStr::new(n.to_string())));
+        u.names.push(crate::value::intern(n));
         let i = (u.names.len() - 1) as u32;
         u.name_map.insert(n.clone(), i);
         i

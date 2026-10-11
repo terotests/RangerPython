@@ -1179,9 +1179,24 @@ fn kw_get(k: Kw, name: &str) -> Value {
 }
 
 /// BaseException.__init__ and the subclass slots it fills; returns the args to keep
+/// the built-in exceptions exc_setup gives fields
+const EXC_WITH_FIELDS: [&str; 11] = ["ImportError", "AttributeError", "NameError", "OSError", "StopIteration", "SystemExit", "SyntaxError", "UnicodeError", "UnicodeTranslateError", "UnicodeDecodeError", "UnicodeEncodeError"];
+
 fn exc_setup(vm: &mut Vm, inst: &Instance, args: &[Value], k: Kw) -> PyResult<Vec<Value>> {
     let cls = inst.class.borrow().clone();
-    let is = |vm: &Vm, n: &str| cls.is_subclass(&vm.exc_class(n));
+    // the built-in exception classes with fields of their own along the
+    // MRO, found once: by name, then checked to be the built-in class
+    let bases: Vec<&'static str> = cls
+        .mro
+        .borrow()
+        .iter()
+        .filter_map(|k| {
+            let name = k.name.borrow();
+            let n = *EXC_WITH_FIELDS.iter().find(|n| **n == &*name.s)?;
+            vm.exc.get(n).filter(|c| Rc::ptr_eq(c, k)).map(|_| n)
+        })
+        .collect();
+    let is = |_: &Vm, n: &str| bases.contains(&n);
     let mut keep = args.to_vec();
     let mut set: Vec<(&str, Value)> = vec![];
     let first = args.first().cloned().unwrap_or(Value::None);
@@ -1195,7 +1210,7 @@ fn exc_setup(vm: &mut Vm, inst: &Instance, args: &[Value], k: Kw) -> PyResult<Ve
     } else if is(vm, "NameError") {
         kw_check(vm, "NameError", k, &["name"])?;
         set = vec![("name", kw_get(k, "name"))];
-    } else {
+    } else if !k.is_empty() {
         let tn = cls.name().to_string();
         kw_check(vm, &tn, k, &[])?;
     }
@@ -1280,9 +1295,25 @@ fn exc_setup(vm: &mut Vm, inst: &Instance, args: &[Value], k: Kw) -> PyResult<Ve
     }
     let mut ex = inst.extra.borrow_mut();
     for (n, v) in set {
-        ex.set_s(n, v);
+        ex.set_str(exc_field_name(n), v);
     }
     Ok(keep)
+}
+
+/// the str for an exception field name, made once
+fn exc_field_name(n: &str) -> Rc<PyStr> {
+    thread_local! {
+        static NAMES: RefCell<Vec<Rc<PyStr>>> = const { RefCell::new(Vec::new()) };
+    }
+    NAMES.with(|names| {
+        let mut names = names.borrow_mut();
+        if let Some(s) = names.iter().find(|s| s.s == n) {
+            return s.clone();
+        }
+        let s = ps(n);
+        names.push(s.clone());
+        s
+    })
 }
 
 /// fills the subclass slots of an exception made natively from `args`
@@ -1672,7 +1703,7 @@ fn mk(name: &str, base: Option<&Rc<Class>>, b: Builtin) -> Rc<Class> {
     if let Some(x) = base {
         mro.extend(x.mro.borrow().iter().cloned());
     }
-    *c.mro.borrow_mut() = mro;
+    c.set_mro(mro);
     c
 }
 
@@ -1684,7 +1715,7 @@ pub fn make_types() -> Types {
     let obj = crate::vm::obj_class();
     if obj.mro.borrow().is_empty() {
         *obj.bases.borrow_mut() = vec![object.clone()];
-        *obj.mro.borrow_mut() = vec![obj.clone(), object.clone()];
+        obj.set_mro(vec![obj.clone(), object.clone()]);
     }
     let iterator = mk("iterator", o, Builtin::Iterator);
     Types {
@@ -3660,7 +3691,7 @@ pub fn builtin_doc(name: &str) -> Option<(&'static str, &'static str)> {
 /// the module a native function belongs to, from its dotted name
 pub fn native_module_name(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((m, _)) if matches!(m, "math" | "sys" | "_time" | "os" | "posixpath" | "json" | "_struct" | "_hashlib" | "_statistics") => m,
+        Some((m, _)) if matches!(m, "math" | "sys" | "_time" | "os" | "posixpath" | "json" | "_struct" | "_hashlib" | "_abc" | "_statistics") => m,
         _ => "builtins",
     }
 }

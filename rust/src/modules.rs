@@ -38,6 +38,8 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "os.path" | "posixpath" => os_path_module(),
         "json" => json_module(vm),
         "_rpyrandom" => random_module(),
+        "_abc" => crate::abcmod::abc_module(),
+        "_rpydecimal" => crate::decimalmod::decimal_module(),
         "builtins" => Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() })),
         "_hashlib" => hashlib_module(),
         "_struct" => struct_module(),
@@ -226,7 +228,153 @@ fn tg_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn itertools_module() -> Value {
     let (d, m) = module("_rpyitertools");
     put_fns(&d, &[("_rpyitertools.immutable", it_immutable), ("_rpyitertools.reuse", it_reuse)]);
+    // methods, which bind to the instance
+    for (name, full, f) in [("chain_next", "chain.__next__", it_chain_next as NativeFnPtr), ("tee_next", "_tee.__next__", it_tee_next), ("repeat_next", "repeat.__next__", it_repeat_next)] {
+        d.borrow_mut().set_s(name, Value::Native(Rc::new(NativeFn::new(full, f, Value::None))));
+    }
     m
+}
+
+/// the attribute names the native itertools methods use, interned once
+const IT_FIELDS: [&str; 10] = ["_source", "_active", "_index", "_dataobj", "_values", "_running", "_it", "_jumplink", "_cnt", "_element"];
+
+fn it_name(name: &str) -> Rc<PyStr> {
+    thread_local! {
+        static NAMES: Vec<Rc<PyStr>> = IT_FIELDS.iter().map(|n| crate::value::intern(n)).collect();
+    }
+    let i = IT_FIELDS.iter().position(|n| *n == name).expect("an itertools field");
+    NAMES.with(|n| n[i].clone())
+}
+
+/// an attribute an itertools object keeps in its __dict__, read directly as
+/// the C code reads its struct fields; anything else through getattr
+fn it_field(vm: &mut Vm, o: &Value, name: &str) -> PyResult<Value> {
+    let key = it_name(name);
+    if let Value::Instance(i) = o {
+        if let Some(v) = i.dict.borrow().get_str(&key) {
+            return Ok(v.clone());
+        }
+    }
+    vm.getattr(o, &key)
+}
+
+fn it_set(vm: &mut Vm, o: &Value, name: &str, v: Value) -> PyResult<()> {
+    let key = it_name(name);
+    match o {
+        Value::Instance(i) => {
+            i.dict.borrow_mut().set_str(key, v);
+            Ok(())
+        }
+        _ => vm.setattr(o, &key, v),
+    }
+}
+
+/// chain.__next__, as CPython's chain_next: an exhausted iterable costs no
+/// Python frame or StopIteration object
+fn it_chain_next(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let me = &a[0];
+    loop {
+        let source = it_field(vm, me, "_source")?;
+        if source.is_none() {
+            break;
+        }
+        let mut active = it_field(vm, me, "_active")?;
+        if active.is_none() {
+            let iterable = match vm.next(&source) {
+                Ok(Some(x)) => x,
+                Ok(None) => {
+                    vm.last_return = None;
+                    it_set(vm, me, "_source", Value::None)?;
+                    break;
+                }
+                Err(e) => {
+                    it_set(vm, me, "_source", Value::None)?;
+                    return Err(e);
+                }
+            };
+            active = match vm.iter(&iterable) {
+                Ok(i) => i,
+                Err(e) => {
+                    it_set(vm, me, "_source", Value::None)?;
+                    return Err(e);
+                }
+            };
+            it_set(vm, me, "_active", active.clone())?;
+        }
+        if let Some(v) = vm.next(&active)? {
+            return Ok(v);
+        }
+        vm.last_return = None;
+        it_set(vm, me, "_active", Value::None)?;
+    }
+    Err(vm.stop_iteration(Value::None))
+}
+
+/// repeat.__next__, as CPython's repeat_next: _element while _cnt (-1
+/// for no limit) lasts
+fn it_repeat_next(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let me = &a[0];
+    let cnt = it_field(vm, me, "_cnt")?;
+    match cnt {
+        Value::Int(0) => return Err(vm.stop_iteration(Value::None)),
+        Value::Int(n) if n > 0 => it_set(vm, me, "_cnt", Value::Int(n - 1))?,
+        Value::Int(_) => {}
+        _ => return Err(vm.type_error("repeat count is not an int")),
+    }
+    it_field(vm, me, "_element")
+}
+
+/// the tee link size, _LINKCELLS in pylib/itertools.py
+const TEE_LINKCELLS: i64 = 57;
+
+/// _tee.__next__, as CPython's tee_next: item `_index` of the shared
+/// _tee_dataobject, which reads one more from the source when it is new
+fn it_tee_next(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let me = &a[0];
+    let mut index = match it_field(vm, me, "_index")? {
+        Value::Int(i) => i,
+        _ => return Err(vm.type_error("tee index is not an int")),
+    };
+    let mut data = it_field(vm, me, "_dataobj")?;
+    if index >= TEE_LINKCELLS {
+        let jump = vm.getattr(&data, &it_name("_jumplink"))?;
+        data = vm.call_vec(&jump, vec![], &[])?;
+        it_set(vm, me, "_dataobj", data.clone())?;
+        index = 0;
+        it_set(vm, me, "_index", Value::Int(0))?;
+    }
+    let Value::List(values) = it_field(vm, &data, "_values")? else {
+        return Err(vm.type_error("tee data values are not a list"));
+    };
+    let have = values.borrow().get(index as usize).cloned();
+    let value = match have {
+        Some(v) => v,
+        None => {
+            let running = it_field(vm, &data, "_running")?;
+            if vm.truthy(&running)? {
+                return Err(vm.err("RuntimeError", "cannot re-enter the tee iterator"));
+            }
+            let source = it_field(vm, &data, "_it")?;
+            it_set(vm, &data, "_running", Value::Bool(true))?;
+            let r = vm.next(&source);
+            it_set(vm, &data, "_running", Value::Bool(false))?;
+            let v = match r? {
+                Some(v) => v,
+                None => {
+                    vm.last_return = None;
+                    return Err(vm.stop_iteration(Value::None));
+                }
+            };
+            crate::gc::list_store(&values, &v);
+            values.borrow_mut().push(v.clone());
+            v
+        }
+    };
+    it_set(vm, me, "_index", Value::Int(index + 1))?;
+    Ok(value)
 }
 
 /// mark a class as standing in for a static C type, whose attributes are fixed
@@ -1061,15 +1209,11 @@ fn sys_getsizeof(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     };
     Ok(Value::Int(n as i64))
 }
-thread_local! {
-    /// the strings sys.intern has seen, one object per distinct text
-    static INTERNED: RefCell<std::collections::HashMap<String, Rc<PyStr>>> = RefCell::new(std::collections::HashMap::new());
-}
 
 fn sys_intern(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     match &a[0] {
-        Value::Str(s) => Ok(Value::Str(INTERNED.with(|t| t.borrow_mut().entry(s.s.clone()).or_insert_with(|| s.clone()).clone()))),
+        Value::Str(s) => Ok(Value::Str(crate::value::intern_str(s))),
         other => {
             let tn = vm.type_name(other);
             Err(vm.type_error(format!("intern() argument must be str, not {}", tn)))
@@ -1706,7 +1850,7 @@ fn json_module(vm: &mut Vm) -> Value {
     let c = Class::new("JSONDecodeError", vec![ve.clone()], Builtin::BaseException);
     let mut mro = vec![c.clone()];
     mro.extend(ve.mro.borrow().iter().cloned());
-    *c.mro.borrow_mut() = mro;
+    c.set_mro(mro);
     c.dict.borrow_mut().set_s("__module__", Value::str("json.decoder"));
     vm.exc.insert("JSONDecodeError", c.clone());
     d.borrow_mut().set_s("JSONDecodeError", Value::Class(c));

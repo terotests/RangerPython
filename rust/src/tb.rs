@@ -14,7 +14,7 @@ impl Vm {
             return c.clone();
         }
         let c = Class::new(name, vec![self.t.object.clone()], Builtin::Obj);
-        *c.mro.borrow_mut() = vec![c.clone(), self.t.object.clone()];
+        c.set_mro(vec![c.clone(), self.t.object.clone()]);
         c.dict.borrow_mut().set_s("__module__", Value::str("builtins"));
         match name {
             "member_descriptor" => {
@@ -51,7 +51,7 @@ impl Vm {
             return c.clone();
         }
         let c = Class::new("SimpleNamespace", vec![self.t.object.clone()], Builtin::User);
-        *c.mro.borrow_mut() = vec![c.clone(), self.t.object.clone()];
+        c.set_mro(vec![c.clone(), self.t.object.clone()]);
         c.dict.borrow_mut().set_s("__module__", Value::str("types"));
         def(&c, "SimpleNamespace.__init__", ns_init);
         def(&c, "SimpleNamespace.__repr__", ns_repr);

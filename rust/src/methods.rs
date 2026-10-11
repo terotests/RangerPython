@@ -1428,11 +1428,11 @@ pub fn to_int(vm: &mut Vm, v: &Value) -> PyResult<Value> {
         }
         _ => {
             let b = vm.base_of(v);
-            if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) && vm.lookup_special(v, &ps("__int__")).is_none_or(|f| matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)))) {
+            if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) && vm.lookup_special(v, &vm.n.int_.clone()).is_none_or(|f| matches!(&f, Value::Method(m) if matches!(m.1, Value::Native(_)))) {
                 return to_int(vm, &b);
             }
-            for n in ["__int__", "__index__"] {
-                if let Some(f) = vm.lookup_special(v, &ps(n)) {
+            for (n, name) in [("__int__", vm.n.int_.clone()), ("__index__", vm.n.index.clone())] {
+                if let Some(f) = vm.lookup_special(v, &name) {
                     let r = vm.call_vec(&f, vec![], &[])?;
                     return exact_int(vm, r, n);
                 }
@@ -3716,7 +3716,7 @@ pub fn mappingproxy_class(vm: &mut Vm) -> Rc<Class> {
         return c.clone();
     }
     let c = Class::new("mappingproxy", vec![vm.t.object.clone()], Builtin::Obj);
-    *c.mro.borrow_mut() = vec![c.clone(), vm.t.object.clone()];
+    c.set_mro(vec![c.clone(), vm.t.object.clone()]);
     def_static(&c, "mappingproxy.__new__", mp_new);
     def(&c, "mappingproxy.__getitem__", mp_getitem);
     def(&c, "mappingproxy.__contains__", mp_contains);

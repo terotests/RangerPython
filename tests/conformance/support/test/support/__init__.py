@@ -108,7 +108,7 @@ requires_fork = _skipper("no fork")
 requires_mac_ver = _skipper("not macOS", sys.platform == "darwin")
 # as regrtest without -u: the resources ('cpu' among them) are not used, as
 # their tests would take longer than a file's time budget on this runtime
-use_resources = ()
+use_resources = None
 
 
 def is_resource_enabled(resource):

@@ -510,7 +510,7 @@ fn referents(v: &Value, out: &mut Visit) -> bool {
                     push(out, back);
                 }
                 ObjKind::Other(x) | ObjKind::TupleGetter(_, x) => push(out, x),
-                ObjKind::File { .. } | ObjKind::StringIO { .. } | ObjKind::MatchPat(_) | ObjKind::Rng(_) | ObjKind::Weak(_) => {}
+                ObjKind::File { .. } | ObjKind::StringIO { .. } | ObjKind::MatchPat(_) | ObjKind::Rng(_) | ObjKind::Weak(_) | ObjKind::Abc(_) => {}
             }
         }
         _ => {}

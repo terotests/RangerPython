@@ -206,6 +206,8 @@ pub struct Class {
     /// attributes cannot be set (Py_TPFLAGS_IMMUTABLETYPE)
     pub immutable: Cell<bool>,
     pub slots: RefCell<Option<Vec<Name>>>,
+    /// never reused, unlike the address: keys the lookup cache
+    id: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -332,6 +334,8 @@ pub enum ObjKind {
     Weak(WeakTarget),
     /// a namedtuple field: _collections._tuplegetter(index, doc)
     TupleGetter(usize, Value),
+    /// an ABC's registry and subclass caches (_abc._abc_data)
+    Abc(Box<crate::abcmod::AbcData>),
     Other(Value),
 }
 
@@ -392,10 +396,65 @@ pub struct Entry {
     pub value: Value,
 }
 
+thread_local! {
+    /// bumped when a class dict gains or loses keys or an MRO changes;
+    /// Class::lookup's cache entries hold while it stays the same
+    static TYPE_VERSION: Cell<u64> = const { Cell::new(1) };
+    static NEXT_CLASS_ID: Cell<u64> = const { Cell::new(0) };
+    static LOOKUP_CACHE: RefCell<Vec<CacheEntry>> = RefCell::new((0..LOOKUP_CACHE_SIZE).map(|_| CacheEntry::default()).collect());
+    /// interned strs, one object per distinct text: identifiers the
+    /// compiler names and what sys.intern was given
+    static INTERNED: RefCell<std::collections::HashMap<Box<str>, Rc<PyStr>, std::hash::BuildHasherDefault<FxHasher>>> = RefCell::new(Default::default());
+}
+
+const LOOKUP_CACHE_BITS: u32 = 12;
+const LOOKUP_CACHE_SIZE: usize = 1 << LOOKUP_CACHE_BITS;
+/// names longer than this are looked up without the cache
+const CACHED_NAME: usize = 32;
+
+/// one remembered Class::lookup: where along the MRO the name is, if anywhere
+#[derive(Default)]
+struct CacheEntry {
+    version: u64,
+    class: u64,
+    hash: u64,
+    len: u8,
+    name: [u8; CACHED_NAME],
+    /// (MRO position, entry index)
+    found: Option<(u32, u32)>,
+}
+
+/// the interned str with this text
+pub fn intern(s: &str) -> Rc<PyStr> {
+    INTERNED.with(|t| {
+        if let Some(v) = t.borrow().get(s) {
+            return v.clone();
+        }
+        let v = Rc::new(PyStr::new(s.to_string()));
+        t.borrow_mut().insert(s.into(), v.clone());
+        v
+    })
+}
+
+/// the interned str equal to `s`, which becomes it when there is none
+/// (a str with lone surrogates is its own)
+pub fn intern_str(s: &Rc<PyStr>) -> Rc<PyStr> {
+    if s.wtf.is_some() {
+        return s.clone();
+    }
+    INTERNED.with(|t| t.borrow_mut().entry(s.s.as_str().into()).or_insert_with(|| s.clone()).clone())
+}
+
+pub fn types_changed() {
+    TYPE_VERSION.with(|v| v.set(v.get() + 1));
+}
+
 pub struct Dict {
     pub entries: Vec<Option<Entry>>,
     index: Vec<i32>,
     pub len: usize,
+    /// a class's dict: adding or removing keys invalidates the lookup cache
+    watched: bool,
 }
 
 pub enum Lookup {
@@ -413,10 +472,10 @@ impl Default for Dict {
 
 impl Dict {
     pub fn new() -> Dict {
-        Dict { entries: Vec::new(), index: Vec::new(), len: 0 }
+        Dict { entries: Vec::new(), index: Vec::new(), len: 0, watched: false }
     }
     pub fn with_capacity(n: usize) -> Dict {
-        let mut d = Dict { entries: Vec::with_capacity(n), index: Vec::new(), len: 0 };
+        let mut d = Dict { entries: Vec::with_capacity(n), index: Vec::new(), len: 0, watched: false };
         if n > 0 {
             let mut size = 8;
             while size * 2 < n * 3 {
@@ -433,7 +492,21 @@ impl Dict {
         self.len == 0
     }
 
+    /// mark this as a class's dict, whose keys Class::lookup caches
+    pub fn watch(&mut self) {
+        self.watched = true;
+        types_changed();
+    }
+
+    /// keys were added, removed or moved
+    fn reshaped(&self) {
+        if self.watched {
+            types_changed();
+        }
+    }
+
     fn rebuild(&mut self, size: usize) {
+        self.reshaped();
         let live: Vec<Option<Entry>> = self.entries.drain(..).filter(|e| e.is_some()).collect();
         self.entries = live;
         self.index = vec![-1; size];
@@ -580,12 +653,39 @@ impl Dict {
         }
     }
 
+    /// get_str for a key given as text, without making a str of it
     pub fn get_s(&self, key: &str) -> Option<Value> {
-        self.get_str(&PyStr::new(key.to_string())).cloned()
+        if self.index.is_empty() {
+            return None;
+        }
+        let hash = hash_bytes(key.as_bytes());
+        let mask = self.index.len() - 1;
+        let mut slot = (hash as usize) & mask;
+        let mut perturb = hash;
+        loop {
+            let ix = self.index[slot];
+            if ix == -1 {
+                return None;
+            }
+            if ix >= 0 {
+                if let Some(e) = &self.entries[ix as usize] {
+                    if e.hash == hash {
+                        if let Value::Str(s) = &e.key {
+                            if s.wtf.is_none() && s.s == key {
+                                return Some(e.value.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            perturb >>= 5;
+            slot = (slot * 5 + 1 + perturb as usize) & mask;
+        }
     }
 
     /// insert a key not yet present
     pub fn push_new(&mut self, hash: u64, key: Value, value: Value) {
+        self.reshaped();
         if (self.entries.len() + 1) * 3 >= self.index.len() * 2 {
             let mut size = 8;
             while size * 2 <= (self.len + 1) * 3 {
@@ -615,6 +715,7 @@ impl Dict {
     pub fn remove_at(&mut self, i: usize) -> Option<Entry> {
         let e = self.entries[i].take();
         if e.is_some() {
+            self.reshaped();
             self.len -= 1;
             // the index slot keeps pointing at a dead entry, which probes skip
             let dead = self.entries.len() - self.len;
@@ -648,6 +749,7 @@ impl Dict {
     }
 
     pub fn clear(&mut self) {
+        self.reshaped();
         self.entries.clear();
         self.index.clear();
         self.len = 0;
@@ -699,6 +801,7 @@ impl Dict {
     }
 
     pub fn pop_last(&mut self) -> Option<Entry> {
+        self.reshaped();
         while let Some(e) = self.entries.pop() {
             if let Some(e) = e {
                 self.len -= 1;
@@ -1039,26 +1142,80 @@ impl Class {
             has_del: Cell::new(false),
             immutable: Cell::new(false),
             slots: RefCell::new(None),
+            id: NEXT_CLASS_ID.with(|n| {
+                n.set(n.get() + 1);
+                n.get()
+            }),
         });
+        c.dict.borrow_mut().watch();
         crate::gc::track(crate::gc::Tracked::Class(Rc::downgrade(&c)));
         c
+    }
+
+    /// replace the MRO, which the lookup cache depends on
+    pub fn set_mro(&self, mro: Vec<Rc<Class>>) {
+        *self.mro.borrow_mut() = mro;
+        types_changed();
+    }
+
+    /// replace the dict, as class creation does with the namespace
+    pub fn set_dict(&self, mut d: Dict) {
+        d.watch();
+        *self.dict.borrow_mut() = d;
     }
     pub fn name(&self) -> String {
         self.name.borrow().s.clone()
     }
-    /// look a name up along the MRO
+    /// look a name up along the MRO. Past the class's own dict, where the
+    /// name is (or that it is nowhere) is cached until a class dict gains or
+    /// loses keys or an MRO changes
     #[inline]
     pub fn lookup(&self, name: &PyStr) -> Option<Value> {
         if let Some(v) = self.dict.borrow().get_str(name) {
             return Some(v.clone());
         }
         let mro = self.mro.borrow();
-        for c in mro.iter().skip(1) {
-            if let Some(v) = c.dict.borrow().get_str(name) {
-                return Some(v.clone());
+        if mro.len() <= 2 {
+            return mro.get(1).and_then(|c| c.dict.borrow().get_str(name).cloned());
+        }
+        let hash = name.hash();
+        let key = name.s.as_bytes();
+        let cacheable = key.len() <= CACHED_NAME && name.wtf.is_none();
+        let slot = ((self.id ^ hash).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - LOOKUP_CACHE_BITS)) as usize;
+        let version = TYPE_VERSION.with(Cell::get);
+        if cacheable {
+            let hit = LOOKUP_CACHE.with(|c| {
+                let c = c.borrow();
+                let e = &c[slot];
+                (e.version == version && e.class == self.id && e.hash == hash && &e.name[..e.len as usize] == key).then_some(e.found)
+            });
+            if let Some(found) = hit {
+                return found.and_then(|(at, i)| mro.get(at as usize)?.dict.borrow().entries.get(i as usize)?.as_ref().map(|e| e.value.clone()));
             }
         }
-        None
+        let mut found = None;
+        let mut value = None;
+        for (at, c) in mro.iter().enumerate().skip(1) {
+            let d = c.dict.borrow();
+            if let Some(i) = d.find_str(name) {
+                found = Some((at as u32, i as u32));
+                value = d.entries[i].as_ref().map(|e| e.value.clone());
+                break;
+            }
+        }
+        if cacheable {
+            LOOKUP_CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                let e = &mut c[slot];
+                e.version = version;
+                e.class = self.id;
+                e.hash = hash;
+                e.len = key.len() as u8;
+                e.name[..key.len()].copy_from_slice(key);
+                e.found = found;
+            });
+        }
+        value
     }
     pub fn lookup_s(&self, name: &str) -> Option<Value> {
         self.lookup(&PyStr::new(name.to_string()))

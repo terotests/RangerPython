@@ -61,28 +61,106 @@ fn sub_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
     out
 }
 
+/// operands at least this long (in limbs) multiply by Karatsuba
+const KARATSUBA_LIMBS: usize = 40;
+
 fn mul_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
     if a.is_empty() || b.is_empty() {
         return vec![];
     }
     let mut out = vec![0u32; a.len() + b.len()];
-    for (i, &x) in a.iter().enumerate() {
+    mul_into(&mut out, a, b);
+    trim(&mut out);
+    out
+}
+
+/// out += a * b, where out has room for a.len() + b.len() limbs
+fn mul_into(out: &mut [u32], a: &[u32], b: &[u32]) {
+    let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    if b.len() < KARATSUBA_LIMBS {
+        schoolbook_into(out, a, b);
+    } else if a.len() >= 2 * b.len() {
+        // unbalanced: b times b-sized pieces of a
+        for (i, piece) in a.chunks(b.len()).enumerate() {
+            let at = i * b.len();
+            mul_into(&mut out[at..at + piece.len() + b.len()], piece, b);
+        }
+    } else {
+        karatsuba_into(out, a, b);
+    }
+}
+
+fn schoolbook_into(out: &mut [u32], a: &[u32], b: &[u32]) {
+    for (i, &x) in b.iter().enumerate() {
+        if x == 0 {
+            continue;
+        }
         let mut carry = 0u64;
-        for (j, &y) in b.iter().enumerate() {
+        for (j, &y) in a.iter().enumerate() {
             let t = out[i + j] as u64 + x as u64 * y as u64 + carry;
             out[i + j] = t as u32;
             carry = t >> 32;
         }
-        let mut k = i + b.len();
-        while carry > 0 {
-            let t = out[k] as u64 + carry;
-            out[k] = t as u32;
-            carry = t >> 32;
-            k += 1;
-        }
+        add_at(out, i + a.len(), carry);
     }
-    trim(&mut out);
-    out
+}
+
+/// adds a small value into out from limb `at` up
+fn add_at(out: &mut [u32], mut at: usize, mut carry: u64) {
+    while carry > 0 {
+        let t = out[at] as u64 + carry;
+        out[at] = t as u32;
+        carry = t >> 32;
+        at += 1;
+    }
+}
+
+/// out += x, x no longer than out
+fn add_into(out: &mut [u32], x: &[u32]) {
+    let mut carry = 0u64;
+    for (i, &v) in x.iter().enumerate() {
+        let t = out[i] as u64 + v as u64 + carry;
+        out[i] = t as u32;
+        carry = t >> 32;
+    }
+    add_at(out, x.len(), carry);
+}
+
+/// out -= x, where the result stays non-negative
+fn sub_into(out: &mut [u32], x: &[u32]) {
+    let mut borrow = 0u64;
+    for (i, o) in out.iter_mut().enumerate() {
+        if i >= x.len() && borrow == 0 {
+            break;
+        }
+        let t = (*o as u64).wrapping_sub(*x.get(i).unwrap_or(&0) as u64).wrapping_sub(borrow);
+        *o = t as u32;
+        borrow = (t >> 63) & 1;
+    }
+}
+
+/// a * b = z2·B² + (z1 - z2 - z0)·B + z0 with z1 = (a1 + a0)(b1 + b0),
+/// for b.len() <= a.len() < 2 * b.len()
+fn karatsuba_into(out: &mut [u32], a: &[u32], b: &[u32]) {
+    let half = a.len().div_ceil(2);
+    let (a0, a1) = a.split_at(half);
+    let (b0, b1) = b.split_at(half.min(b.len()));
+    let mut z0 = vec![0u32; a0.len() + b0.len()];
+    mul_into(&mut z0, a0, b0);
+    let mut z2 = vec![0u32; a1.len() + b1.len()];
+    mul_into(&mut z2, a1, b1);
+    let sa = add_mag(a0, a1);
+    let sb = add_mag(b0, b1);
+    let mut z1 = vec![0u32; sa.len() + sb.len()];
+    mul_into(&mut z1, &sa, &sb);
+    sub_into(&mut z1, &z0);
+    sub_into(&mut z1, &z2);
+    trim(&mut z0);
+    trim(&mut z1);
+    trim(&mut z2);
+    add_into(out, &z0);
+    add_into(&mut out[half..], &z1);
+    add_into(&mut out[2 * half..], &z2);
 }
 
 fn divmod_small(a: &[u32], d: u32) -> (Vec<u32>, u32) {
@@ -206,6 +284,210 @@ fn divmod_mag(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     trim(&mut a);
     let r = shr_mag(&a, s);
     (q, r)
+}
+
+/// 10**9, the base the decimal conversions work in
+const DEC_BASE: u64 = 1_000_000_000;
+
+/// the decimal digits of a magnitude
+fn mag_to_decimal(mag: &[u32], out: &mut String) {
+    let mut cache = std::collections::HashMap::new();
+    let mut pieces = to_dec(mag, &mut cache);
+    trim(&mut pieces);
+    let mut it = pieces.iter().rev();
+    match it.next() {
+        Some(top) => out.push_str(&top.to_string()),
+        None => out.push('0'),
+    }
+    for p in it {
+        out.push_str(&format!("{:09}", p));
+    }
+}
+
+/// a magnitude in base 10**9 limbs, least significant first. Short ones
+/// are peeled by division by that constant (a multiply for the compiler);
+/// long ones are hi * (2**32)**k + lo with the arithmetic done in base
+/// 10**9, so the conversion costs a few balanced Karatsuba products
+fn to_dec(mag: &[u32], pows: &mut std::collections::HashMap<usize, Vec<u32>>) -> Vec<u32> {
+    if mag.len() <= 2 * KARATSUBA_LIMBS {
+        let mut pieces = vec![];
+        let mut cur = mag.to_vec();
+        trim(&mut cur);
+        while !cur.is_empty() {
+            let mut rem = 0u64;
+            for x in cur.iter_mut().rev() {
+                let t = (rem << 32) | *x as u64;
+                *x = (t / DEC_BASE) as u32;
+                rem = t % DEC_BASE;
+            }
+            trim(&mut cur);
+            pieces.push(rem as u32);
+        }
+        return pieces;
+    }
+    // split at a power of two, so the powers are shared
+    let k = 1usize << (usize::BITS - 1 - (mag.len() - 1).leading_zeros());
+    let lo = to_dec(&mag[..k], pows);
+    let hi = to_dec(&mag[k..], pows);
+    let p = dec_pow_limbs(k, pows);
+    let mut out = vec![0u32; hi.len() + p.len() + 1];
+    dec_mul_into(&mut out, &hi, &p);
+    dec_add_into(&mut out, &lo);
+    trim(&mut out);
+    out
+}
+
+/// (2**32)**k in base 10**9, for k a power of two
+fn dec_pow_limbs(k: usize, pows: &mut std::collections::HashMap<usize, Vec<u32>>) -> Vec<u32> {
+    if let Some(p) = pows.get(&k) {
+        return p.clone();
+    }
+    let p = if k == 1 {
+        let b = 1u64 << 32;
+        vec![(b % DEC_BASE) as u32, (b / DEC_BASE) as u32]
+    } else {
+        let h = dec_pow_limbs(k / 2, pows);
+        let mut sq = vec![0u32; 2 * h.len()];
+        dec_mul_into(&mut sq, &h, &h);
+        trim(&mut sq);
+        sq
+    };
+    pows.insert(k, p.clone());
+    p
+}
+
+/// out += a * b in base 10**9; out has room for a.len() + b.len() limbs
+fn dec_mul_into(out: &mut [u32], a: &[u32], b: &[u32]) {
+    let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    if b.len() < KARATSUBA_LIMBS {
+        for (i, &x) in b.iter().enumerate() {
+            if x == 0 {
+                continue;
+            }
+            let mut carry = 0u64;
+            for (j, &y) in a.iter().enumerate() {
+                let t = out[i + j] as u64 + x as u64 * y as u64 + carry;
+                out[i + j] = (t % DEC_BASE) as u32;
+                carry = t / DEC_BASE;
+            }
+            dec_add_at(out, i + a.len(), carry);
+        }
+    } else if a.len() >= 2 * b.len() {
+        for (i, piece) in a.chunks(b.len()).enumerate() {
+            let at = i * b.len();
+            dec_mul_into(&mut out[at..at + piece.len() + b.len()], piece, b);
+        }
+    } else {
+        let half = a.len().div_ceil(2);
+        let (a0, a1) = a.split_at(half);
+        let (b0, b1) = b.split_at(half.min(b.len()));
+        let mut z0 = vec![0u32; a0.len() + b0.len()];
+        dec_mul_into(&mut z0, a0, b0);
+        let mut z2 = vec![0u32; a1.len() + b1.len()];
+        dec_mul_into(&mut z2, a1, b1);
+        let mut sa = vec![0u32; half + 1];
+        dec_add_into(&mut sa, a0);
+        dec_add_into(&mut sa, a1);
+        let mut sb = vec![0u32; half + 1];
+        dec_add_into(&mut sb, b0);
+        dec_add_into(&mut sb, b1);
+        trim(&mut sa);
+        trim(&mut sb);
+        let mut z1 = vec![0u32; sa.len() + sb.len()];
+        dec_mul_into(&mut z1, &sa, &sb);
+        dec_sub_into(&mut z1, &z0);
+        dec_sub_into(&mut z1, &z2);
+        trim(&mut z0);
+        trim(&mut z1);
+        trim(&mut z2);
+        dec_add_into(out, &z0);
+        dec_add_into(&mut out[half..], &z1);
+        dec_add_into(&mut out[2 * half..], &z2);
+    }
+}
+
+fn dec_add_at(out: &mut [u32], mut at: usize, mut carry: u64) {
+    while carry > 0 {
+        let t = out[at] as u64 + carry;
+        out[at] = (t % DEC_BASE) as u32;
+        carry = t / DEC_BASE;
+        at += 1;
+    }
+}
+
+fn dec_add_into(out: &mut [u32], x: &[u32]) {
+    let mut carry = 0u64;
+    for (i, &v) in x.iter().enumerate() {
+        let t = out[i] as u64 + v as u64 + carry;
+        out[i] = (t % DEC_BASE) as u32;
+        carry = t / DEC_BASE;
+    }
+    dec_add_at(out, x.len(), carry);
+}
+
+/// out -= x in base 10**9, where the result stays non-negative
+fn dec_sub_into(out: &mut [u32], x: &[u32]) {
+    let mut borrow = 0u64;
+    for (i, o) in out.iter_mut().enumerate() {
+        if i >= x.len() && borrow == 0 {
+            break;
+        }
+        let sub = *x.get(i).unwrap_or(&0) as u64 + borrow;
+        if (*o as u64) >= sub {
+            *o = (*o as u64 - sub) as u32;
+            borrow = 0;
+        } else {
+            *o = (*o as u64 + DEC_BASE - sub) as u32;
+            borrow = 1;
+        }
+    }
+}
+
+/// decimal digits to a magnitude, halving recursively: hi * 10**len(lo) + lo,
+/// so the products are large and balanced (Karatsuba)
+fn decimal_to_mag(digits: &[u32]) -> Vec<u32> {
+    fn pow10(n: usize, cache: &mut std::collections::HashMap<usize, Vec<u32>>) -> Vec<u32> {
+        if let Some(p) = cache.get(&n) {
+            return p.clone();
+        }
+        let p = if n <= 9 {
+            vec![10u32.pow(n as u32)]
+        } else {
+            let h = pow10(n / 2, cache);
+            let sq = mul_mag(&h, &h);
+            if n % 2 == 1 { mul_mag(&sq, &[10]) } else { sq }
+        };
+        cache.insert(n, p.clone());
+        p
+    }
+    fn go(d: &[u32], cache: &mut std::collections::HashMap<usize, Vec<u32>>) -> Vec<u32> {
+        if d.len() <= 1000 {
+            let mut mag: Vec<u32> = vec![];
+            for chunk in d.chunks(9) {
+                let mul = 10u64.pow(chunk.len() as u32);
+                let mut carry = chunk.iter().fold(0u64, |acc, &x| acc * 10 + x as u64);
+                for x in mag.iter_mut() {
+                    let t = *x as u64 * mul + carry;
+                    *x = t as u32;
+                    carry = t >> 32;
+                }
+                if carry > 0 {
+                    mag.push(carry as u32);
+                }
+            }
+            return mag;
+        }
+        let lo_len = d.len() / 2;
+        let (hi, lo) = d.split_at(d.len() - lo_len);
+        let hi = go(hi, cache);
+        let lo = go(lo, cache);
+        let p = pow10(lo_len, cache);
+        add_mag(&mul_mag(&hi, &p), &lo)
+    }
+    let mut cache = std::collections::HashMap::new();
+    let mut m = go(digits, &mut cache);
+    trim(&mut m);
+    m
 }
 
 /// exact comparison of an int with a float; None when f is a NaN
@@ -335,23 +617,32 @@ impl BigInt {
         if digits.is_empty() {
             return None;
         }
-        let mut mag: Vec<u32> = vec![];
+        let mut vals = Vec::with_capacity(digits.len());
         for c in digits.chars() {
-            if c == '_' {
-                continue;
-            }
-            let d = c.to_digit(radix)?;
-            // mag = mag * radix + d
-            let mut carry = d as u64;
-            for x in mag.iter_mut() {
-                let t = *x as u64 * radix as u64 + carry;
-                *x = t as u32;
-                carry = t >> 32;
-            }
-            if carry > 0 {
-                mag.push(carry as u32);
+            if c != '_' {
+                vals.push(c.to_digit(radix)?);
             }
         }
+        let mut mag = if radix == 10 && vals.len() > 2000 {
+            decimal_to_mag(&vals)
+        } else {
+            // mag = mag * radix**k + chunk, a few digits at a time
+            let per = (32.0 / (radix as f64).log2()).floor() as usize;
+            let mut mag: Vec<u32> = vec![];
+            for chunk in vals.chunks(per) {
+                let mul = (radix as u64).pow(chunk.len() as u32);
+                let mut carry = chunk.iter().fold(0u64, |acc, &d| acc * radix as u64 + d as u64);
+                for x in mag.iter_mut() {
+                    let t = *x as u64 * mul + carry;
+                    *x = t as u32;
+                    carry = t >> 32;
+                }
+                if carry > 0 {
+                    mag.push(carry as u32);
+                }
+            }
+            mag
+        };
         trim(&mut mag);
         Some(BigInt { neg: neg && !mag.is_empty(), mag })
     }
@@ -359,11 +650,18 @@ impl BigInt {
         if self.mag.is_empty() {
             return "0".into();
         }
+        if radix == 10 {
+            let mut out = String::with_capacity(self.mag.len() * 10 + 1);
+            if self.neg {
+                out.push('-');
+            }
+            mag_to_decimal(&self.mag, &mut out);
+            return out;
+        }
         let mut digits = Vec::new();
         let mut cur = self.mag.clone();
         // peel several digits at a time
         let (chunk, per) = match radix {
-            10 => (1_000_000_000u32, 9),
             16 => (1 << 28, 7),
             8 => (1 << 30, 10),
             2 => (1 << 31, 31),

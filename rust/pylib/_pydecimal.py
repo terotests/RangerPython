@@ -6338,3 +6338,13 @@ _PyHASH_NAN = sys.hash_info.nan
 # _PyHASH_10INV is the inverse of 10 modulo the prime _PyHASH_MODULUS
 _PyHASH_10INV = pow(10, _PyHASH_MODULUS - 2, _PyHASH_MODULUS)
 del sys
+
+# The Ranger runtime runs the hot methods of Decimal natively, as CPython's
+# C _decimal does; they fall back on the methods above for what they leave out.
+try:
+    import _rpydecimal
+except ImportError:
+    pass
+else:
+    _rpydecimal.install(Decimal, globals())
+    del _rpydecimal

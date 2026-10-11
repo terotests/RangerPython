@@ -32,7 +32,10 @@ pub fn op_symbol(op: BinOp) -> &'static str {
     }
 }
 
-fn op_dunder(op: BinOp) -> (&'static str, &'static str, &'static str) {
+/// every binary operator, in declaration order
+pub const BINOPS: [BinOp; 13] = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::FloorDiv, BinOp::Mod, BinOp::Pow, BinOp::LShift, BinOp::RShift, BinOp::BitOr, BinOp::BitXor, BinOp::BitAnd, BinOp::MatMul];
+
+pub fn op_dunder(op: BinOp) -> (&'static str, &'static str, &'static str) {
     match op {
         BinOp::Add => ("__add__", "__radd__", "__iadd__"),
         BinOp::Sub => ("__sub__", "__rsub__", "__isub__"),
@@ -1442,9 +1445,7 @@ impl Vm {
             }
             return Err(self.binop_error(op, a, b));
         }
-        let (fwd, rev, _) = op_dunder(op);
-        let fwd = ps(fwd);
-        let rev = ps(rev);
+        let [fwd, rev, _] = self.n.binop(op).clone();
         let ca = self.class_of(a);
         let cb = self.class_of(b);
         // the right operand's reflected method first when it is a subclass
@@ -1588,8 +1589,7 @@ impl Vm {
                 return Ok(a.clone());
             }
             (Value::Instance(_), _) => {
-                let (_, _, iname) = op_dunder(op);
-                let iname = ps(iname);
+                let [fwd, _, iname] = self.n.binop(op).clone();
                 let cls = self.class_of(a);
                 if cls.lookup(&iname).is_some() {
                     if let Some(r) = self.try_dunder(a, &iname, b)? {
@@ -1597,7 +1597,7 @@ impl Vm {
                     }
                 }
                 let base = self.base_of(a);
-                if let (Value::List(_) | Value::Dict(_) | Value::Set(_), true) = (&base, cls.lookup(&ps(op_dunder(op).0)).map(|f| matches!(f, Value::Native(_))).unwrap_or(true)) {
+                if let (Value::List(_) | Value::Dict(_) | Value::Set(_), true) = (&base, cls.lookup(&fwd).map(|f| matches!(f, Value::Native(_))).unwrap_or(true)) {
                     if matches!(op, BinOp::Add | BinOp::BitOr) {
                         self.inplace(op, &base, b)?;
                         return Ok(a.clone());
@@ -3228,6 +3228,17 @@ impl Vm {
                     return crate::builtins::exc_str(self, v);
                 }
                 let b = self.base_of(v);
+                // a native __str__ of the class's own (not object's) runs
+                // like a Python one
+                if let (Some(f), Value::Instance(_)) = (cls.lookup(&self.n.str_), &b) {
+                    if matches!(&f, Value::Native(n) if n.name != "object.__str__") {
+                        let r = self.call_vec(&f, vec![v.clone()], &[])?;
+                        return match self.base_of(&r) {
+                            Value::Str(s) => Ok(s.s.clone()),
+                            _ => Err(self.type_error("__str__ returned non-string")),
+                        };
+                    }
+                }
                 if !matches!(b, Value::Instance(_) | Value::Set(_) | Value::FrozenSet(_)) && cls.lookup(&self.n.repr).map(|r| matches!(r, Value::Native(_))).unwrap_or(true) {
                     return self.str_of(&b);
                 }

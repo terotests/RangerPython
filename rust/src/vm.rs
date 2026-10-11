@@ -161,10 +161,11 @@ pub struct Names {
     pub invert: Rc<PyStr>,
     pub round: Rc<PyStr>,
     pub classcell: Rc<PyStr>,
+    binops: [[Rc<PyStr>; 3]; 13],
 }
 
 fn ps(s: &str) -> Rc<PyStr> {
-    Rc::new(PyStr::new(s.to_string()))
+    crate::value::intern(s)
 }
 
 impl Names {
@@ -232,7 +233,16 @@ impl Names {
             invert: ps("__invert__"),
             round: ps("__round__"),
             classcell: ps("__classcell__"),
+            binops: crate::ops::BINOPS.map(|op| {
+                let (f, r, i) = crate::ops::op_dunder(op);
+                [ps(f), ps(r), ps(i)]
+            }),
         }
+    }
+
+    /// the forward, reflected and in-place method names of a binary operator
+    pub fn binop(&self, op: crate::ast::BinOp) -> &[Rc<PyStr>; 3] {
+        &self.binops[op as usize]
     }
 }
 
@@ -297,11 +307,15 @@ pub fn obj_class() -> Rc<Class> {
     })
 }
 
+/// a table keyed by a built-in name, hashed with the fast FxHasher: the
+/// exception and native classes are looked up on every raise
+pub type NameMap<V> = HashMap<&'static str, V, std::hash::BuildHasherDefault<crate::value::FxHasher>>;
+
 pub struct Vm {
     pub t: Types,
     pub n: Names,
     pub builtins: Rc<RefCell<Dict>>,
-    pub exc: HashMap<&'static str, Rc<Class>>,
+    pub exc: NameMap<Rc<Class>>,
     pub modules: Rc<RefCell<Dict>>,
     /// exceptions being handled, innermost last (sys.exc_info)
     pub handled: Vec<Value>,
@@ -333,7 +347,7 @@ pub struct Vm {
     /// set by a bare `raise`: the traceback gets no new entry
     pub bare_reraise: bool,
     /// classes of native objects (traceback, frame...), by name
-    pub classes: HashMap<&'static str, Rc<Class>>,
+    pub classes: NameMap<Rc<Class>>,
     /// how the interpreter was started (sys.executable, sys.flags)
     pub host: crate::process::Host,
 }
@@ -345,7 +359,7 @@ impl Vm {
             t,
             n: Names::new(),
             builtins: Rc::new(RefCell::new(Dict::new())),
-            exc: HashMap::new(),
+            exc: NameMap::default(),
             modules: Rc::new(RefCell::new(Dict::new())),
             handled: vec![],
             out: String::new(),
@@ -364,7 +378,7 @@ impl Vm {
             frames: Vec::with_capacity(64),
             frame_objs: Vec::with_capacity(64),
             stack_pool: Vec::new(),
-            classes: HashMap::new(),
+            classes: NameMap::default(),
             bare_reraise: false,
             echo: false,
             search_path: vec![],
@@ -2098,6 +2112,10 @@ impl Vm {
     pub fn call_simple(&mut self, func: &Rc<Function>, mut args: Vec<Value>) -> PyResult<Value> {
         let code = func.code.borrow().clone();
         let n = code.varnames.len();
+        // room for the locals and the operand stack, as bind_args leaves
+        if args.capacity() < n + 16 {
+            args.reserve_exact(n + 16 - args.len());
+        }
         args.resize(n, Value::Undef);
         let mut f = Frame { code, ip: 0, stack: args, cells: func.closure.clone(), blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         self.depth += 1;
@@ -2574,7 +2592,7 @@ impl Vm {
             }
             out.push(c);
         }
-        *cls.mro.borrow_mut() = out;
+        cls.set_mro(out);
         Ok(())
     }
 
@@ -2614,7 +2632,7 @@ impl Vm {
         cls.builtin.set(kind);
         {
             let d = ns.borrow().copy();
-            *cls.dict.borrow_mut() = d;
+            cls.set_dict(d);
         }
         if let Some(q) = cls.dict.borrow().get_str(&self.n.qualname) {
             if let Value::Str(s) = q {
@@ -2656,7 +2674,7 @@ impl Vm {
                         }
                     }
                 }
-                *cls.mro.borrow_mut() = mro;
+                cls.set_mro(mro);
             }
         }
         self.update_flags(&cls);
