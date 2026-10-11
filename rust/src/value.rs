@@ -231,6 +231,9 @@ pub struct Class {
     /// attributes cannot be set (Py_TPFLAGS_IMMUTABLETYPE)
     pub immutable: Cell<bool>,
     pub slots: RefCell<Option<Vec<Name>>>,
+    /// the attribute names its instances share, for a class whose instances
+    /// keep their attributes inline (CPython's ht_cached_keys)
+    pub shared_keys: RefCell<Option<Rc<SharedKeys>>>,
     /// never reused, unlike the address: keys the lookup cache
     id: u64,
 }
@@ -279,13 +282,178 @@ pub enum Builtin {
 
 pub struct Instance {
     pub class: RefCell<Rc<Class>>,
-    pub dict: Rc<RefCell<Dict>>,
+    pub attrs: RefCell<Attrs>,
     /// the built-in value a subclass of int, str, list, dict... wraps
     pub base: RefCell<Value>,
     /// values kept outside __dict__: __slots__ members, and an exception's
     /// __traceback__, __cause__, __context__ and __suppress_context__
     pub extra: RefCell<Dict>,
     pub gc: crate::gc::Slot,
+}
+
+/// Where an instance keeps its attributes. As in CPython 3.13, an instance
+/// of an ordinary class starts with them inline, in a table split on its
+/// class's shared keys, and only gets a dict object when `__dict__` is asked
+/// for. Here that dict takes the table over, and it stays split until it
+/// cannot be (see Dict::shared).
+pub enum Attrs {
+    /// in the instance itself (CPython's inline values); for a class
+    /// without shared keys, an empty table until the first is set
+    Inline(Dict),
+    /// in the dict made of the inline values, when `__dict__` was asked for
+    /// or they could take no more keys (or the first was set, without
+    /// shared keys)
+    Materialized(Rc<RefCell<Dict>>),
+    /// in a dict that was never the inline values: the one assigned to
+    /// `__dict__`, or the fresh one after `del obj.__dict__` or after a
+    /// `__class__` assignment
+    Dict(Rc<RefCell<Dict>>),
+}
+
+impl Instance {
+    /// a new instance, its attributes inline when its class allows
+    pub fn new(class: Rc<Class>, base: Value) -> Instance {
+        let table = match &*class.shared_keys.borrow() {
+            Some(k) => Dict::new_split(k.clone()),
+            None => Dict::new(),
+        };
+        let attrs = Attrs::Inline(table);
+        Instance { class: RefCell::new(class), attrs: RefCell::new(attrs), base: RefCell::new(base), extra: RefCell::new(Dict::new()), gc: Default::default() }
+    }
+
+    /// a new instance whose attributes are `d`
+    pub fn with_dict(class: Rc<Class>, d: Dict, base: Value) -> Instance {
+        let attrs = Attrs::Dict(Rc::new(RefCell::new(d)));
+        Instance { class: RefCell::new(class), attrs: RefCell::new(attrs), base: RefCell::new(base), extra: RefCell::new(Dict::new()), gc: Default::default() }
+    }
+
+    /// `f` of the table that holds the attributes
+    #[inline]
+    pub fn with_attrs<R>(&self, f: impl FnOnce(&Dict) -> R) -> R {
+        match &*self.attrs.borrow() {
+            Attrs::Inline(d) => f(d),
+            Attrs::Materialized(d) | Attrs::Dict(d) => f(&d.borrow()),
+        }
+    }
+
+    /// `f` of the table that holds the attributes, to change it; inline
+    /// values that `f` made combined (or left so) move to a dict object
+    pub fn with_attrs_mut<R>(&self, f: impl FnOnce(&mut Dict) -> R) -> R {
+        let mut a = self.attrs.borrow_mut();
+        match &mut *a {
+            Attrs::Inline(d) => {
+                let r = f(d);
+                if !d.is_split() {
+                    let d = std::mem::take(d);
+                    *a = Attrs::Materialized(Rc::new(RefCell::new(d)));
+                }
+                r
+            }
+            Attrs::Materialized(d) | Attrs::Dict(d) => f(&mut d.borrow_mut()),
+        }
+    }
+
+    /// the attribute in slot `slot` of the inline values (or of the split
+    /// dict that took them over)
+    #[inline]
+    pub fn slot_attr(&self, slot: usize) -> Option<Value> {
+        match &*self.attrs.borrow() {
+            Attrs::Inline(d) => d.slot_value(slot).cloned(),
+            Attrs::Materialized(d) => d.borrow().slot_value(slot).cloned(),
+            Attrs::Dict(_) => None,
+        }
+    }
+
+    /// sets attribute `name`, whose slot is `slot`, in the inline values,
+    /// giving back the old value; Err when they are not where it goes
+    #[inline]
+    pub fn set_slot_attr(&self, slot: usize, name: &Rc<PyStr>, v: Value) -> Result<Option<Value>, Value> {
+        let mut a = self.attrs.borrow_mut();
+        let mut d = match &mut *a {
+            Attrs::Inline(d) => return d.set_slot(slot, name, v),
+            Attrs::Materialized(d) => d.borrow_mut(),
+            Attrs::Dict(_) => return Err(v),
+        };
+        d.set_slot(slot, name, v)
+    }
+
+    /// the slot of attribute `name` while the instance keeps it inline
+    pub fn attr_slot(&self, name: &PyStr) -> Option<usize> {
+        match &*self.attrs.borrow() {
+            Attrs::Inline(d) => d.slot_of(name).filter(|&s| d.slot_value(s).is_some()),
+            Attrs::Materialized(d) => {
+                let d = d.borrow();
+                d.slot_of(name).filter(|&s| d.slot_value(s).is_some())
+            }
+            Attrs::Dict(_) => None,
+        }
+    }
+
+    /// the attribute `name` the instance itself holds
+    #[inline]
+    pub fn attr(&self, name: &PyStr) -> Option<Value> {
+        self.with_attrs(|d| d.get_str(name).cloned())
+    }
+
+    pub fn has_attr(&self, name: &PyStr) -> bool {
+        self.with_attrs(|d| d.get_str(name).is_some())
+    }
+
+    pub fn set_attr(&self, name: Rc<PyStr>, v: Value) {
+        // the value replaced is dropped after the table is let go
+        let _old = self.with_attrs_mut(|d| match d.find_str(&name) {
+            Some(i) => d.entries[i].as_mut().map(|e| std::mem::replace(&mut e.value, v)),
+            None => {
+                d.push_new(name.hash(), Value::Str(name), v);
+                None
+            }
+        });
+    }
+
+    pub fn del_attr(&self, name: &PyStr) -> Option<Value> {
+        self.with_attrs_mut(|d| d.remove_str(name))
+    }
+
+    /// `__dict__`: made of the inline values the first time it is asked for
+    pub fn dict(&self) -> Rc<RefCell<Dict>> {
+        let mut a = self.attrs.borrow_mut();
+        if let Attrs::Inline(d) = &mut *a {
+            let d = std::mem::take(d);
+            *a = Attrs::Materialized(Rc::new(RefCell::new(d)));
+        }
+        match &*a {
+            Attrs::Materialized(d) | Attrs::Dict(d) => d.clone(),
+            Attrs::Inline(_) => unreachable!(),
+        }
+    }
+
+    /// `obj.__dict__ = d`; the old dict keeps what it holds
+    pub fn set_dict(&self, d: Rc<RefCell<Dict>>) {
+        let _old = std::mem::replace(&mut *self.attrs.borrow_mut(), Attrs::Dict(d));
+    }
+
+    /// the attributes leave the inline layout, as on a `__class__`
+    /// assignment: a dict made of them, or the one made already, is the
+    /// instance's own from now on
+    pub fn detach_attrs(&self) {
+        let mut a = self.attrs.borrow_mut();
+        let d = match &mut *a {
+            Attrs::Inline(d) => Rc::new(RefCell::new(std::mem::take(d))),
+            Attrs::Materialized(d) => d.clone(),
+            Attrs::Dict(_) => return,
+        };
+        *a = Attrs::Dict(d);
+    }
+
+    /// whether the attributes are still kept in the split table the
+    /// instance started with (_testinternalcapi.has_inline_values)
+    pub fn has_inline_values(&self) -> bool {
+        match &*self.attrs.borrow() {
+            Attrs::Inline(d) => d.is_split(),
+            Attrs::Materialized(d) => d.borrow().is_split(),
+            Attrs::Dict(_) => false,
+        }
+    }
 }
 
 crate::gil_static! {
@@ -309,7 +477,7 @@ impl Drop for Instance {
         extra.set_s("__finalized__", Value::Bool(true));
         let inst = Instance {
             class: RefCell::new(self.class.get_mut().clone()),
-            dict: std::mem::replace(&mut self.dict, Rc::new(RefCell::new(Dict::new()))),
+            attrs: RefCell::new(std::mem::replace(self.attrs.get_mut(), Attrs::Inline(Dict::new()))),
             base: RefCell::new(std::mem::replace(self.base.get_mut(), Value::Undef)),
             extra: RefCell::new(extra),
             gc: Default::default(),
@@ -472,16 +640,64 @@ pub fn intern_str(s: &Rc<PyStr>) -> Rc<PyStr> {
     INTERNED.with(|t| t.borrow_mut().entry(s.s.as_str().into()).or_insert_with(|| s.clone()).clone())
 }
 
+/// the version Class::lookup's cache entries are valid for
+#[inline]
+pub fn type_version() -> u64 {
+    TYPE_VERSION.with(Cell::get)
+}
+
 pub fn types_changed() {
     TYPE_VERSION.with(|v| v.set(v.get() + 1));
 }
 
 pub struct Dict {
     pub entries: Vec<Option<Entry>>,
+    /// where each key's entry is: by hash, or by the key's slot among the
+    /// shared keys in a split table
     index: Vec<i32>,
     pub len: usize,
     /// a class's dict: adding or removing keys invalidates the lookup cache
     watched: bool,
+    /// a split table (CPython's): the dict of an instance, whose keys are
+    /// found among its class's shared keys rather than hashed here. It
+    /// becomes combined, with an index of its own, for a key that is not an
+    /// exact str or that the shared keys have no room for, and on popitem()
+    shared: Option<Rc<SharedKeys>>,
+}
+
+/// The attribute names the instances of a class share (CPython's cached
+/// keys): each has a fixed slot, in the order the names were first set on
+/// any instance, and is never removed
+pub struct SharedKeys {
+    names: RefCell<Dict>,
+}
+
+/// as CPython's SHARED_KEYS_MAX_SIZE
+pub const SHARED_KEYS_MAX: usize = 30;
+
+impl Default for SharedKeys {
+    fn default() -> Self {
+        SharedKeys { names: RefCell::new(Dict::new()) }
+    }
+}
+
+impl SharedKeys {
+    pub fn len(&self) -> usize {
+        self.names.borrow().len
+    }
+
+    /// the slot of `key`, which is given one if it is new and there is room
+    fn slot_or_add(&self, key: &Rc<PyStr>) -> Option<usize> {
+        let mut names = self.names.borrow_mut();
+        if let Some(slot) = names.find_str(key) {
+            return Some(slot);
+        }
+        if names.len >= SHARED_KEYS_MAX {
+            return None;
+        }
+        names.push_new(key.hash(), Value::Str(key.clone()), Value::None);
+        Some(names.len - 1)
+    }
 }
 
 pub enum Lookup {
@@ -499,10 +715,10 @@ impl Default for Dict {
 
 impl Dict {
     pub fn new() -> Dict {
-        Dict { entries: Vec::new(), index: Vec::new(), len: 0, watched: false }
+        Dict { entries: Vec::new(), index: Vec::new(), len: 0, watched: false, shared: None }
     }
     pub fn with_capacity(n: usize) -> Dict {
-        let mut d = Dict { entries: Vec::with_capacity(n), index: Vec::new(), len: 0, watched: false };
+        let mut d = Dict { entries: Vec::with_capacity(n), index: Vec::new(), len: 0, watched: false, shared: None };
         if n > 0 {
             let mut size = 8;
             while size * 2 < n * 3 {
@@ -511,6 +727,69 @@ impl Dict {
             d.index = vec![-1; size];
         }
         d
+    }
+    /// an empty split table on `keys`, with room for as many entries as
+    /// they hold, as CPython sizes inline values
+    pub fn new_split(keys: Rc<SharedKeys>) -> Dict {
+        let n = keys.len();
+        Dict { entries: Vec::with_capacity(n), index: vec![-1; n], len: 0, watched: false, shared: Some(keys) }
+    }
+    pub fn is_split(&self) -> bool {
+        self.shared.is_some()
+    }
+    /// the value of the key in shared slot `slot`, in a split table
+    #[inline]
+    pub fn slot_value(&self, slot: usize) -> Option<&Value> {
+        self.shared.as_ref()?;
+        self.entries[self.slot_entry(slot)?].as_ref().map(|e| &e.value)
+    }
+    /// sets `key`, the key in shared slot `slot`, in a split table, giving
+    /// back the value it replaces; Err for a combined table
+    #[inline]
+    pub fn set_slot(&mut self, slot: usize, key: &Rc<PyStr>, v: Value) -> Result<Option<Value>, Value> {
+        if self.shared.is_none() {
+            return Err(v);
+        }
+        match self.slot_entry(slot) {
+            Some(ix) => Ok(self.entries[ix].as_mut().map(|e| std::mem::replace(&mut e.value, v))),
+            None => {
+                if self.index.len() <= slot {
+                    self.index.resize(slot + 1, -1);
+                }
+                self.index[slot] = self.entries.len() as i32;
+                self.entries.push(Some(Entry { hash: key.hash(), key: Value::Str(key.clone()), value: v }));
+                self.len += 1;
+                Ok(None)
+            }
+        }
+    }
+    /// the slot among the shared keys of `key`, in a split table
+    pub fn slot_of(&self, key: &PyStr) -> Option<usize> {
+        self.shared.as_ref()?.names.borrow().find_combined(key)
+    }
+    /// the bytes this dict has allocated, for sys.getsizeof: itself in its
+    /// reference counted box, its entries and its index (a split table's
+    /// keys are its class's)
+    pub fn alloc_size(&self) -> usize {
+        std::mem::size_of::<RefCell<Dict>>() + 2 * std::mem::size_of::<usize>() + self.entries.capacity() * std::mem::size_of::<Option<Entry>>() + self.index.capacity() * std::mem::size_of::<i32>()
+    }
+    /// the entry of the key in shared slot `slot`, in a split table
+    #[inline]
+    fn slot_entry(&self, slot: usize) -> Option<usize> {
+        match self.index.get(slot) {
+            Some(&ix) if ix >= 0 => Some(ix as usize),
+            _ => None,
+        }
+    }
+    /// a split table becomes combined, indexing its keys itself
+    fn combine(&mut self) {
+        if self.shared.take().is_some() {
+            let mut size = 8;
+            while size * 2 <= (self.len + 1) * 3 {
+                size *= 2;
+            }
+            self.rebuild(size);
+        }
     }
     pub fn len(&self) -> usize {
         self.len
@@ -534,6 +813,22 @@ impl Dict {
 
     fn rebuild(&mut self, size: usize) {
         self.reshaped();
+        if self.shared.is_some() {
+            // a split table drops its dead entries; the slots stay
+            let mut moved = vec![-1; self.entries.len()];
+            let mut live = Vec::with_capacity(self.len);
+            for (i, e) in self.entries.drain(..).enumerate() {
+                if e.is_some() {
+                    moved[i] = live.len() as i32;
+                    live.push(e);
+                }
+            }
+            self.entries = live;
+            for ix in self.index.iter_mut().filter(|ix| **ix >= 0) {
+                *ix = moved[*ix as usize];
+            }
+            return;
+        }
         let live: Vec<Option<Entry>> = self.entries.drain(..).filter(|e| e.is_some()).collect();
         self.entries = live;
         self.index = vec![-1; size];
@@ -553,6 +848,20 @@ impl Dict {
     /// probe for `key`; `eq` answers equality where it can without Python
     #[inline]
     pub fn lookup(&self, hash: u64, key: &Value) -> Lookup {
+        if let Some(keys) = &self.shared {
+            return match keys.names.borrow().lookup(hash, key) {
+                Lookup::Found(slot) => self.slot_entry(slot).map_or(Lookup::Missing, Lookup::Found),
+                Lookup::Missing => Lookup::Missing,
+                Lookup::Slow(slots) => {
+                    let at: Vec<usize> = slots.into_iter().filter_map(|s| self.slot_entry(s)).collect();
+                    if at.is_empty() {
+                        Lookup::Missing
+                    } else {
+                        Lookup::Slow(at)
+                    }
+                }
+            };
+        }
         if self.index.is_empty() {
             return Lookup::Missing;
         }
@@ -591,6 +900,9 @@ impl Dict {
 
     #[inline]
     pub fn get_str(&self, key: &PyStr) -> Option<&Value> {
+        if self.shared.is_some() {
+            return self.entries[self.find_str(key)?].as_ref().map(|e| &e.value);
+        }
         if self.index.is_empty() {
             return None;
         }
@@ -627,7 +939,8 @@ impl Dict {
     /// whether a key that is not an exact str has the hash of `key`; the
     /// str fast paths miss such keys, which may still compare equal
     pub fn str_clash(&self, key: &PyStr) -> bool {
-        if self.index.is_empty() {
+        // a split table's keys are all exact strs
+        if self.index.is_empty() || self.shared.is_some() {
             return false;
         }
         let hash = key.hash();
@@ -651,7 +964,17 @@ impl Dict {
         }
     }
 
+    #[inline]
     pub fn find_str(&self, key: &PyStr) -> Option<usize> {
+        match &self.shared {
+            Some(keys) => self.slot_entry(keys.names.borrow().find_combined(key)?),
+            None => self.find_combined(key),
+        }
+    }
+
+    /// find_str in a combined table
+    #[inline]
+    fn find_combined(&self, key: &PyStr) -> Option<usize> {
         if self.index.is_empty() {
             return None;
         }
@@ -668,7 +991,7 @@ impl Dict {
                 if let Some(e) = &self.entries[ix as usize] {
                     if e.hash == hash {
                         if let Value::Str(s) = &e.key {
-                            if s.same(key) {
+                            if std::ptr::eq(&**s, key) || s.same(key) {
                                 return Some(ix as usize);
                             }
                         }
@@ -682,6 +1005,15 @@ impl Dict {
 
     /// get_str for a key given as text, without making a str of it
     pub fn get_s(&self, key: &str) -> Option<Value> {
+        if let Some(keys) = &self.shared {
+            let slot = keys.names.borrow().find_s(key)?;
+            return self.entries[self.slot_entry(slot)?].as_ref().map(|e| e.value.clone());
+        }
+        self.entries[self.find_s(key)?].as_ref().map(|e| e.value.clone())
+    }
+
+    /// find_str for a key given as text
+    fn find_s(&self, key: &str) -> Option<usize> {
         if self.index.is_empty() {
             return None;
         }
@@ -699,7 +1031,7 @@ impl Dict {
                     if e.hash == hash {
                         if let Value::Str(s) = &e.key {
                             if s.wtf.is_none() && s.s == key {
-                                return Some(e.value.clone());
+                                return Some(ix as usize);
                             }
                         }
                     }
@@ -712,6 +1044,23 @@ impl Dict {
 
     /// insert a key not yet present
     pub fn push_new(&mut self, hash: u64, key: Value, value: Value) {
+        if let Some(keys) = &self.shared {
+            let slot = match &key {
+                Value::Str(s) => keys.slot_or_add(s),
+                _ => None,
+            };
+            let Some(slot) = slot else {
+                self.combine();
+                return self.push_new(hash, key, value);
+            };
+            if self.index.len() <= slot {
+                self.index.resize(slot + 1, -1);
+            }
+            self.index[slot] = self.entries.len() as i32;
+            self.entries.push(Some(Entry { hash, key, value }));
+            self.len += 1;
+            return;
+        }
         self.reshaped();
         if (self.entries.len() + 1) * 3 >= self.index.len() * 2 {
             let mut size = 8;
@@ -744,6 +1093,11 @@ impl Dict {
         if e.is_some() {
             self.reshaped();
             self.len -= 1;
+            if self.shared.is_some() {
+                if let Some(ix) = self.index.iter_mut().find(|ix| **ix == i as i32) {
+                    *ix = -1;
+                }
+            }
             // the index slot keeps pointing at a dead entry, which probes skip
             let dead = self.entries.len() - self.len;
             if dead > 16 && dead > self.len {
@@ -775,10 +1129,16 @@ impl Dict {
         self.remove_at(i).map(|e| e.value)
     }
 
+    /// empties the dict; a split table stays one, as CPython's clears the
+    /// inline values in place
     pub fn clear(&mut self) {
         self.reshaped();
         self.entries.clear();
-        self.index.clear();
+        if self.shared.is_some() {
+            self.index.fill(-1);
+        } else {
+            self.index.clear();
+        }
         self.len = 0;
     }
 
@@ -829,6 +1189,7 @@ impl Dict {
 
     pub fn pop_last(&mut self) -> Option<Entry> {
         self.reshaped();
+        self.combine();
         while let Some(e) = self.entries.pop() {
             if let Some(e) = e {
                 self.len -= 1;
@@ -1169,6 +1530,7 @@ impl Class {
             has_del: Cell::new(false),
             immutable: Cell::new(false),
             slots: RefCell::new(None),
+            shared_keys: RefCell::new(None),
             id: NEXT_CLASS_ID.with(|n| {
                 n.set(n.get() + 1);
                 n.get()
@@ -1192,6 +1554,10 @@ impl Class {
     }
     pub fn name(&self) -> String {
         self.name.borrow().s.clone()
+    }
+    /// an identity no other class ever has
+    pub fn id(&self) -> u64 {
+        self.id
     }
     /// look a name up along the MRO. Past the class's own dict, where the
     /// name is (or that it is nowhere) is cached until a class dict gains or

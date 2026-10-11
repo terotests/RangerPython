@@ -453,8 +453,7 @@ impl Vm {
     }
 
     pub fn new_exc(&mut self, cls: &Rc<Class>, args: Vec<Value>) -> Value {
-        let inst = Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(Value::tuple(args)), extra: RefCell::new(Dict::new()), gc: Default::default() };
-        let inst = Rc::new(inst);
+        let inst = Rc::new(Instance::new(cls.clone(), Value::tuple(args)));
         crate::gc::track_inst(&inst);
         let v = Value::Instance(inst);
         crate::builtins::exc_init_native(self, &v);
@@ -690,7 +689,7 @@ impl Vm {
         d.set_s("err_msg", msg.map_or(Value::None, Value::str));
         d.set_s("object", obj.clone());
         let ns = self.namespace_class();
-        let args = Rc::new(Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(d)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()), gc: Default::default() });
+        let args = Rc::new(Instance::with_dict(ns, d, Value::None));
         crate::gc::track_inst(&args);
         let args = Value::Instance(args);
         let r = match hook {
@@ -1022,13 +1021,13 @@ impl Vm {
                 }
                 Op::LoadAttr(i) => {
                     let obj = Self::pop(f);
-                    let v = self.getattr(&obj, &code.names[i as usize])?;
+                    let v = self.load_attr(&obj, &code.names[i as usize], &code.attr_hints[i as usize])?;
                     f.stack.push(v);
                 }
                 Op::StoreAttr(i) => {
                     let obj = Self::pop(f);
                     let v = Self::pop(f);
-                    self.setattr(&obj, &code.names[i as usize], v)?;
+                    self.store_attr(&obj, &code.names[i as usize], v, &code.attr_hints[i as usize])?;
                     self.finalize_pending();
                 }
                 Op::DelAttr(i) => {
@@ -2594,7 +2593,7 @@ impl Vm {
             Builtin::BaseException => Value::tuple(vec![]),
             _ => Value::Undef,
         };
-        let inst = Rc::new(Instance { class: RefCell::new(cls.clone()), dict: Rc::new(RefCell::new(Dict::new())), base: RefCell::new(base), extra: RefCell::new(Dict::new()), gc: Default::default() });
+        let inst = Rc::new(Instance::new(cls.clone(), base));
         crate::gc::track_inst(&inst);
         Value::Instance(inst)
     }
@@ -2773,6 +2772,12 @@ impl Vm {
                 cls.dict.borrow_mut().set_str(key, member);
             }
             *cls.slots.borrow_mut() = Some(names);
+        }
+        // an ordinary class's instances keep their attributes inline, as
+        // CPython's do when neither __slots__ nor a built-in base adds to
+        // their layout
+        if kind == Builtin::User && cls.mro.borrow().iter().all(|c| c.slots.borrow().is_none()) {
+            *cls.shared_keys.borrow_mut() = Some(Rc::new(SharedKeys::default()));
         }
         if cls.dict.borrow().get_str(&self.n.doc).is_none() {
             cls.dict.borrow_mut().set_str(self.n.doc.clone(), Value::None);

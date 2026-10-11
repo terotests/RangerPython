@@ -328,7 +328,7 @@ enum Rounding {
 fn ctx_attr(vm: &mut Vm, st: &State, o: &Value, name: &str) -> PyResult<Value> {
     if let Value::Instance(i) = o {
         if Rc::ptr_eq(&*i.class.borrow(), &st.context) {
-            if let Some(v) = i.dict.borrow().get_s(name) {
+            if let Some(v) = i.with_attrs(|d| d.get_s(name)) {
                 return Ok(v);
             }
         }
@@ -351,7 +351,7 @@ fn getcontext(vm: &mut Vm, st: &State) -> PyResult<Value> {
     let same = |d: &Rc<RefCell<Dict>>, name: &str, v: &Value| d.borrow().get_s(name).is_some_and(|x| x.is(v));
     if same(&st.ns, "getcontext", &st.getcontext) && same(&st.ns, "_current_context_var", &st.var) && vm.class_of(&st.var).lookup_s("get").is_some_and(|g| g.is(&st.var_get)) {
         let data = match st.var_ns.borrow().get_s("_current") {
-            Some(Value::Instance(cur)) => cur.dict.borrow().get_s("_data"),
+            Some(Value::Instance(cur)) => cur.with_attrs(|d| d.get_s("_data")),
             _ => None,
         };
         if let Some(Value::Dict(d)) = data {

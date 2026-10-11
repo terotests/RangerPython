@@ -1050,6 +1050,7 @@ impl<'a> Compiler<'a> {
             ops: u.ops,
             positions: u.positions,
             consts: u.consts,
+            attr_hints: u.names.iter().map(|_| std::cell::Cell::default()).collect(),
             names: u.names,
             doc,
             simple: false,

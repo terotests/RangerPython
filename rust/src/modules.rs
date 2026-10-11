@@ -111,7 +111,7 @@ fn weak_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 fn internal_module() -> Value {
     let (d, m) = module("_rpyinternal");
-    put_fns(&d, &[("_rpyinternal.dict_getitem_knownhash", dict_getitem_knownhash), ("_rpyinternal.get_recursion_depth", get_recursion_depth)]);
+    put_fns(&d, &[("_rpyinternal.dict_getitem_knownhash", dict_getitem_knownhash), ("_rpyinternal.get_recursion_depth", get_recursion_depth), ("_rpyinternal.has_inline_values", has_inline_values)]);
     m
 }
 
@@ -120,6 +120,13 @@ fn internal_module() -> Value {
 fn get_recursion_depth(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::check_nargs(vm, "get_recursion_depth", a, 0, 0)?;
     Ok(Value::Int(vm.frames.len() as i64))
+}
+
+/// has_inline_values(obj): whether obj's attributes are still in the split
+/// table on its class's shared keys it was made with (see value::Attrs)
+fn has_inline_values(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::check_nargs(vm, "has_inline_values", a, 1, 1)?;
+    Ok(Value::Bool(matches!(&a[0], Value::Instance(i) if i.has_inline_values())))
 }
 
 /// dict_getitem_knownhash(d, key, hash): d[key] looked up under `hash`, with
@@ -264,8 +271,8 @@ fn it_name(name: &str) -> Rc<PyStr> {
 fn it_field(vm: &mut Vm, o: &Value, name: &str) -> PyResult<Value> {
     let key = it_name(name);
     if let Value::Instance(i) = o {
-        if let Some(v) = i.dict.borrow().get_str(&key) {
-            return Ok(v.clone());
+        if let Some(v) = i.attr(&key) {
+            return Ok(v);
         }
     }
     vm.getattr(o, &key)
@@ -275,7 +282,7 @@ fn it_set(vm: &mut Vm, o: &Value, name: &str, v: Value) -> PyResult<()> {
     let key = it_name(name);
     match o {
         Value::Instance(i) => {
-            i.dict.borrow_mut().set_str(key, v);
+            i.set_attr(key, v);
             Ok(())
         }
         _ => vm.setattr(o, &key, v),
@@ -410,18 +417,25 @@ fn it_reuse(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         return Ok(Value::tuple(items));
     };
     let key = PyStr::new("_result".to_string());
-    let mut d = inst.dict.borrow_mut();
-    if let Some(Value::Tuple(t)) = d.get_str_mut(&key) {
-        crate::gc::retrack(t);
-        if let Some(v) = Rc::get_mut(t) {
-            if v.len() == items.len() {
-                *v = items;
-                return Ok(Value::Tuple(t.clone()));
+    let mut items = Some(items);
+    let reused = inst.with_attrs_mut(|d| match d.get_str_mut(&key) {
+        Some(Value::Tuple(t)) => {
+            crate::gc::retrack(t);
+            match Rc::get_mut(t) {
+                Some(v) if items.as_ref().is_some_and(|i| i.len() == v.len()) => {
+                    *v = items.take().unwrap_or_default();
+                    Some(Value::Tuple(t.clone()))
+                }
+                _ => None,
             }
         }
+        _ => None,
+    });
+    if let Some(t) = reused {
+        return Ok(t);
     }
-    let t = Value::tuple(items);
-    d.set_s("_result", t.clone());
+    let t = Value::tuple(items.unwrap_or_default());
+    inst.set_attr(Rc::new(key), t.clone());
     Ok(t)
 }
 
@@ -1112,7 +1126,7 @@ fn sys_module(vm: &mut Vm) -> Value {
         imp.set_s("name", Value::str("rangerpython"));
         imp.set_s("cache_tag", Value::None);
         let ns = vm.namespace_class();
-        let inst = Instance { class: RefCell::new(ns), dict: Rc::new(RefCell::new(imp)), base: RefCell::new(Value::None), extra: RefCell::new(Dict::new()), gc: Default::default() };
+        let inst = Instance::with_dict(ns, imp, Value::None);
         let inst = Rc::new(inst);
         crate::gc::track_inst(&inst);
         b.set_s("implementation", Value::Instance(inst));
@@ -1247,7 +1261,7 @@ fn sys_getsizeof(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Value::Str(s) => 49 + s.s.len(),
         Value::List(l) => 56 + 8 * l.borrow().len(),
         Value::Tuple(t) => 40 + 8 * t.len(),
-        Value::Dict(d) => 64 + 24 * d.borrow().len(),
+        Value::Dict(d) => d.borrow().alloc_size(),
         Value::Int(_) => 28,
         Value::Float(_) => 24,
         _ => {
@@ -2146,12 +2160,13 @@ fn json_err(vm: &mut Vm, p: &JParser, msg: &str) -> Exc {
     let text = format!("{}: line {} column {} (char {})", msg, line, col, pos);
     let e = vm.new_exc(&cls, vec![Value::string(text)]);
     if let Value::Instance(i) = &e {
-        let mut d = i.dict.borrow_mut();
-        d.set_s("msg", Value::str(msg));
-        d.set_s("pos", Value::Int(pos as i64));
-        d.set_s("lineno", Value::Int(line as i64));
-        d.set_s("colno", Value::Int(col as i64));
-        d.set_s("doc", Value::str(p.src));
+        i.with_attrs_mut(|d| {
+            d.set_s("msg", Value::str(msg));
+            d.set_s("pos", Value::Int(pos as i64));
+            d.set_s("lineno", Value::Int(line as i64));
+            d.set_s("colno", Value::Int(col as i64));
+            d.set_s("doc", Value::str(p.src));
+        });
     }
     Exc { value: e }
 }

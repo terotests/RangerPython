@@ -113,16 +113,17 @@ impl<'v> ToPy<'v> {
         let cls = self.class(name)?;
         let v = self.vm.new_instance(&cls);
         if let Value::Instance(i) = &v {
-            let mut d = i.dict.borrow_mut();
-            for (k, f) in fields {
-                d.set_s(k, f);
-            }
-            if let Some(p) = pos {
-                d.set_s("lineno", Value::Int(p.line as i64));
-                d.set_s("col_offset", Value::Int(p.col as i64));
-                d.set_s("end_lineno", Value::Int(p.end_line as i64));
-                d.set_s("end_col_offset", Value::Int(p.end_col as i64));
-            }
+            i.with_attrs_mut(|d| {
+                for (k, f) in fields {
+                    d.set_s(k, f);
+                }
+                if let Some(p) = pos {
+                    d.set_s("lineno", Value::Int(p.line as i64));
+                    d.set_s("col_offset", Value::Int(p.col as i64));
+                    d.set_s("end_lineno", Value::Int(p.end_line as i64));
+                    d.set_s("end_col_offset", Value::Int(p.end_col as i64));
+                }
+            });
         }
         Ok(v)
     }

@@ -926,7 +926,7 @@ fn object_delattr(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
             vm.call_vec(&d, vec![a[0].clone()], &[])?;
             return Ok(Value::None);
         }
-        if inst.dict.borrow_mut().remove_str(&name).is_none() {
+        if inst.del_attr(&name).is_none() {
             return Err(vm.no_attr(&a[0], &name));
         }
         return Ok(Value::None);
@@ -1115,7 +1115,7 @@ fn object_getstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     crate::builtins::need(vm, a, 1)?;
     if let Value::Instance(i) = &a[0] {
         if i.extra.borrow().is_empty() || i.class.borrow().builtin.get() == Builtin::BaseException {
-            return Ok(if i.dict.borrow().is_empty() { Value::None } else { Value::dict(i.dict.borrow().copy()) });
+            return Ok(i.with_attrs(|d| if d.is_empty() { Value::None } else { Value::dict(d.copy()) }));
         }
         return reduce_helper(vm, "getstate", vec![a[0].clone()]);
     }
@@ -3078,7 +3078,7 @@ fn module_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     let module_cls = vm.t.module.clone();
     let inst = wrap_new(vm, &a[0], &module_cls, Value::None);
     let d = match &inst {
-        Value::Instance(i) => i.dict.clone(),
+        Value::Instance(i) => i.dict(),
         _ => new_dict(),
     };
     d.borrow_mut().set_s("__name__", Value::Str(name.clone()));

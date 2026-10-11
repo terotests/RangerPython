@@ -423,7 +423,7 @@ fn getset_repr(_vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 fn ns_dict(vm: &mut Vm, v: &Value) -> PyResult<Rc<RefCell<Dict>>> {
     match v {
-        Value::Instance(i) => Ok(i.dict.clone()),
+        Value::Instance(i) => Ok(i.dict()),
         _ => Err(vm.type_error("descriptor requires a 'types.SimpleNamespace' object")),
     }
 }

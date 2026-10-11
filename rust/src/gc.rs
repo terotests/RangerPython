@@ -424,11 +424,14 @@ fn referents(v: &Value, out: &mut Visit) -> bool {
             }
         }
         Value::Instance(i) => {
-            let (Ok(class), Ok(base), Ok(extra)) = (i.class.try_borrow(), i.base.try_borrow(), i.extra.try_borrow()) else {
+            let (Ok(class), Ok(attrs), Ok(base), Ok(extra)) = (i.class.try_borrow(), i.attrs.try_borrow(), i.base.try_borrow(), i.extra.try_borrow()) else {
                 return false;
             };
             out(&Value::Class(class.clone()));
-            out(&Value::Dict(i.dict.clone()));
+            match &*attrs {
+                Attrs::Inline(d) => push_dict(out, d),
+                Attrs::Materialized(d) | Attrs::Dict(d) => out(&Value::Dict(d.clone())),
+            }
             push(out, &base);
             push_dict(out, &extra);
         }
@@ -749,6 +752,13 @@ fn clear(v: &Value, trash: &mut Vec<Value>) {
         Value::Instance(i) => {
             if let Ok(mut b) = i.base.try_borrow_mut() {
                 trash.push(std::mem::replace(&mut *b, Value::Undef));
+            }
+            // a dict of the attributes is cleared as garbage of its own
+            if let Ok(mut a) = i.attrs.try_borrow_mut() {
+                if let Attrs::Inline(d) = &mut *a {
+                    trash.extend(std::mem::take(&mut d.entries).into_iter().flatten().flat_map(|e| [e.key, e.value]));
+                    d.clear();
+                }
             }
             if let Ok(mut x) = i.extra.try_borrow_mut() {
                 // the mark that __del__ has run stays

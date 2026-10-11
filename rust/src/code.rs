@@ -3,6 +3,7 @@
 
 use crate::ast::{BinOp, CmpOp, Pos, UnOp};
 use crate::value::{Name, PyStr, Value};
+use std::cell::Cell;
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug)]
@@ -146,9 +147,27 @@ pub struct Code {
     pub positions: Vec<Pos>,
     pub consts: Vec<Value>,
     pub names: Vec<Rc<PyStr>>,
+    /// for each name, where the attribute of that name was last found on
+    /// an instance (CPython's LOAD_ATTR_INSTANCE_VALUE cache)
+    pub attr_hints: Box<[Cell<AttrHint>]>,
     pub doc: Value,
     /// fast argument binding: no defaults/kwonly/varargs/varkw/cells
     pub simple: bool,
+}
+
+/// An attribute that the instances of a class keep inline, which nothing
+/// on the class shadows: its slot among the class's shared keys, while no
+/// class has gained or lost a name since (Class::lookup's version)
+#[derive(Clone, Copy, Default)]
+pub struct AttrHint {
+    pub class: u64,
+    pub version: u64,
+    pub slot: u32,
+}
+
+impl AttrHint {
+    /// the slot of a class whose instances never keep the name inline
+    pub const NONE: u32 = u32::MAX;
 }
 
 impl Code {

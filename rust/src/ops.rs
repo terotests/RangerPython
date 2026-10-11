@@ -4,9 +4,10 @@
 
 use crate::ast::{BinOp, CmpOp, UnOp};
 use crate::bigint::BigInt;
+use crate::code::AttrHint;
 use crate::value::*;
 use crate::vm::Vm;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -352,6 +353,63 @@ impl Vm {
         }
     }
 
+    /// obj.name as LoadAttr reads it: an attribute an instance keeps inline
+    /// is read from the slot `hint` remembers, while that still holds
+    #[inline]
+    pub fn load_attr(&mut self, obj: &Value, name: &Rc<PyStr>, hint: &Cell<AttrHint>) -> PyResult<Value> {
+        let Value::Instance(inst) = obj else {
+            return self.getattr(obj, name);
+        };
+        let h = hint.get();
+        if h.class == inst.class.borrow().id() && h.version == type_version() {
+            if h.slot != AttrHint::NONE {
+                if let Some(v) = inst.slot_attr(h.slot as usize) {
+                    return Ok(v);
+                }
+            }
+            return self.getattr(obj, name);
+        }
+        let v = self.getattr(obj, name)?;
+        self.remember_slot(inst, name, hint);
+        Ok(v)
+    }
+
+    /// obj.name = v as StoreAttr does it, replacing an attribute the
+    /// instance keeps inline in the slot `hint` remembers
+    #[inline]
+    pub fn store_attr(&mut self, obj: &Value, name: &Rc<PyStr>, v: Value, hint: &Cell<AttrHint>) -> PyResult<()> {
+        let Value::Instance(inst) = obj else {
+            return self.setattr(obj, name, v);
+        };
+        let h = hint.get();
+        if h.class == inst.class.borrow().id() && h.version == type_version() {
+            if h.slot == AttrHint::NONE {
+                return self.setattr(obj, name, v);
+            }
+            return match inst.set_slot_attr(h.slot as usize, name, v) {
+                Ok(_old) => Ok(()),
+                Err(v) => self.setattr(obj, name, v),
+            };
+        }
+        self.setattr(obj, name, v)?;
+        self.remember_slot(inst, name, hint);
+        Ok(())
+    }
+
+    /// records in `hint` where `inst` keeps attribute `name`, when its
+    /// class has nothing by that name and no hook of its own for reading or
+    /// writing attributes, so that until a class gains or loses a name the
+    /// slot is all there is to look at (the hint serves loads and stores).
+    /// A class that cannot have such a slot is remembered as that
+    fn remember_slot(&mut self, inst: &Rc<Instance>, name: &Rc<PyStr>, hint: &Cell<AttrHint>) {
+        let cls = inst.class.borrow().clone();
+        let never = cls.shared_keys.borrow().is_none() || cls.has_getattribute.get() || cls.has_setattr.get() || name.s.starts_with("__") || cls.lookup(name).is_some();
+        let slot = if never { Some(AttrHint::NONE) } else { inst.attr_slot(name).map(|s| s as u32) };
+        if let Some(slot) = slot {
+            hint.set(AttrHint { class: cls.id(), version: type_version(), slot });
+        }
+    }
+
     pub fn instance_getattr(&mut self, obj: &Value, inst: &Rc<Instance>, name: &Rc<PyStr>) -> PyResult<Option<Value>> {
         let cls = inst.class.borrow().clone();
         if cls.has_getattribute.get() {
@@ -412,8 +470,8 @@ impl Vm {
                 _ => {}
             }
         }
-        if let Some(v) = inst.dict.borrow().get_str(name) {
-            return Ok(Some(v.clone()));
+        if let Some(v) = inst.attr(name) {
+            return Ok(Some(v));
         }
         if let Some(t) = tattr {
             return Ok(Some(match t {
@@ -432,7 +490,7 @@ impl Vm {
         }
         match &*name.s {
             "__class__" => return Ok(Some(Value::Class(cls.clone()))),
-            "__dict__" if has_dict(cls) => return Ok(Some(Value::Dict(inst.dict.clone()))),
+            "__dict__" if has_dict(cls) => return Ok(Some(Value::Dict(inst.dict()))),
             _ => {}
         }
         if let Some(v) = crate::builtins::instance_special(self, obj, inst, &name.s)? {
@@ -573,7 +631,7 @@ impl Vm {
                 let cls = inst.class.borrow().clone();
                 if !cls.has_getattribute.get() {
                     if let Some(t) = cls.lookup(name) {
-                        if binds(&t) && inst.dict.borrow().get_str(name).is_none() {
+                        if binds(&t) && !inst.has_attr(name) {
                             return Ok((t, obj));
                         }
                     }
@@ -771,6 +829,8 @@ impl Vm {
         }
         if &*name.s == "__class__" {
             if let Value::Class(nc) = v {
+                // the attributes leave the old class's layout
+                inst.detach_attrs();
                 *inst.class.borrow_mut() = nc;
                 return Ok(());
             }
@@ -778,8 +838,7 @@ impl Vm {
         }
         if &*name.s == "__dict__" {
             if let Value::Dict(d) = &v {
-                let copy = d.borrow().copy();
-                *inst.dict.borrow_mut() = copy;
+                inst.set_dict(d.clone());
                 return Ok(());
             }
         }
@@ -822,7 +881,7 @@ impl Vm {
                 _ => {}
             }
         }
-        inst.dict.borrow_mut().set_str(name.clone(), v);
+        inst.set_attr(name.clone(), v);
         Ok(())
     }
 
@@ -931,11 +990,12 @@ impl Vm {
                     }
                 }
                 if &*name.s == "__dict__" && has_dict(&cls) {
-                    // the next access sees a fresh, empty dict
-                    inst.dict.borrow_mut().clear();
+                    // the dict lets go of the instance, whose next access
+                    // sees a fresh, empty one
+                    inst.set_dict(Rc::new(RefCell::new(Dict::new())));
                     return Ok(());
                 }
-                if inst.dict.borrow_mut().remove_str(name).is_none() {
+                if inst.del_attr(name).is_none() {
                     if !has_dict(&cls) {
                         if cls.lookup(name).is_some() {
                             return Err(self.attr_error(format!("'{}' object attribute '{}' is read-only", cls.name(), name.s)));

@@ -762,7 +762,7 @@ fn local_switch(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         Some(Value::Dict(d)) => (d, false),
         _ => (Rc::new(std::cell::RefCell::new(Dict::new())), true),
     };
-    std::mem::swap(&mut *inst.dict.borrow_mut(), &mut *mine.borrow_mut());
+    std::mem::swap(&mut *inst.dict().borrow_mut(), &mut *mine.borrow_mut());
     if gil::alive(owner as u64) {
         vm.dict_set(&dicts, Value::Int(owner), Value::Dict(mine))?;
     }

@@ -1595,11 +1595,11 @@ fn exc_add_note(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         return Err(vm.type_error(format!("note must be a str, not '{}'", tn)));
     }
     if let Value::Instance(i) = &a[0] {
-        let cur = i.dict.borrow().get_str(&vm.n.notes).cloned();
+        let cur = i.attr(&vm.n.notes);
         match cur {
             Some(Value::List(l)) => l.borrow_mut().push(a[1].clone()),
             Some(_) => return Err(vm.type_error("Cannot add notes to a non-list __notes__")),
-            None => i.dict.borrow_mut().set_str(vm.n.notes.clone(), Value::list(vec![a[1].clone()])),
+            None => i.set_attr(vm.n.notes.clone(), Value::list(vec![a[1].clone()])),
         }
     }
     Ok(Value::None)
@@ -1612,7 +1612,7 @@ fn exc_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     let Value::Instance(inst) = &a[0] else {
         return Ok(Value::tuple(vec![Value::Class(cls), Value::tuple(args)]));
     };
-    let dict = inst.dict.borrow().copy();
+    let dict = inst.with_attrs(Dict::copy);
     let mut state = if dict.is_empty() { None } else { Some(dict) };
     if cls.is_subclass(&vm.exc_class("OSError")) {
         let f = exc_field(inst, "filename");
