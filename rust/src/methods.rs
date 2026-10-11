@@ -719,7 +719,7 @@ fn object_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
             return Err(vm.type_error(format!("Can't instantiate abstract class {} without an implementation for abstract method{} {}", cn, if ns.len() == 1 { "" } else { "s" }, ns.iter().map(|n| format!("'{}'", n)).collect::<Vec<_>>().join(", "))));
         }
     }
-    Ok(vm.new_instance(&c))
+    vm.alloc_instance(&c)
 }
 
 fn object_init(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {

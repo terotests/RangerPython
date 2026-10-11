@@ -173,7 +173,9 @@ def get_c_recursion_limit():
 
 
 def exceeds_recursion_limit():
-    return 300
+    # well past both limits, as CPython's is: here the default recursion
+    # limit (1000) is the higher one
+    return 3 * 1000
 
 
 Py_C_RECURSION_LIMIT = 150
@@ -220,6 +222,18 @@ def infinite_recursion(max_depth=None):
 
 def disable_gc():
     return _NullContext()
+
+
+def run_in_subinterp(code):
+    try:
+        import _testcapi
+    except ImportError:
+        raise unittest.SkipTest("requires _testcapi")
+    return _testcapi.run_in_subinterp(code)
+
+
+# a child rpy that fails leaves no core dump or crash dialog to suppress
+SuppressCrashReport = _NullContext
 
 
 class adjust_int_max_str_digits:

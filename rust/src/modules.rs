@@ -51,6 +51,8 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_rpyinternal" => internal_module(),
         "_rpyprocess" => crate::process::module(),
         "_rpyframe" => crate::tb::frame_module(),
+        "_testcapi" => crate::testcapi::testcapi_module(vm)?,
+        "_testlimitedcapi" => crate::testcapi::testlimitedcapi_module(),
         _ => return Ok(None),
     }))
 }
@@ -105,8 +107,15 @@ fn weak_get(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 fn internal_module() -> Value {
     let (d, m) = module("_rpyinternal");
-    put_fns(&d, &[("_rpyinternal.dict_getitem_knownhash", dict_getitem_knownhash)]);
+    put_fns(&d, &[("_rpyinternal.dict_getitem_knownhash", dict_getitem_knownhash), ("_rpyinternal.get_recursion_depth", get_recursion_depth)]);
     m
+}
+
+/// get_recursion_depth(): how many Python frames are running, the caller's
+/// included
+fn get_recursion_depth(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::check_nargs(vm, "get_recursion_depth", a, 0, 0)?;
+    Ok(Value::Int(vm.frames.len() as i64))
 }
 
 /// dict_getitem_knownhash(d, key, hash): d[key] looked up under `hash`, with
@@ -761,6 +770,25 @@ fn f_close(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
         *closed = true;
     }
     Ok(Value::None)
+}
+
+/// what an open file does when it is lost: a ResourceWarning naming it,
+/// then it is closed
+pub fn file_finalize(vm: &mut Vm, o: &Rc<NativeObj>) {
+    let v = Value::Obj(o.clone());
+    let r = f_repr(vm, std::slice::from_ref(&v), &[]).and_then(|r| {
+        let msg = format!("unclosed file {}", vm.str_of(&r)?);
+        let m = vm.import_one("warnings")?;
+        let warn = vm.getattr(&m, &ps("warn"))?;
+        let cat = Value::Class(vm.exc_class("ResourceWarning"));
+        vm.call_vec(&warn, vec![Value::string(msg), cat], &[(ps("source"), v.clone())])
+    });
+    if let ObjKind::File { closed, .. } = &mut *o.kind.borrow_mut() {
+        *closed = true;
+    }
+    if let Err(e) = r {
+        vm.unraisable(e, &v);
+    }
 }
 
 fn f_flush(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {

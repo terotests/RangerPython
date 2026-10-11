@@ -37,6 +37,7 @@ pub mod strmethods;
 pub mod value;
 pub mod vm;
 pub mod tb;
+pub mod testcapi;
 pub mod unidata;
 pub mod wtf8;
 
@@ -281,6 +282,17 @@ fn report(vm: &mut vm::Vm, exc: &Value, res: &mut RunResult) {
     res.error = if msg.is_empty() { name } else { format!("{}: {}", name, msg) };
     lines.push(res.error.clone());
     res.traceback = python_traceback(vm, exc).unwrap_or_else(|| lines.join("\n"));
+}
+
+/// prints an exception nothing caught to the interpreter's stderr, as the
+/// top level does
+pub fn print_uncaught(vm: &mut vm::Vm, exc: &Value) {
+    let mut res = RunResult { ok: true, stdout: String::new(), stderr: String::new(), error_type: String::new(), error: String::new(), error_line: 0, traceback: String::new(), exit_code: 0 };
+    report(vm, exc, &mut res);
+    if !res.traceback.is_empty() {
+        vm.write_err(&res.traceback);
+        vm.write_err("\n");
+    }
 }
 
 /// the traceback module's rendering of an uncaught exception, with source

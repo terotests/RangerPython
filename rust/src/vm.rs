@@ -621,6 +621,11 @@ impl Vm {
                 }
                 continue;
             }
+            if let Value::Obj(o) = &v {
+                // an open file nothing refers to any more
+                crate::modules::file_finalize(self, o);
+                continue;
+            }
             let name = Rc::new(PyStr::new("__del__".to_string()));
             if let Some(f) = self.lookup_special(&v, &name) {
                 if let Err(e) = self.call_vec(&f, vec![], &[]) {
@@ -2488,7 +2493,7 @@ impl Vm {
         }
         let new = cls.lookup(&self.n.new);
         let obj = match &new {
-            Some(Value::Native(n)) if n.name == "object.__new__" && cls.dict.borrow().get_s("__abstractmethods__").is_none() => self.new_instance(cls),
+            Some(Value::Native(n)) if n.name == "object.__new__" && cls.dict.borrow().get_s("__abstractmethods__").is_none() => self.alloc_instance(cls)?,
             Some(f @ (Value::StaticMethod(_) | Value::Native(_) | Value::Func(_))) => {
                 let f = match f {
                     Value::StaticMethod(inner) => (**inner).clone(),
@@ -2506,7 +2511,7 @@ impl Vm {
                 a.extend(args.iter().cloned());
                 self.call_vec(&f, a, kw)?
             }
-            _ => self.new_instance(cls),
+            _ => self.alloc_instance(cls)?,
         };
         // __init__ runs when __new__ returned an instance of cls
         let ocls = self.class_of(&obj);
@@ -2544,6 +2549,16 @@ impl Vm {
             }
         }
         Ok(obj)
+    }
+
+    /// a new instance of a class, made where an allocation can fail: a
+    /// MemoryError when _testcapi.set_nomemory says this one does
+    pub fn alloc_instance(&mut self, cls: &Rc<Class>) -> PyResult<Value> {
+        if crate::testcapi::alloc_fails() {
+            let cls = self.exc_class("MemoryError");
+            return Err(Exc { value: self.new_exc(&cls, vec![]) });
+        }
+        Ok(self.new_instance(cls))
     }
 
     pub fn new_instance(&mut self, cls: &Rc<Class>) -> Value {

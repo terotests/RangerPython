@@ -242,6 +242,19 @@ impl Drop for Function {
 impl Drop for NativeObj {
     fn drop(&mut self) {
         untrack(&self.gc);
+        // a file still open when it goes away comes back to life once, so
+        // that its finalizer can warn and close it
+        if !matches!(self.kind.get_mut(), ObjKind::File { closed: false, .. }) {
+            return;
+        }
+        let queue_open = crate::value::PENDING_DEL.try_with(|p| p.try_borrow_mut().is_ok()).unwrap_or(false);
+        if !queue_open {
+            return;
+        }
+        let kind = std::mem::replace(self.kind.get_mut(), ObjKind::Other(Value::None));
+        let o = NativeObj { class: self.class.clone(), gc: Default::default(), kind: std::cell::RefCell::new(kind) };
+        crate::value::PENDING_DEL.with(|p| p.borrow_mut().push(Value::Obj(Rc::new(o))));
+        crate::value::HAS_PENDING_DEL.with(|h| h.set(true));
     }
 }
 
