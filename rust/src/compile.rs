@@ -1051,6 +1051,7 @@ impl<'a> Compiler<'a> {
             positions: u.positions,
             consts: u.consts,
             attr_hints: u.names.iter().map(|_| std::cell::Cell::default()).collect(),
+            global_hints: u.names.iter().map(|_| std::cell::Cell::default()).collect(),
             names: u.names,
             doc,
             simple: false,
@@ -1066,6 +1067,7 @@ impl<'a> Compiler<'a> {
             code.argcount = 1;
         }
         code.simple = !code.varargs && !code.varkw && code.kwonly == 0 && code.cellvars.is_empty() && !code.generator && !code.coroutine;
+        crate::code::fuse(&mut code.ops);
         code
     }
 

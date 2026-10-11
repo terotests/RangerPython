@@ -1,0 +1,190 @@
+   id name dept  salary
+0   2  Bob    y    5000
+1   3  Cid    x    6200
+   id name dept  salary
+0   1  Ann    x     NaN
+1   2  Bob    y  5000.0
+2   3  Cid    x  6200.0
+3   4  Dee    z     NaN
+   id name dept  salary
+0   1  Ann    x     NaN
+1   2  Bob    y  5000.0
+2   3  Cid    x  6200.0
+3   4  Dee    z     NaN
+4   5  NaN  NaN  4100.0
+   id name dept  salary
+0   2  Bob    y    5000
+1   3  Cid    x    6200
+2   5  NaN  NaN    4100
+   id name dept  dname
+0   1  Ann    x  Sales
+1   2  Bob    y    Ops
+2   3  Cid    x  Sales
+3   4  Dee    z    NaN
+   k  v_x  v_y
+0  1   10   30
+1  2   20   40
+   k   v
+0  1  10
+1  2  20
+0  1  30
+1  2  40
+   k   v
+0  1  10
+1  2  20
+2  1  30
+3  2  40
+quarter    Q1    Q2
+region             
+N        13.0  12.5
+S         8.0   9.0
+quarter    Q1    Q2
+region             
+N        13.0  12.5
+S         8.0   9.0
+          amount
+region          
+N       8.500000
+S       5.666667
+quarter    Q1    Q2   All
+region                   
+N        13.0  12.5  25.5
+S         8.0   9.0  17.0
+All      21.0  21.5  42.5
+n
+1    2
+3    1
+4    1
+5    1
+9    1
+2    1
+6    1
+Name: count, dtype: int64
+count    8.000000
+mean     3.875000
+std      2.748376
+min      1.000000
+25%      1.750000
+50%      3.500000
+75%      5.250000
+max      9.000000
+Name: n, dtype: float64
+1    1
+3    1
+6    2
+0    3
+2    4
+4    5
+7    6
+5    9
+Name: n, dtype: int64
+2    4
+4    5
+5    9
+7    6
+Name: n, dtype: int64
+0     3
+1     4
+2     8
+3     9
+4    14
+5    23
+6    25
+7    31
+Name: n, dtype: int64
+[7, 3, 9, 3, 11, 19, 5, 13]
+3.875 3.5 2.748376143938713 1 9 31
+0         NaN
+1         NaN
+2    2.666667
+3    2.000000
+4    3.333333
+5    5.000000
+6    5.333333
+7    5.666667
+Name: n, dtype: float64
+0         NaN
+1   -0.666667
+2    3.000000
+3   -0.750000
+4    4.000000
+5    0.800000
+6   -0.777778
+7    2.000000
+Name: n, dtype: float64
+0    4.0
+1    1.5
+2    5.0
+3    1.5
+4    6.0
+5    8.0
+6    3.0
+7    7.0
+Name: n, dtype: float64
+5    9
+7    6
+4    5
+Name: n, dtype: int64
+[3 1 4 5 9 2 6] [3, 1, 4, 5, 9, 2, 6] 7
+0    three
+1      one
+2      NaN
+3      one
+4      NaN
+5      NaN
+6      NaN
+7      NaN
+Name: n, dtype: object
+0     9
+1     1
+2    16
+3     1
+4    25
+5    81
+6     4
+7    36
+Name: n, dtype: int64
+0    False
+1     True
+2    False
+3     True
+4    False
+5     True
+6    False
+7    False
+Name: n, dtype: bool
+0     True
+1    False
+2     True
+3    False
+4     True
+5    False
+6     True
+7    False
+Name: n, dtype: bool
+6.8999999999999995
+0    apple pie
+1       banana
+2      cherry 
+3         None
+Name: fruit, dtype: object
+0    9.0
+1    6.0
+2    6.0
+3    NaN
+Name: fruit, dtype: float64
+0    False
+1     True
+2    False
+3     None
+Name: fruit, dtype: object
+0    4PPLE PIE
+1       B4N4N4
+2      CHERRY 
+3         None
+Name: fruit, dtype: object
+0    [Apple, pie]
+1      [, banana]
+2      [Cherry, ]
+3            None
+Name: fruit, dtype: object

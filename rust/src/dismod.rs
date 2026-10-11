@@ -72,7 +72,7 @@ fn nb(op: BinOp) -> (i64, &'static str) {
 fn decode(op: &Op) -> (&'static str, i64, Arg) {
     use Arg as A;
     let n = |v: u32| v as i64;
-    match *op {
+    match crate::code::unfused(*op) {
         Op::Nop => ("NOP", 0, A::None),
         Op::LoadConst(k) => ("LOAD_CONST", n(k), A::Const),
         Op::LoadFast(i) => ("LOAD_FAST", n(i), A::Local),
@@ -179,6 +179,7 @@ fn decode(op: &Op) -> (&'static str, i64, Arg) {
         Op::ExcStarFinish => ("EXC_STAR_FINISH", 0, A::None),
         Op::ExcStarCollect => ("EXC_STAR_COLLECT", 0, A::None),
         Op::LoadExc => ("LOAD_EXC", 0, A::None),
+        Op::LoadFast2(..) | Op::LoadFastConst(..) | Op::LoadFastAttr(..) | Op::CompareJumpIfFalse(..) | Op::CompareJumpIfTrue(..) => unreachable!(),
     }
 }
 

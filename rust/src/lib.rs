@@ -34,6 +34,7 @@ pub mod methods;
 pub mod modules;
 pub mod ops;
 pub mod parser;
+pub mod poolalloc;
 pub mod posix;
 pub mod process;
 pub mod pyast;

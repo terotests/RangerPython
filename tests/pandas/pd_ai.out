@@ -1,0 +1,70 @@
+Rows: 10
+Total revenue: 2,520.85
+Average order: 252.08
+   country  revenue
+3   Sweden  776.200
+1  Finland  701.700
+2   Norway  613.925
+0  Denmark  429.020
+     month     total
+0  2024-01   677.100
+1  2024-02  1085.175
+2  2024-03   758.570
+     month     total  growth_pct
+0  2024-01   677.100         NaN
+1  2024-02  1085.175        60.3
+2  2024-03   758.570       -30.1
+category  Accessories  Hardware  Services
+country                                  
+Denmark           0.0     160.0     269.0
+Finland         109.0     294.0     299.0
+Norway          221.0     393.0       0.0
+Sweden            0.0     178.0     598.0
+Globex: 776.2
+Umbrella: 613.9
+Hooli: 429.0
+{'Services': 46.3, 'Hardware': 40.7, 'Accessories': 13.1}
+             orders  units  revenue  avg_discount
+category                                         
+Services          3      4  1166.10          0.03
+Hardware          5     49  1025.20          0.06
+Accessories       2     55   329.55          0.10
+ order_id customer  revenue
+     1003  Initech    299.0
+     1006   Globex    598.0
+{"labels": ["Sweden", "Finland", "Norway", "Denmark"], "values": [776.2, 701.7, 613.92, 429.02]}
+       order_id                 date    qty  unit_price  discount  revenue
+count     10.00                   10  10.00       10.00     10.00    10.00
+mean    1005.50  2024-02-14 07:12:00  10.80      106.86      0.06   252.08
+min     1001.00  2024-01-04 00:00:00   1.00        6.90      0.00    94.05
+25%     1003.25  2024-01-19 12:00:00   2.00       18.87      0.00   164.49
+50%     1005.50  2024-02-15 00:00:00   6.00       34.74      0.02   210.35
+75%     1007.75  2024-03-05 12:00:00  13.75      236.62      0.10   291.52
+max     1010.00  2024-03-30 00:00:00  40.00      299.00      0.20   598.00
+std        3.03                  NaN  12.80      133.40      0.07   151.00
+category  Accessories  Hardware  Services
+country                                  
+Denmark             0         1         1
+Finland             1         2         1
+Norway              1         1         0
+Sweden              0         1         1
+category  Accessories  Hardware  Services
+country                                  
+Denmark             0         1         1
+Finland             1         2         1
+Norway              1         1         0
+Sweden              0         1         1
+5 ['Widget', 'Gadget', 'Service plan', 'Gizmo']
+Acme bought 10 x Widget
+Globex bought 4 x Gadget
+Initech bought 1 x Service plan
+Globex
+region
+Export    6
+Home      4
+Name: count, dtype: int64
+   country  customer  revenue
+9  Denmark     Hooli  269.100
+2  Finland   Initech  299.000
+4   Norway  Umbrella  393.125
+5   Sweden    Globex  598.000
