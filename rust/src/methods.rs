@@ -606,6 +606,15 @@ pub fn install_types(vm: &mut Vm) {
     let bf = t.builtin_function.clone();
     def(&bf, "builtin_function_or_method.__reduce__", native_reduce);
     def(&bf, "builtin_function_or_method.__reduce_ex__", native_reduce);
+    let wd = t.wrapper_descriptor.clone();
+    def(&wd, "wrapper_descriptor.__get__", function_get);
+    def(&wd, "wrapper_descriptor.__call__", function_call);
+    def(&wd, "wrapper_descriptor.__reduce__", native_reduce);
+    def(&wd, "wrapper_descriptor.__reduce_ex__", native_reduce);
+    let mw = t.method_wrapper.clone();
+    def(&mw, "method-wrapper.__call__", function_call);
+    def(&mw, "method-wrapper.__reduce__", native_reduce);
+    def(&mw, "method-wrapper.__reduce_ex__", native_reduce);
     def(&it, "iterator.__setstate__", iter_setstate);
     for g in [t.generator.clone(), t.coroutine.clone()] {
         let nm = g.name();
@@ -1137,7 +1146,7 @@ pub(crate) fn check_bases(vm: &mut Vm, bases: &[Rc<crate::value::Class>]) -> PyR
     // the built-in layout each base carries; two unrelated ones conflict
     let mut solid: Option<Rc<crate::value::Class>> = None;
     for b in bases {
-        if matches!(&*b.name(), "bool" | "NoneType" | "NotImplementedType" | "ellipsis" | "slice" | "range" | "function" | "builtin_function_or_method" | "method" | "generator" | "coroutine" | "code" | "frame" | "traceback" | "memoryview" | "mappingproxy")
+        if matches!(&*b.name(), "bool" | "NoneType" | "NotImplementedType" | "ellipsis" | "slice" | "range" | "function" | "builtin_function_or_method" | "wrapper_descriptor" | "method-wrapper" | "method" | "generator" | "coroutine" | "code" | "frame" | "traceback" | "memoryview" | "mappingproxy")
             && b.builtin.get() != Builtin::User
         {
             return Err(vm.type_error(format!("type '{}' is not an acceptable base type", b.name())));

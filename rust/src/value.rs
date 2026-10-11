@@ -161,7 +161,32 @@ impl NativeFn {
     pub fn new(name: &'static str, f: NativeFnPtr, data: Value) -> NativeFn {
         NativeFn { name, f, data, bind: true, arity: None }
     }
+
+    /// the name after the type's ("__add__" of "int.__add__")
+    pub fn short_name(&self) -> &'static str {
+        self.name.rsplit('.').next().unwrap_or(self.name)
+    }
+
+    /// a type's method that fills one of CPython's type slots (__add__,
+    /// __repr__, ...): a slot wrapper there, a method-wrapper once bound
+    pub fn is_slot(&self) -> bool {
+        self.bind && SLOT_NAMES.binary_search(&self.short_name()).is_ok()
+    }
 }
+
+/// the methods CPython's builtin types expose as slot wrappers, sorted
+const SLOT_NAMES: &[&str] = &[
+    "__abs__", "__add__", "__aiter__", "__and__", "__anext__", "__await__", "__bool__", "__buffer__", "__call__",
+    "__contains__", "__del__", "__delattr__", "__delete__", "__delitem__", "__divmod__", "__eq__", "__float__",
+    "__floordiv__", "__ge__", "__get__", "__getattribute__", "__getitem__", "__gt__", "__hash__", "__iadd__",
+    "__iand__", "__ifloordiv__", "__ilshift__", "__imatmul__", "__imod__", "__imul__", "__index__", "__init__",
+    "__int__", "__invert__", "__ior__", "__ipow__", "__irshift__", "__isub__", "__iter__", "__itruediv__",
+    "__ixor__", "__le__", "__len__", "__lshift__", "__lt__", "__matmul__", "__mod__", "__mul__", "__ne__",
+    "__neg__", "__next__", "__or__", "__pos__", "__pow__", "__radd__", "__rand__", "__rdivmod__",
+    "__release_buffer__", "__repr__", "__rfloordiv__", "__rlshift__", "__rmatmul__", "__rmod__", "__rmul__",
+    "__ror__", "__rpow__", "__rrshift__", "__rshift__", "__rsub__", "__rtruediv__", "__rxor__", "__set__",
+    "__setattr__", "__setitem__", "__str__", "__sub__", "__truediv__", "__xor__",
+];
 
 /// a function found on a type binds to the instance it is read from
 pub fn binds(v: &Value) -> bool {

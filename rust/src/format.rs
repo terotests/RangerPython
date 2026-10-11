@@ -421,7 +421,11 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
         Value::BigRange(_) => crate::range::repr(v),
         Value::Slice(s) => format!("slice({}, {}, {})", repr(vm, &s.0)?, repr(vm, &s.1)?, repr(vm, &s.2)?),
         Value::Func(f) => format!("<function {} at {}>", f.qualname.borrow().s, addr(v)),
-        Value::Native(n) => format!("<built-in function {}>", n.name.rsplit('.').next().unwrap_or(n.name)),
+        Value::Native(n) if n.is_slot() => {
+            let owner = n.name.rsplit_once('.').map_or("object", |(t, _)| t);
+            format!("<slot wrapper '{}' of '{}' objects>", n.short_name(), owner)
+        }
+        Value::Native(n) => format!("<built-in function {}>", n.short_name()),
         Value::Method(m) => match &m.1 {
             Value::Func(f) => {
                 let owner = match &m.0 {
@@ -435,6 +439,7 @@ fn repr_inner(vm: &mut Vm, v: &Value) -> PyResult<String> {
                 let tn = vm.type_name(&m.0);
                 match &m.0 {
                     Value::Module(md) => format!("<built-in function {}>", if short.is_empty() { &md.name.s } else { short }),
+                    _ if n.is_slot() => format!("<method-wrapper '{}' of {} object at {}>", short, tn, addr(&m.0)),
                     _ => format!("<built-in method {} of {} object at {}>", short, tn, addr(&m.0)),
                 }
             }

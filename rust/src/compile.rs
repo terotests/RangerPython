@@ -2410,6 +2410,12 @@ impl<'a> Compiler<'a> {
             ExprKind::Name(n) => self.load_name(n),
             ExprKind::Const(_) => unreachable!("a literal"),
             ExprKind::JoinedStr(parts) => {
+                // f'' is the constant '', as CPython folds it (gh-99606)
+                if parts.is_empty() {
+                    let k = self.const_str("");
+                    self.emit(Op::LoadConst(k));
+                    return Ok(());
+                }
                 for p in parts {
                     self.expr(p)?;
                 }

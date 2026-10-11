@@ -139,14 +139,13 @@ impl Vm {
             Value::Range(_) | Value::BigRange(_) => t.range.clone(),
             Value::Slice(_) => t.slice.clone(),
             Value::Func(_) => t.function.clone(),
+            Value::Native(n) if n.is_slot() => t.wrapper_descriptor.clone(),
             Value::Native(_) => t.builtin_function.clone(),
-            Value::Method(m) => {
-                if matches!(m.1, Value::Native(_)) {
-                    t.builtin_function.clone()
-                } else {
-                    t.method.clone()
-                }
-            }
+            Value::Method(m) => match &m.1 {
+                Value::Native(n) if n.is_slot() && !matches!(m.0, Value::Module(_)) => t.method_wrapper.clone(),
+                Value::Native(_) => t.builtin_function.clone(),
+                _ => t.method.clone(),
+            },
             Value::Class(c) => c.meta.borrow().clone().unwrap_or_else(|| t.type_.clone()),
             Value::Instance(i) => i.class.borrow().clone(),
             Value::Module(_) => t.module.clone(),

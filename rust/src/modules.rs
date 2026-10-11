@@ -40,6 +40,8 @@ pub fn native_module(vm: &mut Vm, name: &str) -> PyResult<Option<Value>> {
         "_rpyrandom" => random_module(),
         "_abc" => crate::abcmod::abc_module(),
         "_rpydecimal" => crate::decimalmod::decimal_module(),
+        "_rpydis" => crate::dismod::dis_module(),
+        "_rpyinterp" => crate::interpmod::interp_module(),
         "builtins" => Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() })),
         "_hashlib" => hashlib_module(),
         "_struct" => struct_module(),

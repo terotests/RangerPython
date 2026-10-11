@@ -862,6 +862,8 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
             _ => None,
         },
         Value::Native(n) => match name {
+            // a type's method is qualified by the type ("int.__add__")
+            "__qualname__" if n.bind => Some(Value::str(n.name)),
             "__name__" | "__qualname__" => Some(Value::str(n.name.rsplit('.').next().unwrap_or(n.name))),
             "__module__" => Some(Value::str(native_module_name(n.name))),
             "__self__" => Some(Value::None),
@@ -875,6 +877,7 @@ pub fn special_attr(vm: &mut Vm, obj: &Value, name: &str) -> PyResult<Option<Val
             "__self__" => Some(m.0.clone()),
             "__func__" => Some(m.1.clone()),
             "__name__" | "__qualname__" | "__doc__" | "__module__" | "__wrapped__" | "__defaults__" | "__code__" | "__annotations__" | "__dict__" | "__text_signature__" => match &m.1 {
+                Value::Native(n) if name == "__qualname__" && n.bind => Some(Value::str(n.name)),
                 Value::Native(n) if name == "__name__" || name == "__qualname__" => Some(Value::str(n.name.rsplit('.').next().unwrap_or(n.name))),
                 f => vm.getattr_opt(&f.clone(), &ps(name))?,
             },
@@ -1742,6 +1745,8 @@ pub fn make_types() -> Types {
         none: mk("NoneType", o, Builtin::NoneType),
         function: mk("function", o, Builtin::Function),
         builtin_function: mk("builtin_function_or_method", o, Builtin::BuiltinFunction),
+        wrapper_descriptor: mk("wrapper_descriptor", o, Builtin::BuiltinFunction),
+        method_wrapper: mk("method-wrapper", o, Builtin::BuiltinFunction),
         method: mk("method", o, Builtin::Method),
         module: mk("module", o, Builtin::Module),
         iterator,
@@ -3293,8 +3298,8 @@ fn eval_scopes(vm: &mut Vm, a: &[Value], k: Kw, what: &str) -> PyResult<Scopes> 
     let bv = g.borrow().get_s("__builtins__");
     let bobj = match bv {
         None => {
-            let bm = Value::Module(Rc::new(Module { name: ps("builtins"), dict: vm.builtins.clone() }));
-            g.borrow_mut().set_s("__builtins__", bm);
+            // exec() gives globals without builtins the builtins' dict, as CPython does
+            g.borrow_mut().set_s("__builtins__", Value::Dict(vm.builtins.clone()));
             None
         }
         Some(Value::Module(m)) if Rc::ptr_eq(&m.dict, &vm.builtins) => None,

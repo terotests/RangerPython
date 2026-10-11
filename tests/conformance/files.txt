@@ -62,6 +62,10 @@ helper:typinganndata/__init__
 helper:typinganndata/ann_module
 helper:typinganndata/ann_module2
 helper:typinganndata/ann_module3
+helper:support/interpreters/__init__
+helper:support/interpreters/_crossinterp
+helper:support/interpreters/channels
+helper:support/interpreters/queues
 # data files those tests read (fetched as they are)
 data:mathdata/cmath_testcases.txt
 data:mathdata/math_testcases.txt

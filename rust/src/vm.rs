@@ -266,6 +266,9 @@ pub struct Types {
     pub none: Rc<Class>,
     pub function: Rc<Class>,
     pub builtin_function: Rc<Class>,
+    /// a builtin type's slot method, and one bound to an instance
+    pub wrapper_descriptor: Rc<Class>,
+    pub method_wrapper: Rc<Class>,
     pub method: Rc<Class>,
     pub module: Rc<Class>,
     pub iterator: Rc<Class>,
@@ -3085,7 +3088,8 @@ impl Vm {
             g.set_s("__doc__", Value::None);
             let pkg = if is_pkg { name.to_string() } else { name.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or_default() };
             g.set_s("__package__", Value::str(&pkg));
-            g.set_s("__builtins__", Value::Module(Rc::new(Module { name: ps("builtins"), dict: self.builtins.clone() })));
+            // as in CPython, a module other than __main__ sees the builtins' dict
+            g.set_s("__builtins__", Value::Dict(self.builtins.clone()));
         }
         let m = Value::Module(Rc::new(Module { name: ps(name), dict: globals.clone() }));
         self.modules.borrow_mut().set_s(name, m.clone());
