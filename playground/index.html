@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rpy Playground</title>
+<meta name="description" content="Run Python 3 in the browser with rpy, a Python interpreter written in Rust and compiled to WebAssembly.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%234f7cff'/><text x='8' y='12' font-size='10' font-family='monospace' text-anchor='middle' fill='white'>py</text></svg>">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #677085; --border: #dde1e8;
+  --accent: #3d63f0; --accent-text: #fff; --err: #c62828; --ok: #2e7d32; --code-bg: #fbfbfd;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --panel: #1a1e26; --text: #e3e7ef; --muted: #8d96a8; --border: #2b313d;
+    --accent: #6b8cff; --accent-text: #0d1020; --err: #ff7b72; --ok: #7ee787; --code-bg: #161a21;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1a1e26; --text: #e3e7ef; --muted: #8d96a8; --border: #2b313d;
+  --accent: #6b8cff; --accent-text: #0d1020; --err: #ff7b72; --ok: #7ee787; --code-bg: #161a21;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex; flex-direction: column;
+}
+header {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+}
+header h1 { font-size: 16px; margin: 0 8px 0 0; white-space: nowrap; }
+header h1 span { color: var(--muted); font-weight: 400; }
+header .spacer { flex: 1; }
+header a { color: var(--muted); text-decoration: none; }
+header a:hover { color: var(--text); }
+button, select {
+  font: inherit; color: var(--text); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer;
+}
+button:hover, select:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+button:disabled { opacity: .5; cursor: default; }
+kbd { font: 11px ui-monospace, monospace; opacity: .8; }
+main {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 16px;
+}
+.pane {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+.bar {
+  display: flex; align-items: center; gap: 4px; padding: 4px 6px;
+  border-bottom: 1px solid var(--border); overflow-x: auto; min-height: 36px;
+}
+.bar .title { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding: 0 6px; }
+.tab {
+  border: 0; border-radius: 5px; padding: 4px 10px; font: 13px ui-monospace, monospace;
+  background: transparent; color: var(--muted); white-space: nowrap;
+}
+.tab.active { background: var(--bg); color: var(--text); }
+.tab .x { margin-left: 6px; opacity: .6; }
+.tab .x:hover { opacity: 1; color: var(--err); }
+.add { border: 0; background: transparent; color: var(--muted); padding: 4px 8px; }
+textarea#editor {
+  flex: 1; width: 100%; resize: none; border: 0; outline: 0; padding: 12px 14px;
+  background: var(--code-bg); color: var(--text); tab-size: 4;
+  font: 13.5px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre; overflow: auto;
+}
+#output {
+  flex: 1; margin: 0; padding: 12px 14px; overflow: auto; background: var(--code-bg);
+  font: 13.5px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word;
+}
+#output .err { color: var(--err); }
+#output .note { color: var(--muted); font-style: italic; }
+#files { border-top: 1px solid var(--border); max-height: 45%; overflow: auto; }
+#files:empty { display: none; }
+.file { border-bottom: 1px solid var(--border); }
+.file summary { cursor: pointer; padding: 6px 12px; font: 13px ui-monospace, monospace; display: flex; gap: 8px; align-items: center; }
+.file summary .size { color: var(--muted); }
+.file summary a { margin-left: auto; color: var(--accent); }
+.file .body { padding: 8px 12px 12px; }
+.file pre { margin: 0; max-height: 240px; overflow: auto; font: 12.5px ui-monospace, monospace; }
+.file .svg { background: #fff; border-radius: 6px; padding: 8px; overflow: auto; }
+.file .svg img { max-width: 100%; }
+footer {
+  display: flex; gap: 16px; padding: 6px 16px; font-size: 12px; color: var(--muted);
+  border-top: 1px solid var(--border); background: var(--panel);
+}
+footer .ok { color: var(--ok); } footer .bad { color: var(--err); }
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; grid-template-rows: minmax(300px, 1fr) minmax(240px, 1fr); }
+  body { height: auto; min-height: 100%; }
+  header h1 span { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>rpy <span>Python 3 in Rust, running as WebAssembly</span></h1>
+  <select id="examples" aria-label="Examples"><option value="">Examples…</option></select>
+  <button id="run" class="primary" disabled>Run <kbd>Ctrl+↵</kbd></button>
+  <button id="stop" disabled>Stop</button>
+  <button id="share" title="Copy a link to this code">Share</button>
+  <span class="spacer"></span>
+  <a href="https://github.com/terotests/RangerPython">GitHub</a>
+</header>
+<main>
+  <section class="pane" aria-label="Code">
+    <div class="bar" id="tabs"></div>
+    <textarea id="editor" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Python code"></textarea>
+  </section>
+  <section class="pane" aria-label="Output">
+    <div class="bar"><span class="title">Output</span><span class="spacer" style="flex:1"></span><button id="clear" class="add">Clear</button></div>
+    <pre id="output"></pre>
+    <div id="files"></div>
+  </section>
+</main>
+<footer><span id="status">Loading rpy.wasm…</span><span id="timing"></span></footer>
+<script type="module" src="app.js"></script>
+</body>
+</html>

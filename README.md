@@ -18,6 +18,29 @@ r.files       // { "/tmp/chart.svg": "<svg …" }  the files it wrote
 r.traceback   // CPython-style report when it raised
 ```
 
+## Playground
+
+<https://terotests.github.io/RangerPython/> runs scripts in the browser
+with `rpy` (the interpreter in hand-written Rust, `rust/`) compiled to
+WebAssembly. Files added next to `main.py` can be opened or imported, and
+the files a script writes are shown (an SVG as a picture) and can be
+downloaded. Share puts the code in the link.
+
+The page is `playground/`: a WASI host of its own (`wasi.js`, no
+dependencies) and a Worker, so Stop ends a runaway script. The
+`playground` workflow builds `rpy.wasm` and publishes the page from the
+default branch. To run it locally:
+
+```sh
+cd rust && cargo build --release --target wasm32-wasip1 && cd ..
+cp rust/target/wasm32-wasip1/release/rpy.wasm playground/
+python3 -m http.server -d playground 8000      # http://localhost:8000
+node playground/check.mjs                       # the examples, in Node
+```
+
+In the browser `input()` has no stdin, and recursion stops after a few
+hundred nested calls (the browser's stack, not the interpreter's limit).
+
 ## Hooking into a host filesystem
 
 `js/host.mjs` runs a script against files the host keeps. The host gives
@@ -57,6 +80,48 @@ r.saved   // [{ from: "/tmp/chart3d.svg", path: "media/chart3d.svg" }]
   the page: `runInDeck(vfs, id, code, { run: workerRunner(worker) })`.
 
 ## Command line
+
+### rpy (Rust)
+
+Needs Rust (<https://rustup.rs>).
+
+```sh
+cd rust
+cargo build --release                  # target/release/rpy
+./target/release/rpy script.py         # run a script
+./target/release/rpy -c 'print(2**100)'
+```
+
+The script runs on an in-memory filesystem. Options:
+
+```sh
+# put a host folder's files at /data, pass words to sys.argv,
+# and save the files the script wrote into out/ (/data/b.txt becomes out/data__b.txt)
+./target/release/rpy --mount ./data=/data --arg hello script.py out
+```
+
+| option | |
+|---|---|
+| `--mount HOST=VFS` | copy HOST's files (recursively) to VFS before the run |
+| `--arg X` | append X to `sys.argv` |
+| `--path VFS` | another folder imports look in, after `/` |
+| `--echo` | print output as it is written, not at the end |
+| `-c CMD` | run CMD instead of a script file |
+| `outdir` (after the script) | save the files the script wrote there |
+
+The same program as WebAssembly, in Node:
+
+```sh
+rustup target add wasm32-wasip1
+cargo build --release --target wasm32-wasip1
+node --stack-size=7000 wasi-run.mjs target/wasm32-wasip1/release/rpy.wasm script.py
+```
+
+`rpy.wasm` (about 5 MB, the standard library inside) runs on any WASI
+preview1 host, such as `wasmtime run --dir . rpy.wasm script.py`. See
+[rust/README.md](rust/README.md).
+
+### The JavaScript build
 
 ```
 node js/cli.mjs script.py [args…] [--mount DIR] [--max-steps N]
