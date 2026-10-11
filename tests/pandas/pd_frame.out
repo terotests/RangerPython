@@ -1,0 +1,155 @@
+    name  score  age   team  active
+0  alpha  81.50   31    red    True
+1   beta  92.25   45   blue   False
+2  gamma    NaN   28    red    True
+3  delta  67.00   39  green    True
+4    eps  74.75   52   blue   False
+<class 'pandas.DataFrame'>
+RangeIndex: 5 entries, 0 to 4
+Data columns (total 5 columns):
+ #   Column  Non-Null Count  Dtype  
+---  ------  --------------  -----  
+ 0   name    5 non-null      object 
+ 1   score   4 non-null      float64
+ 2   age     5 non-null      int64  
+ 3   team    5 non-null      object 
+ 4   active  5 non-null      bool   
+dtypes: bool(1), float64(1), int64(1), object(2)
+memory usage: 297.0+ bytes
+None
+Index(['name', 'score', 'age', 'team', 'active'], dtype='object')
+RangeIndex(start=0, stop=5, step=1)
+['alpha', 'beta', 'gamma', 'delta', 'eps']
+    name  score  age   team  active  score2  senior
+0  alpha  81.50   31    red    True   163.0   False
+1   beta  92.25   45   blue   False   184.5    True
+2  gamma    NaN   28    red    True     NaN   False
+3  delta  67.00   39  green    True   134.0   False
+4    eps  74.75   52   blue   False   149.5    True
+name       beta
+score     92.25
+age          45
+team       blue
+active    False
+score2    184.5
+senior     True
+Name: 1, dtype: object
+    name  score
+0  alpha   81.5
+2  gamma    NaN
+    name  score  age  team  active  score2  senior
+1   beta  92.25   45  blue   False   184.5    True
+2  gamma    NaN   28   red    True     NaN   False
+81.5
+28
+    name  score  age   team  active  score2  senior
+0  alpha  81.50   31    red    True   163.0   False
+1   beta  92.25   45   blue   False   184.5    True
+2  gamma   0.00   28    red    True     NaN   False
+3  delta  67.00   39  green    True   134.0   False
+4    eps  74.75   52   blue   False   149.5    True
+       score  age   team  active  score2  senior
+name                                            
+alpha  81.50   31    red    True   163.0   False
+beta   92.25   45   blue   False   184.5    True
+gamma   0.00   28    red    True     NaN   False
+delta  67.00   39  green    True   134.0   False
+eps    74.75   52   blue   False   149.5    True
+score     92.25
+age          45
+team       blue
+active    False
+score2    184.5
+senior     True
+Name: beta, dtype: object
+    name  score  age   team  active  senior
+0  alpha  81.50   31    red    True   False
+1   beta  92.25   45   blue   False    True
+2  gamma   0.00   28    red    True   False
+3  delta  67.00   39  green    True   False
+4    eps  74.75   52   blue   False    True
+    name  score  age   team  active  score2  senior
+0  alpha  81.50   31    red    True   163.0   False
+1   beta  92.25   45   blue   False   184.5    True
+3  delta  67.00   39  green    True   134.0   False
+   score  age  score2
+0  81.50   31   163.0
+1  92.25   45   184.5
+2   0.00   28     NaN
+3  67.00   39   134.0
+4  74.75   52   149.5
+    name  score  age   team  active  score2  senior
+4    eps  74.75   52   blue   False   149.5    True
+1   beta  92.25   45   blue   False   184.5    True
+3  delta  67.00   39  green    True   134.0   False
+0  alpha  81.50   31    red    True   163.0   False
+2  gamma   0.00   28    red    True     NaN   False
+    name  score  age  team  active  score2  senior
+1   beta  92.25   45  blue   False   184.5    True
+0  alpha  81.50   31   red    True   163.0   False
+   name  score  age  team  active  score2  senior
+1  beta  92.25   45  blue   False   184.5    True
+4   eps  74.75   52  blue   False   149.5    True
+    name  score  age   team  active  score2  senior  ratio
+0  alpha  81.50   31    red    True   163.0   False   2.63
+1   beta  92.25   45   blue   False   184.5    True   2.05
+2  gamma   0.00   28    red    True     NaN   False   0.00
+3  delta  67.00   39  green    True   134.0   False   1.72
+4    eps  74.75   52   blue   False   149.5    True   1.44
+0      ALPHA-red
+1      BETA-blue
+2      GAMMA-red
+3    DELTA-green
+4       EPS-blue
+dtype: object
+age      195.0
+score    315.5
+dtype: float64
+age      39.0
+score    63.1
+dtype: float64
+[{'name': 'alpha', 'score': 81.5, 'age': 31, 'team': 'red', 'active': True, 'score2': 163.0, 'senior': False}, {'name': 'beta', 'score': 92.25, 'age': 45, 'team': 'blue', 'active': False, 'score2': 184.5, 'senior': True}]
+name,score,age,team,active,score2,senior
+alpha,81.5,31,red,True,163.0,False
+beta,92.25,45,blue,False,184.5,True
+gamma,0.0,28,red,True,,False
+delta,67.0,39,green,True,134.0,False
+eps,74.75,52,blue,False,149.5,True
+
+[{"name":"alpha","score":81.5,"age":31,"team":"red","active":true,"score2":163.0,"senior":false},{"name":"beta","score":92.25,"age":45,"team":"blue","active":false,"score2":184.5,"senior":true}]
+            0      1      2      3      4
+name    alpha   beta  gamma  delta    eps
+score    81.5  92.25    0.0   67.0  74.75
+age        31     45     28     39     52
+team      red   blue    red  green   blue
+active   True  False   True   True  False
+score2  163.0  184.5    NaN  134.0  149.5
+senior  False   True  False  False   True
+    name variable  value
+0  alpha      age   31.0
+1   beta      age   45.0
+2  gamma      age   28.0
+3  delta      age   39.0
+team
+red      0.4
+blue     0.4
+green    0.2
+Name: proportion, dtype: float64
+         name      score        age team active      score2 senior
+count       5   5.000000   5.000000    5      5    4.000000      5
+unique      5        NaN        NaN    3      2         NaN      2
+top     alpha        NaN        NaN  red   True         NaN  False
+freq        1        NaN        NaN    2      3         NaN      3
+mean      NaN  63.100000  39.000000  NaN    NaN  157.750000    NaN
+std       NaN  36.471993   9.874209  NaN    NaN   21.410667    NaN
+min       NaN   0.000000  28.000000  NaN    NaN  134.000000    NaN
+25%       NaN  67.000000  31.000000  NaN    NaN  145.625000    NaN
+50%       NaN  74.750000  39.000000  NaN    NaN  156.250000    NaN
+75%       NaN  81.500000  45.000000  NaN    NaN  168.375000    NaN
+max       NaN  92.250000  52.000000  NaN    NaN  184.500000    NaN
+           score       age    active    score2    senior
+score   1.000000  0.606201 -0.510599  1.000000  0.510599
+age     0.606201  1.000000 -0.878275  0.019633  0.878275
+active -0.510599 -0.878275  1.000000 -0.498863 -1.000000
+score2  1.000000  0.019633 -0.498863  1.000000  0.498863
+senior  0.510599  0.878275 -1.000000  0.498863  1.000000

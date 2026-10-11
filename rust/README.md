@@ -45,7 +45,7 @@ Python function with only positional arguments reuses a pooled value stack,
 so it allocates nothing.
 
 The Python-level modules in `pylib/` (collections, functools, itertools,
-random, statistics, copy, struct, asyncio) follow CPython's algorithms, so a
+random, statistics, copy, struct, asyncio, pathlib, glob) follow CPython's algorithms, so a
 seeded `random` run or a `statistics` result matches CPython's digits.
 
 ## Tests

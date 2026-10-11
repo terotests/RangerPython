@@ -1,0 +1,87 @@
+0    1234567.891
+1          2.500
+dtype: float64
+0    0.00001
+1    2.50000
+dtype: float64
+0     0.333333
+1    10.000000
+dtype: float64
+0    1.000000e+17
+1    1.000000e+00
+dtype: float64
+0    1.234568e+07
+1    1.000000e+00
+dtype: float64
+0   -1.50
+1    2.25
+2     NaN
+dtype: float64
+0     True
+1    False
+dtype: bool
+Series([], dtype: float64)
+Empty DataFrame
+Columns: []
+Index: []
+0      0
+1      1
+2      2
+3      3
+4      4
+      ..
+65    65
+66    66
+67    67
+68    68
+69    69
+Length: 70, dtype: int64
+     v
+0    0
+1    1
+2    2
+3    3
+4    4
+..  ..
+95  95
+96  96
+97  97
+98  98
+99  99
+
+[100 rows x 1 columns]
+   column_0  column_1  column_2  ...  column_9  column_10  column_11
+0       0.0    1000.5    2001.0  ...    9004.5    10005.0    11005.5
+1       0.0       1.0       2.0  ...       9.0       10.0       11.0
+
+[2 rows x 12 columns]
+0    inf
+1    inf
+2    inf
+dtype: float64
+0    1.0
+1    0.0
+2    3.0
+dtype: float64
+a    1
+b    2
+dtype: int64
+x     NaN
+y    21.0
+z     NaN
+dtype: float64
+['(0, 10]', '(0, 10]', '(10, 20]', '(20, 40]']
+high    1
+low     2
+mid     1
+Name: count, dtype: int64
+0    1.0
+1    2.5
+2    NaN
+dtype: float64
+sum     10.0
+mean     2.5
+dtype: float64
+        a     b
+sum   3.0  7.50
+mean  1.5  3.75

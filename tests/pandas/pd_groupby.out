@@ -1,0 +1,92 @@
+         revenue
+country         
+FI           480
+SE           310
+NO           210
+DK            40
+product
+b    420
+a    320
+c    300
+Name: revenue, dtype: int64
+country  product
+DK       a           40
+FI       a          100
+         b           80
+         c          300
+NO       a          120
+         b           90
+SE       a           60
+         b          250
+Name: revenue, dtype: int64
+         total  avg_margin  n
+country                      
+DK          40    0.050000  1
+FI         480    0.233333  3
+NO         210    0.200000  2
+SE         310    0.325000  2
+         sum   mean  max
+country                 
+DK        40   40.0   40
+FI       480  160.0  300
+NO       210  105.0  120
+SE       310  155.0  250
+country
+DK    1
+FI    3
+NO    2
+SE    2
+dtype: int64
+  country  revenue
+0      DK       40
+1      FI      480
+2      NO      210
+3      SE      310
+         revenue     units
+country                   
+DK          40.0  1.000000
+FI         160.0  2.666667
+NO         105.0  1.500000
+SE         155.0  2.000000
+product
+a     80.0
+b    140.0
+c    300.0
+Name: revenue, dtype: float64
+0    480
+1    310
+2    480
+3    210
+4    310
+5    480
+6    210
+7     40
+Name: revenue, dtype: int64
+         product  revenue  units  margin
+country                                 
+DK             1        1      1       1
+FI             3        3      3       3
+NO             2        2      2       2
+SE             2        2      2       2
+country
+DK    1
+FI    3
+NO    2
+SE    2
+Name: product, dtype: int64
+FI
+a 4 320
+b 3 420
+c 1 300
+  country  revenue
+0      DK       40
+1      FI      480
+2      NO      210
+3      SE      310
+        revenue        units
+            sum   mean   max
+country                     
+DK           40   40.0     1
+FI          480  160.0     5
+NO          210  105.0     2
+SE          310  155.0     3

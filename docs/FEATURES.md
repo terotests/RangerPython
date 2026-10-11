@@ -10,7 +10,7 @@ with.
 | target | features supported |
 |---|---:|
 | JavaScript | 97 of 102 |
-| Rust (hand-written) | 101 of 102 |
+| Rust (hand-written) | 102 of 102 |
 
 ## Syntax
 
@@ -140,7 +140,7 @@ with.
 | collections | yes | yes |  |
 | itertools | yes | yes |  |
 | string and textwrap | yes | yes |  |
-| datetime | no | no | ModuleNotFoundError: No module named 'datetime' |
+| datetime | no | yes | ModuleNotFoundError: No module named 'datetime' |
 | os and os.path | yes | yes |  |
 | sys | yes | yes |  |
 | typing | yes | yes |  |

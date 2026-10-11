@@ -15,6 +15,7 @@ class StringIO:
     def __init__(self, initial_value="", newline="\n"):
         self._parts = [initial_value] if initial_value else []
         self._value = None
+        self._len = len(initial_value)
         self._pos = 0
         self.closed = False
 
@@ -29,13 +30,16 @@ class StringIO:
             raise ValueError("I/O operation on closed file.")
         if not isinstance(s, str):
             raise TypeError("string argument expected, got '%s'" % type(s).__name__)
-        text = self._text()
-        if self._pos == len(text):
+        if self._pos == self._len:
             self._parts.append(s)
             self._value = None
-        else:
-            self._value = text[:self._pos] + s + text[self._pos + len(s):]
-            self._parts = [self._value]
+            self._len += len(s)
+            self._pos += len(s)
+            return len(s)
+        text = self._text()
+        self._value = text[:self._pos] + s + text[self._pos + len(s):]
+        self._parts = [self._value]
+        self._len = len(self._value)
         self._pos += len(s)
         return len(s)
 
@@ -92,6 +96,7 @@ class StringIO:
             size = self._pos
         self._value = text[:size]
         self._parts = [self._value]
+        self._len = len(self._value)
         return size
 
     def flush(self):
