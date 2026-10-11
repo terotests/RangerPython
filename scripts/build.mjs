@@ -129,7 +129,7 @@ function goBuild(dir, file) {
   for (let round = 0; round < 20; round++) {
     const r = spawnSync("go", ["build", "-gcflags=-e", "-o", "pyrun", "."], { cwd: dir, encoding: "utf8" });
     if (r.status === 0) return;
-    const errs = [...r.stderr.matchAll(/pyrun\.go:(\d+):(\d+): cannot use (\S+) \(variable of struct type GoNullable\) as \*GoNullable/g)];
+    const errs = [...r.stderr.matchAll(/pyrun\.go:(\d+):(\d+): cannot use (\S+) \(variable of (?:struct )?type GoNullable\) as \*GoNullable/g)];
     if (errs.length === 0) {
       process.stderr.write(r.stderr);
       throw new Error("go build failed");
