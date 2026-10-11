@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
-# contextvars for the Rust runtime. There is one thread and no asyncio task
-# switching between contexts, so a context is a plain mapping that run()
-# swaps in.
+# contextvars for the Rust runtime. A context is a plain mapping that run()
+# swaps in; each thread has its own current one, which starts empty.
 
 __all__ = ("Context", "ContextVar", "Token", "copy_context")
 
@@ -14,7 +13,7 @@ class Context:
 
     def run(self, callable, /, *args, **kwargs):
         global _current
-        prev = _current
+        prev = _cur()
         _current = self
         try:
             return callable(*args, **kwargs)
@@ -53,9 +52,30 @@ class Context:
 
 _current = Context()
 
+try:
+    from _thread import get_ident as _ident
+except ImportError:
+    def _ident():
+        return 0
+
+# the thread whose context _current is, and the others' contexts
+_owner = _ident()
+_by_thread = {}
+
+
+def _cur():
+    # the running thread's context, swapped into _current
+    global _current, _owner
+    me = _ident()
+    if me != _owner:
+        _by_thread[_owner] = _current
+        _current = _by_thread.pop(me, None) or Context()
+        _owner = me
+    return _current
+
 
 def copy_context():
-    return _current.copy()
+    return _cur().copy()
 
 
 class Token:
@@ -92,7 +112,7 @@ class ContextVar:
 
     def get(self, *args):
         try:
-            return _current._data[self]
+            return _cur()._data[self]
         except KeyError:
             pass
         if args:
@@ -102,6 +122,7 @@ class ContextVar:
         raise LookupError(self)
 
     def set(self, value):
+        _cur()
         old = _current._data.get(self, _MISSING)
         _current._data[self] = value
         return Token(_current, self, old)
@@ -111,7 +132,7 @@ class ContextVar:
             raise RuntimeError("Token has already been used once")
         if token._var is not self:
             raise ValueError("Token was created by a different ContextVar")
-        if token._context is not _current:
+        if token._context is not _cur():
             raise ValueError("Token was created in a different Context")
         if token._old_value is _MISSING:
             _current._data.pop(self, None)

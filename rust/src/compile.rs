@@ -1118,7 +1118,9 @@ impl<'a> Compiler<'a> {
         if let Some(&i) = self.u().str_consts.get(s) {
             return i;
         }
-        let i = self.const_val(Value::str(s));
+        // identifier-like constants are interned, as CPython's are
+        let v = if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') { Value::Str(crate::value::intern_str(&Rc::new(PyStr::new(s.to_string())))) } else { Value::str(s) };
+        let i = self.const_val(v);
         self.u().str_consts.insert(s.to_string(), i);
         i
     }

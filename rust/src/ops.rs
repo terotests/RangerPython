@@ -765,6 +765,14 @@ impl Vm {
             }
             _ => {
                 if let Value::Obj(o) = obj {
+                    // a property of a native type (decimal.Context.prec)
+                    if let Some(Value::Property(p)) = o.class.lookup(name) {
+                        if !p.fset.is_none() {
+                            let s = p.fset.clone();
+                            self.call_vec(&s, vec![obj.clone(), v], &[])?;
+                            return Ok(());
+                        }
+                    }
                     if crate::tb::obj_setattr(self, o, &name.s, v.clone())? {
                         return Ok(());
                     }
@@ -1034,6 +1042,15 @@ impl Vm {
                 Err(self.no_attr(obj, name))
             }
             Value::Obj(o) if matches!(&*o.kind.borrow(), ObjKind::Traceback { .. }) && &*name.s == "tb_next" => Err(self.type_error("can't delete tb_next attribute")),
+            // a property of a native type
+            Value::Obj(o) => match o.class.lookup(name) {
+                Some(Value::Property(p)) if !p.fdel.is_none() => {
+                    let d = p.fdel.clone();
+                    self.call_vec(&d, vec![obj.clone()], &[])?;
+                    Ok(())
+                }
+                _ => Err(self.no_attr(obj, name)),
+            },
             _ => Err(self.no_attr(obj, name)),
         }
     }
@@ -1053,9 +1070,9 @@ impl Vm {
                 }
                 Ok(f)
             }
-            Value::Instance(_) => {
+            Value::Instance(_) | Value::Obj(_) => {
                 let b = self.base_of(v);
-                if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
+                if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_) | Value::Obj(_)) {
                     return self.to_f64(&b);
                 }
                 match self.lookup_special(v, &self.n.float_.clone()) {
@@ -1710,6 +1727,20 @@ impl Vm {
                     }
                 }
             }
+            // a native type's own -, + or ~ (decimal.Decimal)
+            (UnOp::Neg | UnOp::Pos | UnOp::Invert, Value::Obj(_)) if self.class_of(a).lookup(match op {
+                UnOp::Neg => &self.n.neg,
+                UnOp::Pos => &self.n.pos,
+                _ => &self.n.invert,
+            }).is_some() => {
+                let name = match op {
+                    UnOp::Neg => self.n.neg.clone(),
+                    UnOp::Pos => self.n.pos.clone(),
+                    _ => self.n.invert.clone(),
+                };
+                let f = self.lookup_special(a, &name).unwrap();
+                self.call_vec(&f, vec![], &[])?
+            }
             _ => {
                 let tn = self.type_name(a);
                 let sym = match op {
@@ -2056,7 +2087,9 @@ impl Vm {
             }
             let ab = self.base_of(a);
             let bb = self.base_of(b);
-            if !matches!(ab, Value::Instance(_) | Value::Class(_)) && !matches!(bb, Value::Instance(_) | Value::Class(_)) {
+            // retried on the built-in bases; a native object is its own base
+            let unwrapped = matches!(a, Value::Instance(_)) || matches!(b, Value::Instance(_));
+            if unwrapped && !matches!(ab, Value::Instance(_) | Value::Class(_)) && !matches!(bb, Value::Instance(_) | Value::Class(_)) {
                 return self.rich_order(op, &ab, &bb);
             }
             return Err(self.order_error(op, a, b));
@@ -2211,6 +2244,14 @@ impl Vm {
                 crate::tb::warn(self, "DeprecationWarning", "NotImplemented should not be used in a boolean context")?;
                 true
             }
+            // a native type's own __bool__ (decimal.Decimal)
+            Value::Obj(o) => match o.class.lookup(&self.n.bool_) {
+                Some(f @ Value::Native(_)) => {
+                    let r = self.call_vec(&f, vec![v.clone()], &[])?;
+                    matches!(r, Value::Bool(true))
+                }
+                _ => true,
+            },
             _ => true,
         })
     }
@@ -2266,6 +2307,12 @@ impl Vm {
                             _ => Err(self.type_error("__hash__ method should return an integer")),
                         }
                     }
+                    // the hash of a native base type (decimal.Decimal) of the instance
+                    Some(f @ Value::Native(_)) if matches!(self.base_of(v), Value::Obj(_)) && !matches!(&f, Value::Native(n) if n.name.starts_with("object.")) => match self.call_vec(&f, vec![v.clone()], &[])? {
+                        Value::Int(i) => Ok(hash_int(i)),
+                        Value::Big(b) => Ok(hash_big(&b)),
+                        _ => Err(self.type_error("__hash__ method should return an integer")),
+                    },
                     _ => {
                         // a class defining __eq__ without __hash__ is unhashable
                         let user_eq = cls.mro.borrow().iter().take_while(|c| c.builtin.get() == Builtin::User || !c.dict.borrow().is_empty()).any(|c| matches!(c.dict.borrow().get_str(&self.n.eq), Some(Value::Func(_))));
@@ -3097,6 +3144,11 @@ impl Vm {
                     }
                 }
             }
+            Value::Obj(_) if self.class_of(obj).lookup(&self.n.setitem).is_some() => {
+                let f = self.lookup_special(obj, &self.n.setitem.clone()).unwrap();
+                self.call_vec(&f, vec![idx, v], &[])?;
+                Ok(())
+            }
             _ => {
                 let tn = self.type_name(obj);
                 Err(self.type_error(format!("'{}' object does not support item assignment", tn)))
@@ -3128,6 +3180,11 @@ impl Vm {
                         Err(self.type_error(format!("'{}' object does not support item deletion", tn)))
                     }
                 }
+            }
+            Value::Obj(_) if self.class_of(obj).lookup(&self.n.delitem).is_some() => {
+                let f = self.lookup_special(obj, &self.n.delitem.clone()).unwrap();
+                self.call_vec(&f, vec![idx.clone()], &[])?;
+                Ok(())
             }
             _ => {
                 let tn = self.type_name(obj);
@@ -3303,6 +3360,17 @@ impl Vm {
                 }
                 self.repr(v)
             }
+            // a native type's own __str__ (decimal.Decimal)
+            Value::Obj(o) => match o.class.lookup(&self.n.str_) {
+                Some(f @ Value::Native(_)) if !matches!(&f, Value::Native(n) if n.name == "object.__str__") => {
+                    let r = self.call_vec(&f, vec![v.clone()], &[])?;
+                    match self.base_of(&r) {
+                        Value::Str(s) => Ok(s.s.clone()),
+                        _ => Err(self.type_error("__str__ returned non-string")),
+                    }
+                }
+                _ => crate::format::str_builtin(self, v),
+            },
             _ => crate::format::str_builtin(self, v),
         }
     }
@@ -3318,6 +3386,18 @@ impl Vm {
     }
 
     pub fn format_value(&mut self, v: &Value, spec: &str) -> PyResult<String> {
+        // a native type's own __format__ (decimal.Decimal)
+        if let Value::Obj(o) = v {
+            if let Some(f @ Value::Native(_)) = o.class.lookup(&self.n.format) {
+                if !matches!(&f, Value::Native(n) if n.name == "object.__format__") {
+                    let r = self.call_vec(&f, vec![v.clone(), Value::str(spec)], &[])?;
+                    return match r {
+                        Value::Str(s) => Ok(s.s.clone()),
+                        _ => Err(self.type_error("__format__ must return a str")),
+                    };
+                }
+            }
+        }
         if let Value::Instance(_) = v {
             let cls = self.class_of(v);
             if let Some(f) = cls.lookup(&self.n.format) {
@@ -3330,10 +3410,19 @@ impl Vm {
                     };
                 }
             }
+            let b = self.base_of(v);
+            if let (Value::Obj(_), Some(f @ Value::Native(_))) = (&b, cls.lookup(&self.n.format)) {
+                if !matches!(&f, Value::Native(n) if n.name == "object.__format__") {
+                    let r = self.call_vec(&f, vec![v.clone(), Value::str(spec)], &[])?;
+                    return match r {
+                        Value::Str(s) => Ok(s.s.clone()),
+                        _ => Err(self.type_error("__format__ must return a str")),
+                    };
+                }
+            }
             if spec.is_empty() {
                 return self.str_of(v);
             }
-            let b = self.base_of(v);
             if matches!(v, Value::Instance(_)) && !matches!(b, Value::Instance(_)) {
                 // a str/int subclass with its own __str__ formats as the base
                 return crate::format::format_spec(self, &b, spec);

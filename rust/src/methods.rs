@@ -2094,7 +2094,7 @@ fn complex_new(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         match v {
             Value::Complex(c) => Ok((c.0, c.1, true)),
             Value::Str(s) => parse_complex(&s.s).map(|(r, i)| (r, i, true)).ok_or_else(|| vm.value_error("complex() arg is a malformed string")),
-            Value::Instance(_) => {
+            Value::Instance(_) | Value::Obj(_) => {
                 if let Some(f) = vm.lookup_special(v, &ps("__complex__")) {
                     let r = vm.call_vec(&f, vec![], &[])?;
                     if let Value::Complex(c) = r {

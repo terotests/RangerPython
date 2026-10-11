@@ -1,0 +1,538 @@
+Decimal(value="0", context=None)Construct a new Decimal object. 'value' can be an integer, string, tuple,
+or another Decimal object. If no value is given, return Decimal('0'). The
+context does not affect the conversion and is only passed to determine if
+the InvalidOperation trap is active.
+
+Decimal.__abs__($self, /)abs(self)Decimal.__add__($self, value, /)Return self+value.Decimal.__bool__($self, /)True if self else FalseDecimal.__ceil__($self, /)Decimal.__complex__($self, /)Decimal.__copy__($self, /)Decimal.__deepcopy__($self, object, /)Decimal.__divmod__($self, value, /)Return divmod(self, value).Decimal.__eq__($self, value, /)Return self==value.Decimal.__float__($self, /)float(self)Decimal.__floor__($self, /)Decimal.__floordiv__($self, value, /)Return self//value.Decimal.__ge__($self, value, /)Return self>=value.Decimal.__getattribute__($self, name, /)Return getattr(self, name).Decimal.__gt__($self, value, /)Return self>value.Decimal.__hash__($self, /)Return hash(self).Decimal.__int__($self, /)int(self)Decimal.__le__($self, value, /)Return self<=value.Decimal.__lt__($self, value, /)Return self<value.Decimal.__mod__($self, value, /)Return self%value.Decimal.__mul__($self, value, /)Return self*value.Decimal.__ne__($self, value, /)Return self!=value.Decimal.__neg__($self, /)-selfDecimal.__new__($type, value="0", context=None)Create and return a new object.  See help(type) for accurate signature.Decimal.__pos__($self, /)+selfDecimal.__pow__($self, value, mod=None, /)Return pow(self, value, mod).Decimal.__radd__($self, value, /)Return value+self.Decimal.__rdivmod__($self, value, /)Return divmod(value, self).Decimal.__reduce__($self, /)Decimal.__repr__($self, /)Return repr(self).Decimal.__rfloordiv__($self, value, /)Return value//self.Decimal.__rmod__($self, value, /)Return value%self.Decimal.__rmul__($self, value, /)Return value*self.Decimal.__rpow__($self, value, mod=None, /)Return pow(value, self, mod).Decimal.__rsub__($self, value, /)Return value-self.Decimal.__rtruediv__($self, value, /)Return value/self.Decimal.__sizeof__($self, /)Decimal.__str__($self, /)Return str(self).Decimal.__sub__($self, value, /)Return self-value.Decimal.__truediv__($self, value, /)Return self/value.Decimal.__trunc__($self, /)Decimal.adjusted($self, /)Return the adjusted exponent of the number.  Defined as exp + digits - 1.
+
+Decimal.as_integer_ratio($self, /)Decimal.as_integer_ratio() -> (int, int)
+
+Return a pair of integers, whose ratio is exactly equal to the original
+Decimal and with a positive denominator. The ratio is in lowest terms.
+Raise OverflowError on infinities and a ValueError on NaNs.
+
+Decimal.as_tuple($self, /)Return a tuple representation of the number.
+
+Decimal.canonical($self, /)Return the canonical encoding of the argument.  Currently, the encoding
+of a Decimal instance is always canonical, so this operation returns its
+argument unchanged.
+
+Decimal.compare($self, /, other, context=None)Compare self to other.  Return a decimal value:
+
+    a or b is a NaN ==> Decimal('NaN')
+    a < b           ==> Decimal('-1')
+    a == b          ==> Decimal('0')
+    a > b           ==> Decimal('1')
+
+Decimal.compare_signal($self, /, other, context=None)Identical to compare, except that all NaNs signal.
+
+Decimal.compare_total($self, /, other, context=None)Compare two operands using their abstract representation rather than
+their numerical value.  Similar to the compare() method, but the result
+gives a total ordering on Decimal instances.  Two Decimal instances with
+the same numeric value but different representations compare unequal
+in this ordering:
+
+    >>> Decimal('12.0').compare_total(Decimal('12'))
+    Decimal('-1')
+
+Quiet and signaling NaNs are also included in the total ordering. The result
+of this function is Decimal('0') if both operands have the same representation,
+Decimal('-1') if the first operand is lower in the total order than the second,
+and Decimal('1') if the first operand is higher in the total order than the
+second operand. See the specification for details of the total order.
+
+This operation is unaffected by context and is quiet: no flags are changed
+and no rounding is performed. As an exception, the C version may raise
+InvalidOperation if the second operand cannot be converted exactly.
+
+Decimal.compare_total_mag($self, /, other, context=None)Compare two operands using their abstract representation rather than their
+value as in compare_total(), but ignoring the sign of each operand.
+
+x.compare_total_mag(y) is equivalent to x.copy_abs().compare_total(y.copy_abs()).
+
+This operation is unaffected by context and is quiet: no flags are changed
+and no rounding is performed. As an exception, the C version may raise
+InvalidOperation if the second operand cannot be converted exactly.
+
+Decimal.conjugate($self, /)Return self.
+
+Decimal.copy_abs($self, /)Return the absolute value of the argument.  This operation is unaffected by
+context and is quiet: no flags are changed and no rounding is performed.
+
+Decimal.copy_negate($self, /)Return the negation of the argument.  This operation is unaffected by context
+and is quiet: no flags are changed and no rounding is performed.
+
+Decimal.copy_sign($self, /, other, context=None)Return a copy of the first operand with the sign set to be the same as the
+sign of the second operand. For example:
+
+    >>> Decimal('2.3').copy_sign(Decimal('-1.5'))
+    Decimal('-2.3')
+
+This operation is unaffected by context and is quiet: no flags are changed
+and no rounding is performed. As an exception, the C version may raise
+InvalidOperation if the second operand cannot be converted exactly.
+
+Decimal.exp($self, /, context=None)Return the value of the (natural) exponential function e**x at the given
+number.  The function always uses the ROUND_HALF_EVEN mode and the result
+is correctly rounded.
+
+Decimal.fma($self, /, other, third, context=None)Fused multiply-add.  Return self*other+third with no rounding of the
+intermediate product self*other.
+
+    >>> Decimal(2).fma(3, 5)
+    Decimal('11')
+
+
+Decimal.from_float($type, f, /)Class method that converts a float to a decimal number, exactly.
+Since 0.1 is not exactly representable in binary floating point,
+Decimal.from_float(0.1) is not the same as Decimal('0.1').
+
+    >>> Decimal.from_float(0.1)
+    Decimal('0.1000000000000000055511151231257827021181583404541015625')
+    >>> Decimal.from_float(float('nan'))
+    Decimal('NaN')
+    >>> Decimal.from_float(float('inf'))
+    Decimal('Infinity')
+    >>> Decimal.from_float(float('-inf'))
+    Decimal('-Infinity')
+
+
+Decimal.is_canonical($self, /)Return True if the argument is canonical and False otherwise.  Currently,
+a Decimal instance is always canonical, so this operation always returns
+True.
+
+Decimal.is_finite($self, /)Return True if the argument is a finite number, and False if the argument
+is infinite or a NaN.
+
+Decimal.is_infinite($self, /)Return True if the argument is either positive or negative infinity and
+False otherwise.
+
+Decimal.is_nan($self, /)Return True if the argument is a (quiet or signaling) NaN and False
+otherwise.
+
+Decimal.is_normal($self, /, context=None)Return True if the argument is a normal finite non-zero number with an
+adjusted exponent greater than or equal to Emin. Return False if the
+argument is zero, subnormal, infinite or a NaN.
+
+Decimal.is_qnan($self, /)Return True if the argument is a quiet NaN, and False otherwise.
+
+Decimal.is_signed($self, /)Return True if the argument has a negative sign and False otherwise.
+Note that both zeros and NaNs can carry signs.
+
+Decimal.is_snan($self, /)Return True if the argument is a signaling NaN and False otherwise.
+
+Decimal.is_subnormal($self, /, context=None)Return True if the argument is subnormal, and False otherwise. A number is
+subnormal if it is non-zero, finite, and has an adjusted exponent less
+than Emin.
+
+Decimal.is_zero($self, /)Return True if the argument is a (positive or negative) zero and False
+otherwise.
+
+Decimal.ln($self, /, context=None)Return the natural (base e) logarithm of the operand. The function always
+uses the ROUND_HALF_EVEN mode and the result is correctly rounded.
+
+Decimal.log10($self, /, context=None)Return the base ten logarithm of the operand. The function always uses the
+ROUND_HALF_EVEN mode and the result is correctly rounded.
+
+Decimal.logb($self, /, context=None)For a non-zero number, return the adjusted exponent of the operand as a
+Decimal instance.  If the operand is a zero, then Decimal('-Infinity') is
+returned and the DivisionByZero condition is raised. If the operand is
+an infinity then Decimal('Infinity') is returned.
+
+Decimal.logical_and($self, /, other, context=None)Applies an 'and' operation between self and other's digits.
+
+Both self and other must be logical numbers.
+
+Decimal.logical_invert($self, /, context=None)Invert all its digits.
+
+The self must be logical number.
+
+Decimal.logical_or($self, /, other, context=None)Applies an 'or' operation between self and other's digits.
+
+Both self and other must be logical numbers. 
+
+Decimal.logical_xor($self, /, other, context=None)Applies an 'xor' operation between self and other's digits.
+
+Both self and other must be logical numbers.
+
+Decimal.max($self, /, other, context=None)Maximum of self and other.  If one operand is a quiet NaN and the other is
+numeric, the numeric operand is returned.
+
+Decimal.max_mag($self, /, other, context=None)Similar to the max() method, but the comparison is done using the absolute
+values of the operands.
+
+Decimal.min($self, /, other, context=None)Minimum of self and other. If one operand is a quiet NaN and the other is
+numeric, the numeric operand is returned.
+
+Decimal.min_mag($self, /, other, context=None)Similar to the min() method, but the comparison is done using the absolute
+values of the operands.
+
+Decimal.next_minus($self, /, context=None)Return the largest number representable in the given context (or in the
+current default context if no context is given) that is smaller than the
+given operand.
+
+Decimal.next_plus($self, /, context=None)Return the smallest number representable in the given context (or in the
+current default context if no context is given) that is larger than the
+given operand.
+
+Decimal.next_toward($self, /, other, context=None)If the two operands are unequal, return the number closest to the first
+operand in the direction of the second operand.  If both operands are
+numerically equal, return a copy of the first operand with the sign set
+to be the same as the sign of the second operand.
+
+Decimal.normalize($self, /, context=None)Normalize the number by stripping the rightmost trailing zeros and
+converting any result equal to Decimal('0') to Decimal('0e0').  Used
+for producing canonical values for members of an equivalence class.
+For example, Decimal('32.100') and Decimal('0.321000e+2') both normalize
+to the equivalent value Decimal('32.1').
+
+Decimal.number_class($self, /, context=None)Return a string describing the class of the operand.  The returned value
+is one of the following ten strings:
+
+    * '-Infinity', indicating that the operand is negative infinity.
+    * '-Normal', indicating that the operand is a negative normal number.
+    * '-Subnormal', indicating that the operand is negative and subnormal.
+    * '-Zero', indicating that the operand is a negative zero.
+    * '+Zero', indicating that the operand is a positive zero.
+    * '+Subnormal', indicating that the operand is positive and subnormal.
+    * '+Normal', indicating that the operand is a positive normal number.
+    * '+Infinity', indicating that the operand is positive infinity.
+    * 'NaN', indicating that the operand is a quiet NaN (Not a Number).
+    * 'sNaN', indicating that the operand is a signaling NaN.
+
+
+Decimal.quantize($self, /, exp, rounding=None, context=None)Return a value equal to the first operand after rounding and having the
+exponent of the second operand.
+
+    >>> Decimal('1.41421356').quantize(Decimal('1.000'))
+    Decimal('1.414')
+
+Unlike other operations, if the length of the coefficient after the quantize
+operation would be greater than precision, then an InvalidOperation is signaled.
+This guarantees that, unless there is an error condition, the quantized exponent
+is always equal to that of the right-hand operand.
+
+Also unlike other operations, quantize never signals Underflow, even if the
+result is subnormal and inexact.
+
+If the exponent of the second operand is larger than that of the first, then
+rounding may be necessary. In this case, the rounding mode is determined by the
+rounding argument if given, else by the given context argument; if neither
+argument is given, the rounding mode of the current thread's context is used.
+
+Decimal.radix($self, /)Return Decimal(10), the radix (base) in which the Decimal class does
+all its arithmetic. Included for compatibility with the specification.
+
+Decimal.remainder_near($self, /, other, context=None)Return the remainder from dividing self by other.  This differs from
+self % other in that the sign of the remainder is chosen so as to minimize
+its absolute value. More precisely, the return value is self - n * other
+where n is the integer nearest to the exact value of self / other, and
+if two integers are equally near then the even one is chosen.
+
+If the result is zero then its sign will be the sign of self.
+
+Decimal.rotate($self, /, other, context=None)Return the result of rotating the digits of the first operand by an amount
+specified by the second operand.  The second operand must be an integer in
+the range -precision through precision. The absolute value of the second
+operand gives the number of places to rotate. If the second operand is
+positive then rotation is to the left; otherwise rotation is to the right.
+The coefficient of the first operand is padded on the left with zeros to
+length precision if necessary. The sign and exponent of the first operand are
+unchanged.
+
+Decimal.same_quantum($self, /, other, context=None)Test whether self and other have the same exponent or whether both are NaN.
+
+This operation is unaffected by context and is quiet: no flags are changed
+and no rounding is performed. As an exception, the C version may raise
+InvalidOperation if the second operand cannot be converted exactly.
+
+Decimal.scaleb($self, /, other, context=None)Return the first operand with the exponent adjusted the second.  Equivalently,
+return the first operand multiplied by 10**other. The second operand must be
+an integer.
+
+Decimal.shift($self, /, other, context=None)Return the result of shifting the digits of the first operand by an amount
+specified by the second operand.  The second operand must be an integer in
+the range -precision through precision. The absolute value of the second
+operand gives the number of places to shift. If the second operand is
+positive, then the shift is to the left; otherwise the shift is to the
+right. Digits shifted into the coefficient are zeros. The sign and exponent
+of the first operand are unchanged.
+
+Decimal.sqrt($self, /, context=None)Return the square root of the argument to full precision. The result is
+correctly rounded using the ROUND_HALF_EVEN rounding mode.
+
+Decimal.to_eng_string($self, /, context=None)Convert to an engineering-type string.  Engineering notation has an exponent
+which is a multiple of 3, so there are up to 3 digits left of the decimal
+place. For example, Decimal('123E+1') is converted to Decimal('1.23E+3').
+
+The value of context.capitals determines whether the exponent sign is lower
+or upper case. Otherwise, the context does not affect the operation.
+
+Decimal.to_integral($self, /, rounding=None, context=None)Identical to the to_integral_value() method.  The to_integral() name has been
+kept for compatibility with older versions.
+
+Decimal.to_integral_exact($self, /, rounding=None, context=None)Round to the nearest integer, signaling Inexact or Rounded as appropriate if
+rounding occurs.  The rounding mode is determined by the rounding parameter
+if given, else by the given context. If neither parameter is given, then the
+rounding mode of the current default context is used.
+
+Decimal.to_integral_value($self, /, rounding=None, context=None)Round to the nearest integer without signaling Inexact or Rounded.  The
+rounding mode is determined by the rounding parameter if given, else by
+the given context. If neither parameter is given, then the rounding mode
+of the current default context is used.
+
+Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)The context affects almost all operations and controls rounding,
+Over/Underflow, raising of exceptions and much more.  A new context
+can be constructed as follows:
+
+    >>> c = Context(prec=28, Emin=-425000000, Emax=425000000,
+    ...             rounding=ROUND_HALF_EVEN, capitals=1, clamp=1,
+    ...             traps=[InvalidOperation, DivisionByZero, Overflow],
+    ...             flags=[])
+    >>>
+
+
+Context.Etiny($self, /)Return a value equal to Emin - prec + 1, which is the minimum exponent value
+for subnormal results.  When underflow occurs, the exponent is set to Etiny.
+
+Context.Etop($self, /)Return a value equal to Emax - prec + 1.  This is the maximum exponent
+if the _clamp field of the context is set to 1 (IEEE clamp mode).  Etop()
+must not be negative.
+
+Context.__copy__($self, /)Context.__delattr__($self, name, /)Implement delattr(self, name).Context.__getattribute__($self, name, /)Return getattr(self, name).Context.__init__($self, /, *args, **kwargs)Initialize self.  See help(type(self)) for accurate signature.Context.__new__($type, prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)Create and return a new object.  See help(type) for accurate signature.Context.__reduce__($self, /)Context.__repr__($self, /)Return repr(self).Context.__setattr__($self, name, value, /)Implement setattr(self, name, value).Context._apply($self, object, /)Context.abs($self, x, /)Return the absolute value of x.
+
+Context.add($self, x, y, /)Return the sum of x and y.
+
+Context.canonical($self, x, /)Return a new instance of x.
+
+Context.clear_flags($self, /)Reset all flags to False.
+
+Context.clear_traps($self, /)Set all traps to False.
+
+Context.compare($self, x, y, /)Compare x and y numerically.
+
+Context.compare_signal($self, x, y, /)Compare x and y numerically.  All NaNs signal.
+
+Context.compare_total($self, x, y, /)Compare x and y using their abstract representation.
+
+Context.compare_total_mag($self, x, y, /)Compare x and y using their abstract representation, ignoring sign.
+
+Context.copy($self, /)Return a duplicate of the context.
+
+Context.copy_abs($self, x, /)Return a copy of x with the sign set to 0.
+
+Context.copy_decimal($self, x, /)Return a copy of Decimal x.
+
+Context.copy_negate($self, x, /)Return a copy of x with the sign inverted.
+
+Context.copy_sign($self, x, y, /)Copy the sign from y to x.
+
+Context.create_decimal($self, num="0", /)Create a new Decimal instance from num, using self as the context. Unlike the
+Decimal constructor, this function observes the context limits.
+
+Context.create_decimal_from_float($self, f, /)Create a new Decimal instance from float f.  Unlike the Decimal.from_float()
+class method, this function observes the context limits.
+
+Context.divide($self, x, y, /)Return x divided by y.
+
+Context.divide_int($self, x, y, /)Return x divided by y, truncated to an integer.
+
+Context.divmod($self, x, y, /)Return quotient and remainder of the division x / y.
+
+Context.exp($self, x, /)Return e ** x.
+
+Context.fma($self, x, y, z, /)Return x multiplied by y, plus z.
+
+Context.is_canonical($self, x, /)Return True if x is canonical, False otherwise.
+
+Context.is_finite($self, x, /)Return True if x is finite, False otherwise.
+
+Context.is_infinite($self, x, /)Return True if x is infinite, False otherwise.
+
+Context.is_nan($self, x, /)Return True if x is a qNaN or sNaN, False otherwise.
+
+Context.is_normal($self, x, /)Return True if x is a normal number, False otherwise.
+
+Context.is_qnan($self, x, /)Return True if x is a quiet NaN, False otherwise.
+
+Context.is_signed($self, x, /)Return True if x is negative, False otherwise.
+
+Context.is_snan($self, x, /)Return True if x is a signaling NaN, False otherwise.
+
+Context.is_subnormal($self, x, /)Return True if x is subnormal, False otherwise.
+
+Context.is_zero($self, x, /)Return True if x is a zero, False otherwise.
+
+Context.ln($self, x, /)Return the natural (base e) logarithm of x.
+
+Context.log10($self, x, /)Return the base 10 logarithm of x.
+
+Context.logb($self, x, /)Return the exponent of the magnitude of the operand's MSD.
+
+Context.logical_and($self, x, y, /)Applies the logical operation 'and' between each operand's digits.
+
+The operands must be both logical numbers.
+
+    >>> ExtendedContext.logical_and(Decimal('0'), Decimal('0'))
+    Decimal('0')
+    >>> ExtendedContext.logical_and(Decimal('0'), Decimal('1'))
+    Decimal('0')
+    >>> ExtendedContext.logical_and(Decimal('1'), Decimal('0'))
+    Decimal('0')
+    >>> ExtendedContext.logical_and(Decimal('1'), Decimal('1'))
+    Decimal('1')
+    >>> ExtendedContext.logical_and(Decimal('1100'), Decimal('1010'))
+    Decimal('1000')
+    >>> ExtendedContext.logical_and(Decimal('1111'), Decimal('10'))
+    Decimal('10')
+    >>> ExtendedContext.logical_and(110, 1101)
+    Decimal('100')
+    >>> ExtendedContext.logical_and(Decimal(110), 1101)
+    Decimal('100')
+    >>> ExtendedContext.logical_and(110, Decimal(1101))
+    Decimal('100')
+
+Context.logical_invert($self, x, /)Invert all the digits in the operand.
+
+The operand must be a logical number.
+
+    >>> ExtendedContext.logical_invert(Decimal('0'))
+    Decimal('111111111')
+    >>> ExtendedContext.logical_invert(Decimal('1'))
+    Decimal('111111110')
+    >>> ExtendedContext.logical_invert(Decimal('111111111'))
+    Decimal('0')
+    >>> ExtendedContext.logical_invert(Decimal('101010101'))
+    Decimal('10101010')
+    >>> ExtendedContext.logical_invert(1101)
+    Decimal('111110010')
+
+Context.logical_or($self, x, y, /)Applies the logical operation 'or' between each operand's digits.
+
+The operands must be both logical numbers.
+
+    >>> ExtendedContext.logical_or(Decimal('0'), Decimal('0'))
+    Decimal('0')
+    >>> ExtendedContext.logical_or(Decimal('0'), Decimal('1'))
+    Decimal('1')
+    >>> ExtendedContext.logical_or(Decimal('1'), Decimal('0'))
+    Decimal('1')
+    >>> ExtendedContext.logical_or(Decimal('1'), Decimal('1'))
+    Decimal('1')
+    >>> ExtendedContext.logical_or(Decimal('1100'), Decimal('1010'))
+    Decimal('1110')
+    >>> ExtendedContext.logical_or(Decimal('1110'), Decimal('10'))
+    Decimal('1110')
+    >>> ExtendedContext.logical_or(110, 1101)
+    Decimal('1111')
+    >>> ExtendedContext.logical_or(Decimal(110), 1101)
+    Decimal('1111')
+    >>> ExtendedContext.logical_or(110, Decimal(1101))
+    Decimal('1111')
+
+Context.logical_xor($self, x, y, /)Applies the logical operation 'xor' between each operand's digits.
+
+The operands must be both logical numbers.
+
+    >>> ExtendedContext.logical_xor(Decimal('0'), Decimal('0'))
+    Decimal('0')
+    >>> ExtendedContext.logical_xor(Decimal('0'), Decimal('1'))
+    Decimal('1')
+    >>> ExtendedContext.logical_xor(Decimal('1'), Decimal('0'))
+    Decimal('1')
+    >>> ExtendedContext.logical_xor(Decimal('1'), Decimal('1'))
+    Decimal('0')
+    >>> ExtendedContext.logical_xor(Decimal('1100'), Decimal('1010'))
+    Decimal('110')
+    >>> ExtendedContext.logical_xor(Decimal('1111'), Decimal('10'))
+    Decimal('1101')
+    >>> ExtendedContext.logical_xor(110, 1101)
+    Decimal('1011')
+    >>> ExtendedContext.logical_xor(Decimal(110), 1101)
+    Decimal('1011')
+    >>> ExtendedContext.logical_xor(110, Decimal(1101))
+    Decimal('1011')
+
+Context.max($self, x, y, /)Compare the values numerically and return the maximum.
+
+Context.max_mag($self, x, y, /)Compare the values numerically with their sign ignored.
+
+Context.min($self, x, y, /)Compare the values numerically and return the minimum.
+
+Context.min_mag($self, x, y, /)Compare the values numerically with their sign ignored.
+
+Context.minus($self, x, /)Minus corresponds to the unary prefix minus operator in Python, but applies
+the context to the result.
+
+Context.multiply($self, x, y, /)Return the product of x and y.
+
+Context.next_minus($self, x, /)Return the largest representable number smaller than x.
+
+Context.next_plus($self, x, /)Return the smallest representable number larger than x.
+
+Context.next_toward($self, x, y, /)Return the number closest to x, in the direction towards y.
+
+Context.normalize($self, x, /)Reduce x to its simplest form. Alias for reduce(x).
+
+Context.number_class($self, x, /)Return an indication of the class of x.
+
+Context.plus($self, x, /)Plus corresponds to the unary prefix plus operator in Python, but applies
+the context to the result.
+
+Context.power($self, /, a, b, modulo=None)Compute a**b. If 'a' is negative, then 'b' must be integral. The result
+will be inexact unless 'a' is integral and the result is finite and can
+be expressed exactly in 'precision' digits.  In the Python version the
+result is always correctly rounded, in the C version the result is almost
+always correctly rounded.
+
+If modulo is given, compute (a**b) % modulo. The following restrictions
+hold:
+
+    * all three arguments must be integral
+    * 'b' must be nonnegative
+    * at least one of 'a' or 'b' must be nonzero
+    * modulo must be nonzero and less than 10**prec in absolute value
+
+
+Context.quantize($self, x, y, /)Return a value equal to x (rounded), having the exponent of y.
+
+Context.radix($self, /)Return 10.
+
+Context.remainder($self, x, y, /)Return the remainder from integer division.  The sign of the result,
+if non-zero, is the same as that of the original dividend.
+
+Context.remainder_near($self, x, y, /)Return x - y * n, where n is the integer nearest the exact value of x / y
+(if the result is 0 then its sign will be the sign of x).
+
+Context.rotate($self, x, y, /)Return a copy of x, rotated by y places.
+
+Context.same_quantum($self, x, y, /)Return True if the two operands have the same exponent.
+
+Context.scaleb($self, x, y, /)Return the first operand after adding the second value to its exp.
+
+Context.shift($self, x, y, /)Return a copy of x, shifted by y places.
+
+Context.sqrt($self, x, /)Square root of a non-negative number to context precision.
+
+Context.subtract($self, x, y, /)Return the difference between x and y.
+
+Context.to_eng_string($self, x, /)Convert a number to a string, using engineering notation.
+
+Context.to_integral($self, x, /)Identical to to_integral_value(x).
+
+Context.to_integral_exact($self, x, /)Round to an integer. Signal if the result is rounded or inexact.
+
+Context.to_integral_value($self, x, /)Round to an integer.
+
+Context.to_sci_string($self, x, /)Convert a number to a string using scientific notation.
+
+_decimal.getcontext($module, /)Get the current default context.
+
+_decimal.setcontext($module, context, /)Set a new default context.
+
+_decimal.localcontext($module, /, ctx=None, **kwargs)Return a context manager that will set the default context to a copy of ctx
+on entry to the with-statement and restore the previous default context when
+exiting the with-statement. If no context is specified, a copy of the current
+default context is used.
+
+

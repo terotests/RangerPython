@@ -526,7 +526,11 @@ fn referents(v: &Value, out: &mut Visit) -> bool {
                     push(out, back);
                 }
                 ObjKind::Other(x) | ObjKind::TupleGetter(_, x) => push(out, x),
-                ObjKind::File { .. } | ObjKind::StringIO { .. } | ObjKind::MatchPat(_) | ObjKind::Rng(_) | ObjKind::Weak(_) | ObjKind::Abc(_) | ObjKind::Thread(_) => {}
+                ObjKind::DecContext(c) => {
+                    push(out, &c.flags);
+                    push(out, &c.traps_dict);
+                }
+                ObjKind::File { .. } | ObjKind::StringIO { .. } | ObjKind::MatchPat(_) | ObjKind::Rng(_) | ObjKind::Weak(_) | ObjKind::Abc(_) | ObjKind::Thread(_) | ObjKind::Decimal(_) | ObjKind::DecSignals(_) => {}
             }
         }
         _ => {}
@@ -830,6 +834,10 @@ fn clear(v: &Value, trash: &mut Vec<Value>) {
                         trash.push(std::mem::replace(back, Value::None));
                     }
                     ObjKind::Other(x) => trash.push(std::mem::replace(x, Value::None)),
+                    ObjKind::DecContext(c) => {
+                        trash.push(std::mem::replace(&mut c.flags, Value::None));
+                        trash.push(std::mem::replace(&mut c.traps_dict, Value::None));
+                    }
                     _ => {}
                 }
             }

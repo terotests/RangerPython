@@ -154,7 +154,7 @@ fn as_double(vm: &mut Vm, v: &Value) -> PyResult<f64> {
         Value::Int(i) => Ok(*i as f64),
         Value::Bool(b) => Ok(*b as i64 as f64),
         Value::Big(b) => big_to_f64(vm, b),
-        Value::Instance(_) => {
+        Value::Instance(_) | Value::Obj(_) => {
             let base = vm.base_of(v);
             let cls = vm.class_of(v);
             let own = cls.lookup_s("__float__");
@@ -1362,7 +1362,7 @@ fn m_isqrt(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     Ok(Value::from_big(isqrt_big(&n)))
 }
 
-fn gcd_big(a: &BigInt, b: &BigInt) -> BigInt {
+pub fn gcd_big(a: &BigInt, b: &BigInt) -> BigInt {
     let (mut x, mut y) = (a.abs(), b.abs());
     while !y.is_zero() {
         if let (Some(p), Some(q)) = (x.to_i64(), y.to_i64()) {

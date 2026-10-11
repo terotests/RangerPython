@@ -212,18 +212,48 @@ class _empty:
     pass
 
 
+class _ParameterKind(int):
+    # CPython's IntEnum of the parameter kinds, one instance per kind
+    _names = ("POSITIONAL_ONLY", "POSITIONAL_OR_KEYWORD", "VAR_POSITIONAL", "KEYWORD_ONLY", "VAR_KEYWORD")
+    _descriptions = ("positional-only", "positional or keyword", "variadic positional", "keyword-only", "variadic keyword")
+
+    @property
+    def name(self):
+        return self._names[self]
+
+    @property
+    def value(self):
+        return int(self)
+
+    @property
+    def description(self):
+        return self._descriptions[self]
+
+    def __repr__(self):
+        return "<_ParameterKind.%s: %d>" % (self.name, self)
+
+    def __str__(self):
+        return self.name
+
+
+_KINDS = tuple(_ParameterKind(i) for i in range(5))
+for _k in _KINDS:
+    setattr(_ParameterKind, _k.name, _k)
+del _k
+
+
 class Parameter:
-    POSITIONAL_ONLY = 0
-    POSITIONAL_OR_KEYWORD = 1
-    VAR_POSITIONAL = 2
-    KEYWORD_ONLY = 3
-    VAR_KEYWORD = 4
+    POSITIONAL_ONLY = _ParameterKind.POSITIONAL_ONLY
+    POSITIONAL_OR_KEYWORD = _ParameterKind.POSITIONAL_OR_KEYWORD
+    VAR_POSITIONAL = _ParameterKind.VAR_POSITIONAL
+    KEYWORD_ONLY = _ParameterKind.KEYWORD_ONLY
+    VAR_KEYWORD = _ParameterKind.VAR_KEYWORD
     empty = _empty
-    _names = ("positional-only", "positional or keyword", "variadic positional", "keyword-only", "variadic keyword")
+    _names = _ParameterKind._descriptions
 
     def __init__(self, name, kind, *, default=_empty, annotation=_empty):
         self.name = name
-        self.kind = kind
+        self.kind = _KINDS[kind]
         self.default = default
         self.annotation = annotation
 
@@ -477,9 +507,29 @@ def signature(obj, *, follow_wrapped=True, globals=None, locals=None, eval_str=F
         obj = obj.__func__
         skip = 1
     elif isclass(obj):
+        # the most derived pure-Python __new__ or __init__, __new__ first
+        new = getattr(obj, "__new__", None)
         init = getattr(obj, "__init__", None)
-        if isfunction(init):
-            obj = init
+        # a built-in type may describe its constructor
+        text = getattr(obj, "__text_signature__", None)
+        if isinstance(text, str):
+            return _signature_fromstr(text, False)
+        for base in obj.__mro__:
+            if base is object:
+                break
+            for f, name in (new, "__new__"), (init, "__init__"):
+                if name in base.__dict__:
+                    if isfunction(f):
+                        obj = f
+                        break
+                    # a native put on a Python class (_pydecimal's accelerated
+                    # __new__) may describe itself; built-in types' slots don't
+                    text = getattr(f, "__text_signature__", None)
+                    if isinstance(text, str) and base.__module__ != "builtins":
+                        return _signature_fromstr(text, True)
+            if isfunction(obj):
+                break
+        if isfunction(obj):
             skip = 1
         else:
             return Signature()

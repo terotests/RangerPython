@@ -533,6 +533,13 @@ pub enum ObjKind {
     Abc(Box<crate::abcmod::AbcData>),
     /// a lock or thread handle of _thread
     Thread(crate::threadmod::ThreadObj),
+    /// a decimal.Decimal
+    Decimal(Rc<crate::mpdec::Dec>),
+    /// a decimal.Context
+    DecContext(Box<crate::cdecimal::DecContext>),
+    /// a context's flags or traps (decimal.SignalDictMixin), sharing the
+    /// context's bits; None until tied to a context
+    DecSignals(Option<Rc<Cell<u32>>>),
     Other(Value),
 }
 

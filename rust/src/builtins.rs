@@ -1105,7 +1105,13 @@ pub fn class_special(vm: &mut Vm, c: &Rc<Class>, name: &str) -> PyResult<Option<
             _ => 0,
         }),
         "__abstractmethods__" => return Ok(None),
-        "__text_signature__" => Value::None,
+        // a native type made directly on object may describe its constructor
+        "__text_signature__" => match c.builtin.get() {
+            Builtin::Obj if c.bases.borrow().iter().all(|b| b.builtin.get() == Builtin::Object) => {
+                builtin_doc(&c.name.borrow().s).and_then(|(s, _)| (!s.is_empty()).then(|| Value::str(s))).unwrap_or(Value::None)
+            }
+            _ => Value::None,
+        },
         _ => return Ok(None),
     }))
 }
@@ -2301,7 +2307,10 @@ fn bi_dir(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 
 fn bi_divmod(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     check_nargs(vm, "divmod", a, 2, 2)?;
-    if let (Value::Instance(_), _) | (_, Value::Instance(_)) = (&a[0], &a[1]) {
+    // a native object with __divmod__ (Decimal) is called like an instance
+    let native_dm = |vm: &mut Vm, v: &Value, name: &str| matches!(v, Value::Obj(_)) && vm.lookup_special(v, &ps(name)).is_some();
+    let dunder = matches!(a[0], Value::Instance(_)) || matches!(a[1], Value::Instance(_)) || native_dm(vm, &a[0], "__divmod__") || native_dm(vm, &a[1], "__rdivmod__");
+    if dunder {
         if let Some(f) = vm.lookup_special(&a[0], &ps("__divmod__")) {
             let r = vm.call_vec(&f, vec![a[1].clone()], &[])?;
             if !matches!(r, Value::NotImplemented) {
@@ -2981,7 +2990,7 @@ fn bi_pow(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
     }
     let (b, e, md) = match (crate::ops::big_of(&base), crate::ops::big_of(&exp), crate::ops::big_of(&m)) {
         (Some(b), Some(e), Some(md)) => (b, e, md),
-        _ => return Err(vm.type_error("pow() 3rd argument not allowed unless all arguments are integers")),
+        _ => return pow3_dunder(vm, &base, &exp, &m),
     };
     if md.is_zero() {
         return Err(vm.value_error("pow() 3rd argument cannot be 0"));
@@ -3006,6 +3015,32 @@ fn bi_pow(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
         e = e.divmod(&two).unwrap().0;
     }
     Ok(Value::from_big(r))
+}
+
+/// pow(base, exp, mod) of objects (ternary_op): the base type's __pow__,
+/// then a native __rpow__ of the exponent's type
+fn pow3_dunder(vm: &mut Vm, base: &Value, exp: &Value, m: &Value) -> PyResult<Value> {
+    if [base, exp, m].iter().any(|v| matches!(v, Value::Obj(_) | Value::Instance(_))) {
+        let (cb, ce) = (vm.class_of(base), vm.class_of(exp));
+        if let Some(f) = cb.lookup(&ps("__pow__")) {
+            let f = vm.bind(f, base, &cb);
+            let r = vm.call_vec(&f, vec![exp.clone(), m.clone()], &[])?;
+            if !matches!(r, Value::NotImplemented) {
+                return Ok(r);
+            }
+        }
+        if !Rc::ptr_eq(&cb, &ce) {
+            if let Some(f @ Value::Native(_)) = ce.lookup(&ps("__rpow__")) {
+                let r = vm.call_vec(&f, vec![exp.clone(), base.clone(), m.clone()], &[])?;
+                if !matches!(r, Value::NotImplemented) {
+                    return Ok(r);
+                }
+            }
+        }
+        let (tb, te, tm) = (vm.type_name(base), vm.type_name(exp), vm.type_name(m));
+        return Err(vm.type_error(format!("unsupported operand type(s) for ** or pow(): '{}', '{}', '{}'", tb, te, tm)));
+    }
+    Err(vm.type_error("pow() 3rd argument not allowed unless all arguments are integers"))
 }
 
 fn mod_inverse(a: &BigInt, m: &BigInt) -> Option<BigInt> {
@@ -3686,9 +3721,14 @@ static DOCS: &str = include_str!("docs.txt");
 /// CPython's __text_signature__ ("" when it has none) and __doc__ of a
 /// built-in function, type or method ("type.method"), from tools/docgen.py
 pub fn builtin_doc(name: &str) -> Option<(&'static str, &'static str)> {
+    doc_in(DOCS, name).or_else(|| doc_in(crate::cdecimal::DOCS, name))
+}
+
+/// an entry of a docs table: name, signature and docstring, each ended by \x1f, \x1f, \x1e
+pub fn doc_in(docs: &'static str, name: &str) -> Option<(&'static str, &'static str)> {
     let key = format!("{}\x1f", name);
-    let at = if DOCS.starts_with(&key) { 0 } else { DOCS.find(&format!("\x1e{}", key))? + 1 };
-    let rest = &DOCS[at + key.len()..];
+    let at = if docs.starts_with(&key) { 0 } else { docs.find(&format!("\x1e{}", key))? + 1 };
+    let rest = &docs[at + key.len()..];
     let (sig, rest) = rest.split_once('\x1f')?;
     Some((sig, &rest[..rest.find('\x1e')?]))
 }
@@ -3696,7 +3736,7 @@ pub fn builtin_doc(name: &str) -> Option<(&'static str, &'static str)> {
 /// the module a native function belongs to, from its dotted name
 pub fn native_module_name(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((m, _)) if matches!(m, "math" | "sys" | "_time" | "os" | "posixpath" | "json" | "_struct" | "_hashlib" | "_abc" | "_statistics") => m,
+        Some((m, _)) if matches!(m, "math" | "sys" | "_time" | "os" | "posixpath" | "json" | "_struct" | "_hashlib" | "_abc" | "_statistics" | "_decimal") => m,
         _ => "builtins",
     }
 }
