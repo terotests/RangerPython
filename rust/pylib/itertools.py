@@ -531,6 +531,13 @@ class chain:
         self._active = active
 
 
+def _objsize(fields, n):
+    # the size CPython's object of these fields takes, with n Py_ssize_t
+    # indices after it: what sys.getsizeof counts for rpy's objects too
+    import struct
+    return struct.calcsize('nP' + fields + '0n') + n * struct.calcsize('n')
+
+
 class product:
     def __new__(cls, *args, repeat=1):
         repeat = _ssize_arg(repeat)
@@ -580,6 +587,9 @@ class product:
                 self._stopped = True
                 raise StopIteration
         return _reuse(self, result)
+
+    def __sizeof__(self):
+        return _objsize('3Pi', len(self._pools))
 
     def __reduce__(self):
         _deprecated()
@@ -647,6 +657,9 @@ class combinations:
                 indices[j] = indices[j - 1] + 1
         return _reuse(self, [pool[i] for i in indices])
 
+    def __sizeof__(self):
+        return _objsize('3Pni', self._r)
+
     def __reduce__(self):
         _deprecated()
         if self._result is None:
@@ -709,6 +722,9 @@ class combinations_with_replacement:
         for k in range(i, r):
             indices[k] = index
         return _reuse(self, [pool[k] for k in indices])
+
+    def __sizeof__(self):
+        return _objsize('3Pni', self._r)
 
     def __reduce__(self):
         _deprecated()
@@ -785,6 +801,9 @@ class permutations:
                 self._stopped = True
                 raise StopIteration
         return _reuse(self, [pool[indices[k]] for k in range(r)])
+
+    def __sizeof__(self):
+        return _objsize('4Pni', len(self._pool) + self._r)
 
     def __reduce__(self):
         _deprecated()

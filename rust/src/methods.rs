@@ -1107,8 +1107,11 @@ fn set_reduce(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
     reduce_helper(vm, "set_reduce", vec![a[0].clone()])
 }
 
-fn object_sizeof(_vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
-    Ok(Value::Int(16))
+/// the basic size of the object's type, as CPython's object.__sizeof__
+fn object_sizeof(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
+    crate::builtins::need(vm, a, 1)?;
+    let cls = Value::Class(vm.class_of(&a[0]));
+    vm.getattr(&cls, &ps("__basicsize__"))
 }
 
 fn object_getstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {

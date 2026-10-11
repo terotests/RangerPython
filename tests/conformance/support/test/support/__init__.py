@@ -527,15 +527,39 @@ def maybe_get_event_loop_policy():
     return None
 
 
+# as in CPython's test.support
+_header = 'nP'
+_align = '0n'
+_vheader = _header + 'n'
+
+
 def calcobjsize(fmt):
-    raise unittest.SkipTest("object sizes are CPython's")
+    import struct
+    return struct.calcsize(_header + fmt + _align)
 
 
-calcvobjsize = calcobjsize
+def calcvobjsize(fmt):
+    import struct
+    return struct.calcsize(_vheader + fmt + _align)
+
+
+_TPFLAGS_HAVE_GC = 1<<14
+_TPFLAGS_HEAPTYPE = 1<<9
 
 
 def check_sizeof(test, o, size):
-    raise unittest.SkipTest("object sizes are CPython's")
+    try:
+        import _testinternalcapi
+    except ImportError:
+        raise unittest.SkipTest("_testinternalcapi required")
+    result = sys.getsizeof(o)
+    # add GC header size
+    if ((type(o) == type) and (o.__flags__ & _TPFLAGS_HEAPTYPE) or\
+        ((type(o) != type) and (type(o).__flags__ & _TPFLAGS_HAVE_GC))):
+        size += _testinternalcapi.SIZEOF_PYGC_HEAD
+    msg = 'wrong size for %s: got %d, expected %d' \
+            % (type(o), result, size)
+    test.assertEqual(result, size, msg)
 
 
 class CPUStopwatch:

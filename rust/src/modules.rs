@@ -162,6 +162,7 @@ fn internal_module() -> Value {
             ("_rpyinternal.capsule", internal_capsule),
         ],
     );
+    d.borrow_mut().set_s("SIZEOF_PYGC_HEAD", Value::Int(GC_HEAD as i64));
     m
 }
 
@@ -1455,21 +1456,53 @@ fn sys_unraisablehook(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 fn sys_exception(vm: &mut Vm, _a: &[Value], _k: Kw) -> PyResult<Value> {
     Ok(vm.handled.last().cloned().unwrap_or(Value::None))
 }
-fn sys_getsizeof(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
-    crate::builtins::need(vm, a, 1)?;
+/// what sys.getsizeof adds for an object the cycle collector tracks, as
+/// CPython counts its PyGC_Head
+const GC_HEAD: usize = 16;
+
+fn sys_getsizeof(vm: &mut Vm, a: &[Value], k: Kw) -> PyResult<Value> {
+    crate::builtins::check_nargs(vm, "getsizeof", a, 1, 2)?;
+    let default = a.get(1).cloned().or_else(|| k.iter().find(|(n, _)| &*n.s == "default").map(|(_, v)| v.clone()));
     let n = match &a[0] {
-        Value::Str(s) => 49 + s.s.len(),
+        Value::Str(s) => str_sizeof(s),
         Value::List(l) => 56 + 8 * l.borrow().len(),
         Value::Tuple(t) => 40 + 8 * t.len(),
         Value::Dict(d) => d.borrow().alloc_size(),
-        Value::Int(_) => 28,
-        Value::Float(_) => 24,
-        _ => {
-            let _ = vm;
-            48
+        Value::Int(_) | Value::Big(_) | Value::Float(_) | Value::Instance(_) => {
+            // as CPython: what __sizeof__ says, and the GC header of an
+            // object the cycle collector looks after
+            let r = match vm.lookup_special(&a[0], &ps("__sizeof__")) {
+                Some(m) => vm.call_vec(&m, vec![], &[]),
+                None => Err(vm.type_error(format!("Type {} doesn't define __sizeof__", vm.type_name(&a[0])))),
+            };
+            let r = match (r, &default) {
+                (Ok(v), _) => v,
+                (Err(e), Some(d)) if vm.exc_is(&e, "TypeError") => return Ok(d.clone()),
+                (Err(e), _) => return Err(e),
+            };
+            let size = vm.to_index(&r)?;
+            if size < 0 {
+                return Err(vm.err("ValueError", "__sizeof__() should return >= 0"));
+            }
+            let cls = vm.class_of(&a[0]);
+            let gc = crate::builtins::type_flags(vm, &cls)? & (1 << 14) != 0;
+            size as usize + if gc { GC_HEAD } else { 0 }
         }
+        _ => 48,
     };
     Ok(Value::Int(n as i64))
+}
+
+/// a str's size as PEP 393 lays it out: an ASCII string's header and bytes,
+/// or the compact header and 1, 2 or 4 bytes a character by the widest one;
+/// with the terminating NUL
+fn str_sizeof(s: &crate::value::PyStr) -> usize {
+    if s.ascii {
+        return 40 + s.s.len() + 1;
+    }
+    let max = s.s.chars().map(|c| c as u32).max().unwrap_or(0);
+    let kind = if max < 0x100 { 1 } else if max < 0x10000 { 2 } else { 4 };
+    56 + kind * (s.char_len() + 1)
 }
 
 fn sys_intern(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
