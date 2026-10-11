@@ -100,6 +100,7 @@ impl Drop for Generator {
 /// interned names the VM looks up often
 #[derive(Clone)]
 pub struct Names {
+    pub abstractmethods: Rc<PyStr>,
     pub init: Rc<PyStr>,
     pub new: Rc<PyStr>,
     pub call: Rc<PyStr>,
@@ -165,6 +166,78 @@ pub struct Names {
     binops: [[Rc<PyStr>; 3]; 13],
 }
 
+/// `a op b` for the two ints or two floats on top of the stack, when it
+/// needs nothing but arithmetic (no overflow, no division by zero)
+#[inline(always)]
+fn int_binop(op: BinOp, stack: &[Value]) -> Option<Value> {
+    let n = stack.len();
+    match (&stack[n - 2], &stack[n - 1]) {
+        (Value::Int(x), Value::Int(y)) => {
+            let (x, y) = (*x, *y);
+            Some(Value::Int(match op {
+                BinOp::Add => x.checked_add(y)?,
+                BinOp::Sub => x.checked_sub(y)?,
+                BinOp::Mul => x.checked_mul(y)?,
+                BinOp::FloorDiv if y > 0 && x >= 0 => x / y,
+                BinOp::Mod if y > 0 && x >= 0 => x % y,
+                BinOp::BitAnd => x & y,
+                BinOp::BitOr => x | y,
+                BinOp::BitXor => x ^ y,
+                _ => return None,
+            }))
+        }
+        (Value::Float(x), Value::Float(y)) => Some(Value::Float(match op {
+            BinOp::Add => x + y,
+            BinOp::Sub => x - y,
+            BinOp::Mul => x * y,
+            BinOp::Div if *y != 0.0 => x / y,
+            _ => return None,
+        })),
+        _ => None,
+    }
+}
+
+/// the truth of the values whose truth needs no call
+#[inline(always)]
+fn fast_truth(v: &Value) -> Option<bool> {
+    match v {
+        Value::Bool(b) => Some(*b),
+        Value::None => Some(false),
+        Value::Int(i) => Some(*i != 0),
+        Value::Str(s) => Some(!s.s.is_empty()),
+        Value::List(l) => Some(!l.borrow().is_empty()),
+        Value::Tuple(t) => Some(!t.is_empty()),
+        _ => None,
+    }
+}
+
+/// `a op b` for the two ints or two floats on top of the stack
+#[inline(always)]
+fn int_compare(op: CmpOp, stack: &[Value]) -> Option<bool> {
+    let n = stack.len();
+    match (&stack[n - 2], &stack[n - 1]) {
+        (Value::Int(x), Value::Int(y)) => Some(match op {
+            CmpOp::Lt => x < y,
+            CmpOp::Le => x <= y,
+            CmpOp::Gt => x > y,
+            CmpOp::Ge => x >= y,
+            CmpOp::Eq => x == y,
+            CmpOp::Ne => x != y,
+            _ => return None,
+        }),
+        (Value::Float(x), Value::Float(y)) => Some(match op {
+            CmpOp::Lt => x < y,
+            CmpOp::Le => x <= y,
+            CmpOp::Gt => x > y,
+            CmpOp::Ge => x >= y,
+            CmpOp::Eq => x == y,
+            CmpOp::Ne => x != y,
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
 fn ps(s: &str) -> Rc<PyStr> {
     crate::value::intern(s)
 }
@@ -172,6 +245,7 @@ fn ps(s: &str) -> Rc<PyStr> {
 impl Names {
     fn new() -> Names {
         Names {
+            abstractmethods: ps("__abstractmethods__"),
             init: ps("__init__"),
             new: ps("__new__"),
             call: ps("__call__"),
@@ -404,6 +478,12 @@ impl Vm {
         let main = Value::Module(Rc::new(Module { name: ps("__main__"), dict: g.clone() }));
         vm.modules.borrow_mut().set_s("__main__", main);
         vm.load_py_builtins();
+        // the names of the built-ins and their methods are found by identity
+        vm.builtins.borrow_mut().intern_keys();
+        let classes: Vec<Rc<Class>> = vm.builtins.borrow().iter().filter_map(|e| if let Value::Class(c) = &e.value { Some(c.clone()) } else { None }).collect();
+        for c in classes {
+            c.dict.borrow_mut().intern_keys();
+        }
         vm
     }
 
@@ -843,27 +923,105 @@ impl Vm {
         f.stack.pop().unwrap()
     }
 
+    /// d[code.names[i]] = v, where the name's hint says it is
+    #[inline(always)]
+    fn store_hinted(d: &Rc<RefCell<Dict>>, code: &Code, i: u32, v: Value) {
+        let name = &code.names[i as usize];
+        let hint = &code.global_hints[i as usize];
+        let h = hint.get();
+        let v = if h.kind == 1 {
+            let r = d.borrow_mut().set_entry_if(h.ix, name, v);
+            match r {
+                Ok(old) => {
+                    old.fast_drop();
+                    return;
+                }
+                Err(v) => v,
+            }
+        } else {
+            v
+        };
+        let mut b = d.borrow_mut();
+        b.set_str(name.clone(), v);
+        if let Some(ix) = b.entry_of(name) {
+            hint.set(crate::code::GlobalHint { stamp: 0, ix, kind: 1 });
+        }
+    }
+
+    /// replaces the two values on top, which int_binop or int_compare
+    /// found to be plain, with `r`
+    #[inline(always)]
+    fn replace_top2(f: &mut Frame, r: Value) {
+        let n = f.stack.len();
+        unsafe {
+            f.stack.set_len(n - 1);
+            std::ptr::write(f.stack.as_mut_ptr().add(n - 2), r);
+        }
+    }
+
     fn exec(&mut self, f: &mut Frame) -> PyResult<Exit> {
         let code = f.code.clone();
         let ops = &code.ops[..];
         loop {
-            let op = ops[f.ip];
+            debug_assert!(f.ip < ops.len());
+            // every code ends in a Return and jumps stay inside it
+            let op = unsafe { *ops.get_unchecked(f.ip) };
             f.ip += 1;
             match op {
                 Op::Nop => {}
-                Op::LoadConst(i) => f.stack.push(code.consts[i as usize].clone()),
+                Op::LoadConst(i) => f.stack.push(code.consts[i as usize].fast_clone()),
                 Op::LoadFast(i) => {
                     let v = &f.stack[i as usize];
                     if v.is_undef() {
                         let n = code.varnames[i as usize].clone();
                         return Err(self.err("UnboundLocalError", format!("cannot access local variable '{}' where it is not associated with a value", n)));
                     }
-                    let v = v.clone();
+                    let v = v.fast_clone();
                     f.stack.push(v);
                 }
+                Op::LoadFast2(a, b) => {
+                    let v = &f.stack[a as usize];
+                    if v.is_undef() {
+                        return Err(self.unbound_local(&code, a as u32));
+                    }
+                    let v = v.fast_clone();
+                    f.stack.push(v);
+                    let v = &f.stack[b as usize];
+                    if v.is_undef() {
+                        f.ip += 1;
+                        return Err(self.unbound_local(&code, b as u32));
+                    }
+                    let v = v.fast_clone();
+                    f.stack.push(v);
+                    f.ip += 1;
+                }
+                Op::LoadFastConst(a, k) => {
+                    let v = &f.stack[a as usize];
+                    if v.is_undef() {
+                        return Err(self.unbound_local(&code, a as u32));
+                    }
+                    let v = v.fast_clone();
+                    f.stack.push(v);
+                    f.stack.push(code.consts[k as usize].fast_clone());
+                    f.ip += 1;
+                }
+                Op::LoadFastAttr(a, n) => {
+                    let obj = &f.stack[a as usize];
+                    if obj.is_undef() {
+                        return Err(self.unbound_local(&code, a as u32));
+                    }
+                    // as the LoadAttr, for the position of an error
+                    f.ip += 1;
+                    let obj = obj.clone();
+                    let v = self.load_attr(&obj, &code.names[n as usize], &code.attr_hints[n as usize])?;
+                    f.stack.push(v);
+                }
+                Op::CompareJumpIfFalse(op, t) => self.compare_jump(f, op, t, false)?,
+                Op::CompareJumpIfTrue(op, t) => self.compare_jump(f, op, t, true)?,
                 Op::StoreFast(i) => {
                     let v = Self::pop(f);
-                    f.stack[i as usize] = v;
+                    let old = std::mem::replace(&mut f.stack[i as usize], v);
+                    old.fast_drop();
                     self.finalize_pending();
                 }
                 Op::DelFast(i) => {
@@ -923,11 +1081,43 @@ impl Vm {
                 }
                 Op::LoadGlobal(i) => {
                     let name = &code.names[i as usize];
+                    let hint = &code.global_hints[i as usize];
+                    let h = hint.get();
+                    {
+                        let g = f.globals.borrow();
+                        if h.kind == 1 {
+                            if let Some(v) = g.entry_is(h.ix, name) {
+                                let v = v.fast_clone();
+                                drop(g);
+                                f.stack.push(v);
+                                continue;
+                            }
+                        } else if h.kind == 2 && h.stamp == g.current_stamp() && h.stamp != 0 {
+                            if let Some(v) = self.builtins.borrow().entry_is(h.ix, name) {
+                                let v = v.fast_clone();
+                                drop(g);
+                                f.stack.push(v);
+                                continue;
+                            }
+                        }
+                    }
                     let v = f.globals.borrow().get_str(name).cloned();
                     let v = match v {
-                        Some(v) => v,
+                        Some(v) => {
+                            if let Some(ix) = f.globals.borrow().entry_of(name) {
+                                hint.set(crate::code::GlobalHint { stamp: 0, ix, kind: 1 });
+                            }
+                            v
+                        }
                         None => {
                             let b = self.builtins.borrow().get_str(name).cloned();
+                            if b.is_some() {
+                                let ix = self.builtins.borrow().entry_of(name);
+                                if let Some(ix) = ix {
+                                    let stamp = f.globals.borrow_mut().stamp();
+                                    hint.set(crate::code::GlobalHint { stamp, ix, kind: 2 });
+                                }
+                            }
                             match b {
                                 Some(v) => v,
                                 None => {
@@ -951,7 +1141,7 @@ impl Vm {
                 }
                 Op::StoreGlobal(i) => {
                     let v = Self::pop(f);
-                    f.globals.borrow_mut().set_str(code.names[i as usize].clone(), v);
+                    Self::store_hinted(&f.globals, &code, i, v);
                     self.finalize_pending();
                 }
                 Op::DelGlobal(i) => {
@@ -976,7 +1166,32 @@ impl Vm {
                 }
                 Op::LoadName(i) => {
                     let name = &code.names[i as usize];
+                    let hint = &code.global_hints[i as usize];
+                    let h = hint.get();
+                    if let Some(ns) = &f.ns {
+                        let d = ns.borrow();
+                        if h.kind == 1 {
+                            if let Some(v) = d.entry_is(h.ix, name) {
+                                let v = v.fast_clone();
+                                drop(d);
+                                f.stack.push(v);
+                                continue;
+                            }
+                        } else if h.kind == 3 && h.stamp == d.current_stamp() && h.stamp != 0 && Rc::ptr_eq(ns, &f.globals) {
+                            if let Some(v) = self.builtins.borrow().entry_is(h.ix, name) {
+                                let v = v.fast_clone();
+                                drop(d);
+                                f.stack.push(v);
+                                continue;
+                            }
+                        }
+                    }
                     let mut v = f.ns.as_ref().and_then(|ns| ns.borrow().get_str(name).cloned());
+                    if v.is_some() {
+                        if let Some(ix) = f.ns.as_ref().and_then(|ns| ns.borrow().entry_of(name)) {
+                            hint.set(crate::code::GlobalHint { stamp: 0, ix, kind: 1 });
+                        }
+                    }
                     if v.is_none() {
                         let same = f.ns.as_ref().map(|ns| Rc::ptr_eq(ns, &f.globals)).unwrap_or(false);
                         if !same {
@@ -985,6 +1200,15 @@ impl Vm {
                     }
                     if v.is_none() {
                         v = self.builtins.borrow().get_str(name).cloned();
+                        if v.is_some() {
+                            if let Some(ns) = f.ns.as_ref().filter(|ns| Rc::ptr_eq(ns, &f.globals)) {
+                                let ix = self.builtins.borrow().entry_of(name);
+                                if let Some(ix) = ix {
+                                    let stamp = ns.borrow_mut().stamp();
+                                    hint.set(crate::code::GlobalHint { stamp, ix, kind: 3 });
+                                }
+                            }
+                        }
                     }
                     match v {
                         Some(v) => f.stack.push(v),
@@ -1002,11 +1226,7 @@ impl Vm {
                 }
                 Op::StoreName(i) => {
                     let v = Self::pop(f);
-                    let name = code.names[i as usize].clone();
-                    match &f.ns {
-                        Some(ns) => ns.borrow_mut().set_str(name, v),
-                        None => f.globals.borrow_mut().set_str(name, v),
-                    }
+                    Self::store_hinted(f.ns.as_ref().unwrap_or(&f.globals), &code, i, v);
                     self.finalize_pending();
                 }
                 Op::DelName(i) if f.ext.as_ref().map(|x| x.locals.is_some()).unwrap_or(false) => {
@@ -1060,8 +1280,7 @@ impl Vm {
                             r?
                         }
                         Value::Func(func) if func.code.borrow().simple && func.code.borrow().argcount as usize == len - first => {
-                            let mut args = self.stack_pool.pop().unwrap_or_default();
-                            args.extend(f.stack.drain(first..));
+                            let args = self.take_args(&mut f.stack, first);
                             f.stack.truncate(base);
                             self.call_simple(func, args)?
                         }
@@ -1085,10 +1304,19 @@ impl Vm {
                                 drop(l);
                                 return Err(self.index_error("list index out of range"));
                             }
-                            l[j as usize].clone()
+                            l[j as usize].fast_clone()
+                        }
+                        (Value::Tuple(t), Value::Int(i)) if (*i as usize) < t.len() && *i >= 0 => t[*i as usize].fast_clone(),
+                        (Value::Dict(d), Value::Str(k)) => {
+                            let hit = d.borrow().get_str(k).map(Value::fast_clone);
+                            match hit {
+                                Some(v) => v,
+                                None => self.getitem(&obj, &idx)?,
+                            }
                         }
                         _ => self.getitem(&obj, &idx)?,
                     };
+                    idx.fast_drop();
                     f.stack.push(v);
                 }
                 Op::StoreSubscr => {
@@ -1125,6 +1353,10 @@ impl Vm {
                     f.stack.push(Value::Slice(Rc::new((lo, hi, step))));
                 }
                 Op::Binary(op) => {
+                    if let Some(r) = int_binop(op, &f.stack) {
+                        Self::replace_top2(f, r);
+                        continue;
+                    }
                     let b = Self::pop(f);
                     let a = Self::pop(f);
                     let r = match (&a, &b) {
@@ -1154,6 +1386,10 @@ impl Vm {
                     f.stack.push(r);
                 }
                 Op::Inplace(op) => {
+                    if let Some(r) = int_binop(op, &f.stack) {
+                        Self::replace_top2(f, r);
+                        continue;
+                    }
                     let b = Self::pop(f);
                     let a = Self::pop(f);
                     let r = match (&a, &b) {
@@ -1184,6 +1420,19 @@ impl Vm {
                     f.stack.push(r);
                 }
                 Op::Compare(op) => {
+                    if let Some(r) = int_compare(op, &f.stack) {
+                        Self::replace_top2(f, Value::Bool(r));
+                        continue;
+                    }
+                    if matches!(op, CmpOp::Is | CmpOp::IsNot) {
+                        let b = Self::pop(f);
+                        let a = Self::pop(f);
+                        let r = a.is(&b) == matches!(op, CmpOp::Is);
+                        b.fast_drop();
+                        a.fast_drop();
+                        f.stack.push(Value::Bool(r));
+                        continue;
+                    }
                     let b = Self::pop(f);
                     let a = Self::pop(f);
                     let r = match (&a, &b) {
@@ -1218,7 +1467,7 @@ impl Vm {
                     f.stack.push(r);
                 }
                 Op::Pop => {
-                    f.stack.pop();
+                    Self::pop(f).fast_drop();
                     self.finalize_pending();
                 }
                 Op::Dup => {
@@ -1259,35 +1508,49 @@ impl Vm {
                 }
                 Op::PopJumpIfFalse(t) => {
                     let v = Self::pop(f);
-                    let b = match v {
-                        Value::Bool(b) => b,
-                        _ => self.truthy(&v)?,
+                    let b = match fast_truth(&v) {
+                        Some(b) => b,
+                        None => self.truthy(&v)?,
                     };
+                    v.fast_drop();
                     if !b {
                         f.ip = t as usize;
                     }
                 }
                 Op::PopJumpIfTrue(t) => {
                     let v = Self::pop(f);
-                    let b = match v {
-                        Value::Bool(b) => b,
-                        _ => self.truthy(&v)?,
+                    let b = match fast_truth(&v) {
+                        Some(b) => b,
+                        None => self.truthy(&v)?,
                     };
+                    v.fast_drop();
                     if b {
                         f.ip = t as usize;
                     }
                 }
                 Op::JumpIfFalseOrPop(t) => {
-                    let v = f.stack.last().unwrap().clone();
-                    if !self.truthy(&v)? {
+                    let b = match fast_truth(f.stack.last().unwrap()) {
+                        Some(b) => b,
+                        None => {
+                            let v = f.stack.last().unwrap().clone();
+                            self.truthy(&v)?
+                        }
+                    };
+                    if !b {
                         f.ip = t as usize;
                     } else {
                         f.stack.pop();
                     }
                 }
                 Op::JumpIfTrueOrPop(t) => {
-                    let v = f.stack.last().unwrap().clone();
-                    if self.truthy(&v)? {
+                    let b = match fast_truth(f.stack.last().unwrap()) {
+                        Some(b) => b,
+                        None => {
+                            let v = f.stack.last().unwrap().clone();
+                            self.truthy(&v)?
+                        }
+                    };
+                    if b {
                         f.ip = t as usize;
                     } else {
                         f.stack.pop();
@@ -1467,9 +1730,8 @@ impl Vm {
                     f.stack.push(it);
                 }
                 Op::ForIter(t) => {
-                    let it = f.stack.last().unwrap().clone();
                     // fast paths for the common iterators
-                    let next = match &it {
+                    let next = match f.stack.last().unwrap() {
                         Value::Iter(r) => {
                             let mut b = r.borrow_mut();
                             match &mut *b {
@@ -1510,7 +1772,10 @@ impl Vm {
                     };
                     let next = match next {
                         Some(n) => n,
-                        None => self.next(&it)?,
+                        None => {
+                            let it = f.stack.last().unwrap().clone();
+                            self.next(&it)?
+                        }
                     };
                     match next {
                         Some(v) => f.stack.push(v),
@@ -1561,18 +1826,25 @@ impl Vm {
                 Op::Call(n) => {
                     let n = n as usize;
                     let base = f.stack.len() - n - 1;
+                    let simple = match &f.stack[base] {
+                        Value::Func(func) => {
+                            let c = func.code.borrow();
+                            c.simple && c.argcount as usize == n
+                        }
+                        _ => false,
+                    };
+                    if simple {
+                        let args = self.take_args(&mut f.stack, base + 1);
+                        let Some(Value::Func(func)) = f.stack.pop() else { unreachable!() };
+                        let r = self.call_simple(&func, args)?;
+                        f.stack.push(r);
+                        continue;
+                    }
                     let func = f.stack[base].clone();
                     let r = if let Value::Func(func) = &func {
-                        if func.code.borrow().simple && func.code.borrow().argcount as usize == n {
-                            let mut args = self.stack_pool.pop().unwrap_or_default();
-                            args.extend(f.stack.drain(base + 1..));
-                            f.stack.pop();
-                            self.call_simple(func, args)?
-                        } else {
-                            let args: Vec<Value> = f.stack.drain(base + 1..).collect();
-                            f.stack.pop();
-                            self.call_func(func, args, &[])?
-                        }
+                        let args: Vec<Value> = f.stack.drain(base + 1..).collect();
+                        f.stack.pop();
+                        self.call_func(func, args, &[])?
                     } else if let Value::Native(nf) = &func {
                         let r = self.call_native(nf, &f.stack[base + 1..]);
                         f.stack.truncate(base);
@@ -1906,6 +2178,48 @@ impl Vm {
         }
     }
 
+    #[cold]
+    fn unbound_local(&mut self, code: &Code, i: u32) -> Exc {
+        let n = code.varnames[i as usize].clone();
+        self.err("UnboundLocalError", format!("cannot access local variable '{}' where it is not associated with a value", n))
+    }
+
+    /// Compare(op) then a jump to `t` when the result's truth is `when`
+    #[inline(always)]
+    fn compare_jump(&mut self, f: &mut Frame, op: CmpOp, t: u32, when: bool) -> PyResult<()> {
+        let r = match int_compare(op, &f.stack) {
+            Some(r) => {
+                let n = f.stack.len();
+                // two plain values
+                unsafe { f.stack.set_len(n - 2) };
+                r
+            }
+            None => {
+                let b = Self::pop(f);
+                let a = Self::pop(f);
+                let r = if matches!(op, CmpOp::Is | CmpOp::IsNot) { Value::Bool(a.is(&b) == matches!(op, CmpOp::Is)) } else { self.compare(op, &a, &b)? };
+                b.fast_drop();
+                a.fast_drop();
+                match fast_truth(&r) {
+                    Some(x) => x,
+                    None => {
+                        // as the jump, for the position of an error
+                        f.ip += 1;
+                        let x = self.truthy(&r)?;
+                        f.ip -= 1;
+                        x
+                    }
+                }
+            }
+        };
+        if r == when {
+            f.ip = t as usize;
+        } else {
+            f.ip += 1;
+        }
+        Ok(())
+    }
+
     fn unbound_deref(&mut self, code: &Code, i: u32) -> Exc {
         let n = self.cell_name(code, i);
         if (i as usize) < code.cellvars.len() {
@@ -2117,7 +2431,7 @@ impl Vm {
             }
             Value::Method(m) => {
                 let (s, func) = (&m.0, &m.1);
-                let mut a = Vec::with_capacity(args.len() + 1);
+                let mut a = self.arg_vec(args.len() + 1);
                 a.push(s.clone());
                 a.extend(args);
                 self.call_vec(func, a, kw)
@@ -2146,6 +2460,33 @@ impl Vm {
         }
     }
 
+    /// an empty vector from the pool with room for `n` values
+    #[inline]
+    pub fn arg_vec(&mut self, n: usize) -> Vec<Value> {
+        let mut a = self.stack_pool.pop().unwrap_or_default();
+        if a.capacity() < n {
+            a.reserve(n);
+        }
+        a
+    }
+
+    /// moves the values on `stack` from `from` up into a vector from the
+    /// pool, the start of a frame's locals
+    #[inline(always)]
+    fn take_args(&mut self, stack: &mut Vec<Value>, from: usize) -> Vec<Value> {
+        let mut args = self.stack_pool.pop().unwrap_or_default();
+        let n = stack.len() - from;
+        if args.capacity() < n {
+            args.reserve(n);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(stack.as_ptr().add(from), args.as_mut_ptr(), n);
+            args.set_len(n);
+            stack.set_len(from);
+        }
+        args
+    }
+
     /// a call with exactly the positional parameters, nothing else to bind
     #[inline]
     pub fn call_simple(&mut self, func: &Rc<Function>, mut args: Vec<Value>) -> PyResult<Value> {
@@ -2155,8 +2496,18 @@ impl Vm {
         if args.capacity() < n + 16 {
             args.reserve_exact(n + 16 - args.len());
         }
-        args.resize(n, Value::Undef);
-        let mut f = Frame { code, ip: 0, stack: args, cells: func.closure.clone(), blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
+        let len = args.len();
+        if len < n {
+            unsafe {
+                let p = args.as_mut_ptr();
+                for j in len..n {
+                    std::ptr::write(p.add(j), Value::Undef);
+                }
+                args.set_len(n);
+            }
+        }
+        let cells = if func.closure.is_empty() { Vec::new() } else { func.closure.clone() };
+        let mut f = Frame { code, ip: 0, stack: args, cells, blocks: vec![], globals: func.globals.clone(), ns: None, reraise_line: None, ext: None };
         self.depth += 1;
         if self.depth > self.max_depth {
             self.depth -= 1;
@@ -2208,6 +2559,11 @@ impl Vm {
         }
         let r = self.run_frame(&mut f);
         self.depth -= 1;
+        let mut st = std::mem::take(&mut f.stack);
+        st.clear();
+        if self.stack_pool.len() < 64 {
+            self.stack_pool.push(st);
+        }
         match r? {
             Exit::Return(v) => Ok(v),
             Exit::Yield(v) => Ok(v),
@@ -2216,7 +2572,7 @@ impl Vm {
 
     fn bind_args(&mut self, func: &Function, code: &Code, args: Vec<Value>, kw: &[(Rc<PyStr>, Value)]) -> PyResult<Vec<Value>> {
         let nloc = code.varnames.len();
-        let mut locals: Vec<Value> = Vec::with_capacity(nloc + 16);
+        let mut locals: Vec<Value> = self.arg_vec(nloc + 16);
         let argc = code.argcount as usize;
         let fname = || func.qualname.borrow().s.clone();
         let nargs = args.len();
@@ -2536,7 +2892,7 @@ impl Vm {
         }
         let new = cls.lookup(&self.n.new);
         let obj = match &new {
-            Some(Value::Native(n)) if n.name == "object.__new__" && cls.dict.borrow().get_s("__abstractmethods__").is_none() => self.alloc_instance(cls)?,
+            Some(Value::Native(n)) if n.name == "object.__new__" && cls.dict.borrow().get_str(&self.n.abstractmethods).is_none() => self.alloc_instance(cls)?,
             Some(f @ (Value::StaticMethod(_) | Value::Native(_) | Value::Func(_))) => {
                 let f = match f {
                     Value::StaticMethod(inner) => (**inner).clone(),
@@ -2572,7 +2928,7 @@ impl Vm {
                 }
                 _ => {
                     let r = if matches!(init, Value::Func(_) | Value::Native(_)) {
-                        let mut a = Vec::with_capacity(args.len() + 1);
+                        let mut a = self.arg_vec(args.len() + 1);
                         a.push(obj.clone());
                         a.extend(args);
                         self.call_vec(&init, a, kw)?

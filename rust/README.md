@@ -63,21 +63,33 @@ node tests/bench/run.mjs --rpy --wasm    # speed, docs/BENCHMARKS.md
 
 ## Speed
 
-Best of 3, ms, from `docs/BENCHMARKS.md` ("Ranger→Rust" is the build compiled
-from the Ranger sources by the Rust target):
+Best of 5, ms, from `docs/BENCHMARKS.md` ("Ranger→Rust" is the build compiled
+from the Ranger sources by the Rust target; its and Go's columns are from
+an earlier run):
 
 | program | CPython | JavaScript | Go | Ranger→Rust | rpy native | rpy wasm (Node) |
 |---|---:|---:|---:|---:|---:|---:|
-| classes | 142 | 984 | 2557 | 1419 | 439 | 889 |
-| dicts | 137 | 1211 | 2138 | 1205 | 278 | 550 |
-| fib | 128 | 1440 | 4691 | 2615 | 331 | 583 |
-| nbody | 289 | 2281 | 8101 | 3767 | 715 | 1441 |
-| spectral | 154 | 1767 | 5474 | 2569 | 365 | 553 |
-| strings | 203 | 1426 | 2639 | 1391 | 288 | 574 |
+| classes | 171 | 901 | 2557 | 1419 | 374 | 721 |
+| dicts | 128 | 1251 | 2138 | 1205 | 226 | 499 |
+| fib | 130 | 1554 | 4691 | 2615 | 239 | 484 |
+| nbody | 271 | 3029 | 8101 | 3767 | 615 | 1228 |
+| spectral | 154 | 2031 | 5474 | 2569 | 307 | 572 |
+| strings | 132 | 1262 | 2639 | 1391 | 249 | 459 |
 
-Native rpy is 1.4–3.1x CPython's time and 3–5x faster than the JavaScript
-build. Under Node's WASI the wasm build is about 2x slower than native and
-still 1.1–3.2x faster than the JavaScript build.
+Native rpy is 1.8–2.3x CPython's time and 2.4–6.6x faster than the
+JavaScript build. Under Node's WASI the wasm build is about 2x slower than
+native and still 1.2–3.6x faster than the JavaScript build.
+
+What makes it that fast: the arithmetic and comparisons of ints and floats,
+`is`, truth tests, list/tuple/dict indexing and the common iterators run
+inline in the interpreter loop; a call to a plain function moves its
+arguments straight into the new frame, whose stack comes from a pool;
+LoadGlobal, LoadName and StoreName remember the dict entry a name was
+found at (and a builtin is remembered while the globals gain no key);
+the names of built-ins are interned, so dict lookups match them by
+identity; common instruction pairs (two loads, a load and an attribute, a
+compare and its jump) run as one; and `src/poolalloc.rs` serves the small
+blocks (strs, tuples, list buffers) from free lists, as pymalloc does.
 
 ## Not implemented
 

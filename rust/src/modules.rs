@@ -24,7 +24,7 @@ pub(crate) fn put_fns(d: &Rc<RefCell<Dict>>, fns: &[(&'static str, NativeFnPtr)]
     let mut d = d.borrow_mut();
     for (n, f) in fns {
         let short = n.rsplit('.').next().unwrap();
-        d.set_s(short, native(n, *f));
+        d.set_i(short, native(n, *f));
     }
 }
 

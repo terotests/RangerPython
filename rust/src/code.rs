@@ -118,6 +118,43 @@ pub enum Op {
     ExcStarCollect,
     /// pushes the exception being handled
     LoadExc,
+    // Pairs fused into the first of them by fuse(), which leaves the
+    // second where it was, for jumps to it: the pair runs as one and the
+    // second is skipped
+    /// LoadFast(a) LoadFast(b)
+    LoadFast2(u16, u16),
+    /// LoadFast(a) LoadConst(k)
+    LoadFastConst(u16, u16),
+    /// LoadFast(a) LoadAttr(n)
+    LoadFastAttr(u16, u16),
+    /// Compare(op) PopJumpIfFalse(t)
+    CompareJumpIfFalse(crate::ast::CmpOp, u32),
+    /// Compare(op) PopJumpIfTrue(t)
+    CompareJumpIfTrue(crate::ast::CmpOp, u32),
+}
+
+/// fuses the common pairs of instructions (see Op::LoadFast2)
+pub fn fuse(ops: &mut [Op]) {
+    let small = |v: u32| v <= u16::MAX as u32;
+    for i in 0..ops.len().saturating_sub(1) {
+        ops[i] = match (ops[i], ops[i + 1]) {
+            (Op::LoadFast(a), Op::LoadFast(b)) if small(a) && small(b) => Op::LoadFast2(a as u16, b as u16),
+            (Op::LoadFast(a), Op::LoadConst(k)) if small(a) && small(k) => Op::LoadFastConst(a as u16, k as u16),
+            (Op::LoadFast(a), Op::LoadAttr(n)) if small(a) && small(n) => Op::LoadFastAttr(a as u16, n as u16),
+            (Op::Compare(c), Op::PopJumpIfFalse(t)) => Op::CompareJumpIfFalse(c, t),
+            (Op::Compare(c), Op::PopJumpIfTrue(t)) => Op::CompareJumpIfTrue(c, t),
+            (op, _) => op,
+        };
+    }
+}
+
+/// the instruction a fused one stands for (see fuse)
+pub fn unfused(op: Op) -> Op {
+    match op {
+        Op::LoadFast2(a, _) | Op::LoadFastConst(a, _) | Op::LoadFastAttr(a, _) => Op::LoadFast(a as u32),
+        Op::CompareJumpIfFalse(c, _) | Op::CompareJumpIfTrue(c, _) => Op::Compare(c),
+        op => op,
+    }
 }
 
 #[derive(Clone)]
@@ -150,6 +187,8 @@ pub struct Code {
     /// for each name, where the attribute of that name was last found on
     /// an instance (CPython's LOAD_ATTR_INSTANCE_VALUE cache)
     pub attr_hints: Box<[Cell<AttrHint>]>,
+    /// for each name, where LoadGlobal last found it
+    pub global_hints: Box<[Cell<GlobalHint>]>,
     pub doc: Value,
     /// fast argument binding: no defaults/kwonly/varargs/varkw/cells
     pub simple: bool,
@@ -163,6 +202,18 @@ pub struct AttrHint {
     pub class: u64,
     pub version: u64,
     pub slot: u32,
+}
+
+/// Where a global was last found: entry `ix` of the globals (while that
+/// entry still has the name as its key), or entry `ix` of the builtins
+/// while the globals have the key stamp `stamp`, which they had when the
+/// name was not among them
+#[derive(Clone, Copy, Default)]
+pub struct GlobalHint {
+    pub stamp: u64,
+    pub ix: u32,
+    /// 0: nothing yet, 1: in the globals, 2: in the builtins
+    pub kind: u8,
 }
 
 impl AttrHint {

@@ -1680,17 +1680,17 @@ fn exc_setstate(vm: &mut Vm, a: &[Value], _k: Kw) -> PyResult<Value> {
 /// registers a native method on a class; `name` is "type.method"
 pub fn def(c: &Rc<Class>, name: &'static str, f: NativeFnPtr) {
     let short = name.rsplit('.').next().unwrap();
-    c.dict.borrow_mut().set_s(short, Value::Native(Rc::new(NativeFn::new(name, f, Value::None))));
+    c.dict.borrow_mut().set_i(short, Value::Native(Rc::new(NativeFn::new(name, f, Value::None))));
 }
 
 pub fn def_static(c: &Rc<Class>, name: &'static str, f: NativeFnPtr) {
     let short = name.rsplit('.').next().unwrap();
-    c.dict.borrow_mut().set_s(short, Value::StaticMethod(Rc::new(Value::Native(Rc::new(NativeFn::new(name, f, Value::None))))));
+    c.dict.borrow_mut().set_i(short, Value::StaticMethod(Rc::new(Value::Native(Rc::new(NativeFn::new(name, f, Value::None))))));
 }
 
 pub fn def_class(c: &Rc<Class>, name: &'static str, f: NativeFnPtr) {
     let short = name.rsplit('.').next().unwrap();
-    c.dict.borrow_mut().set_s(short, Value::ClassMethod(Rc::new(Value::Native(Rc::new(NativeFn::new(name, f, Value::None))))));
+    c.dict.borrow_mut().set_i(short, Value::ClassMethod(Rc::new(Value::Native(Rc::new(NativeFn::new(name, f, Value::None))))));
 }
 
 /// a method that takes lo..=hi positional arguments besides self
@@ -1698,7 +1698,7 @@ pub fn def_arity(c: &Rc<Class>, name: &'static str, f: NativeFnPtr, lo: u8, hi: 
     let short = name.rsplit('.').next().unwrap();
     let mut n = NativeFn::new(name, f, Value::None);
     n.arity = Some((lo, hi));
-    c.dict.borrow_mut().set_s(short, Value::Native(Rc::new(n)));
+    c.dict.borrow_mut().set_i(short, Value::Native(Rc::new(n)));
 }
 
 pub fn native(name: &'static str, f: NativeFnPtr) -> Value {
@@ -1786,7 +1786,7 @@ fn exc_class_new(vm: &mut Vm, name: &'static str, parent: &str) -> Rc<Class> {
 pub fn install(vm: &mut Vm) {
     for (name, parent) in EXCEPTIONS {
         let c = exc_class_new(vm, name, parent);
-        vm.builtins.borrow_mut().set_s(name, Value::Class(c));
+        vm.builtins.borrow_mut().set_i(name, Value::Class(c));
     }
     vm.builtins.borrow_mut().set_s("EnvironmentError", Value::Class(vm.exc["OSError"].clone()));
     vm.builtins.borrow_mut().set_s("IOError", Value::Class(vm.exc["OSError"].clone()));
@@ -1832,7 +1832,7 @@ pub fn install(vm: &mut Vm) {
         ("filter", &t.filter),
         ("reversed", &t.reversed),
     ] {
-        bd.set_s(n, Value::Class(c.clone()));
+        bd.set_i(n, Value::Class(c.clone()));
     }
     bd.set_s("__name__", Value::str("builtins"));
     bd.set_s("__doc__", Value::None);
@@ -1900,7 +1900,7 @@ fn install_functions(vm: &mut Vm) {
     ];
     let mut b = vm.builtins.borrow_mut();
     for (n, f) in fns {
-        b.set_s(n, native(n, *f));
+        b.set_i(n, native(n, *f));
     }
 }
 

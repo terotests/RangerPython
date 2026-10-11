@@ -24,11 +24,17 @@ impl PyStr {
         let ascii = s.is_ascii();
         PyStr { s, ascii, wtf: None, hash: Cell::new(0) }
     }
+    #[inline(always)]
     pub fn hash(&self) -> u64 {
         let h = self.hash.get();
         if h != 0 {
             return h;
         }
+        self.compute_hash()
+    }
+    #[cold]
+    #[inline(never)]
+    fn compute_hash(&self) -> u64 {
         let h = hash_bytes(self.wtf8());
         self.hash.set(h);
         h
@@ -628,6 +634,12 @@ struct CacheEntry {
     found: Option<(u32, u32)>,
 }
 
+/// a.same(b) out of line, for the probes that rarely get that far
+#[inline(never)]
+fn str_eq_slow(a: &PyStr, b: &PyStr) -> bool {
+    a.same(b)
+}
+
 /// the interned str with this text
 pub fn intern(s: &str) -> Rc<PyStr> {
     INTERNED.with(|t| {
@@ -672,6 +684,27 @@ pub struct Dict {
     /// becomes combined, with an index of its own, for a key that is not an
     /// exact str or that the shared keys have no room for, and on popitem()
     shared: Option<Rc<SharedKeys>>,
+    /// a number no other state of this or any dict's keys has had, or 0
+    /// (none yet, or a key was added since): a lookup that missed stays
+    /// valid while the stamp is the one it saw
+    stamp: u64,
+}
+
+static NEXT_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl Dict {
+    /// the stamp of the keys as they are now (see `stamp`)
+    pub fn stamp(&mut self) -> u64 {
+        if self.stamp == 0 {
+            self.stamp = NEXT_STAMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.stamp
+    }
+    /// the stamp, 0 when there is none to rely on
+    #[inline(always)]
+    pub fn current_stamp(&self) -> u64 {
+        self.stamp
+    }
 }
 
 /// The attribute names the instances of a class share (CPython's cached
@@ -724,10 +757,10 @@ impl Default for Dict {
 
 impl Dict {
     pub fn new() -> Dict {
-        Dict { entries: Vec::new(), index: Vec::new(), len: 0, watched: false, shared: None }
+        Dict { entries: Vec::new(), index: Vec::new(), len: 0, watched: false, shared: None, stamp: 0 }
     }
     pub fn with_capacity(n: usize) -> Dict {
-        let mut d = Dict { entries: Vec::with_capacity(n), index: Vec::new(), len: 0, watched: false, shared: None };
+        let mut d = Dict { entries: Vec::with_capacity(n), index: Vec::new(), len: 0, watched: false, shared: None, stamp: 0 };
         if n > 0 {
             let mut size = 8;
             while size * 2 < n * 3 {
@@ -741,7 +774,7 @@ impl Dict {
     /// they hold, as CPython sizes inline values
     pub fn new_split(keys: Rc<SharedKeys>) -> Dict {
         let n = keys.len();
-        Dict { entries: Vec::with_capacity(n), index: vec![-1; n], len: 0, watched: false, shared: Some(keys) }
+        Dict { entries: Vec::with_capacity(n), index: vec![-1; n], len: 0, watched: false, shared: Some(keys), stamp: 0 }
     }
     pub fn is_split(&self) -> bool {
         self.shared.is_some()
@@ -768,6 +801,7 @@ impl Dict {
                 self.index[slot] = self.entries.len() as i32;
                 self.entries.push(Some(Entry { hash: key.hash(), key: Value::Str(key.clone()), value: v }));
                 self.len += 1;
+                self.stamp = 0;
                 Ok(None)
             }
         }
@@ -912,32 +946,40 @@ impl Dict {
         if self.shared.is_some() {
             return self.entries[self.find_str(key)?].as_ref().map(|e| &e.value);
         }
-        if self.index.is_empty() {
-            return None;
+        let ix = self.find_combined(key)?;
+        // find_combined gives only live entries
+        self.entries[ix].as_ref().map(|e| &e.value)
+    }
+
+    /// the value of entry `ix` when its key is `key` itself
+    #[inline(always)]
+    pub fn entry_is(&self, ix: u32, key: &Rc<PyStr>) -> Option<&Value> {
+        match self.entries.get(ix as usize) {
+            Some(Some(e)) => match &e.key {
+                Value::Str(k) if Rc::ptr_eq(k, key) => Some(&e.value),
+                _ => None,
+            },
+            _ => None,
         }
-        let hash = key.hash();
-        let mask = self.index.len() - 1;
-        let mut slot = (hash as usize) & mask;
-        let mut perturb = hash;
-        loop {
-            let ix = self.index[slot];
-            if ix == -1 {
-                return None;
-            }
-            if ix >= 0 {
-                if let Some(e) = &self.entries[ix as usize] {
-                    if e.hash == hash {
-                        if let Value::Str(s) = &e.key {
-                            if std::ptr::eq(&**s, key) || s.same(key) {
-                                return Some(&e.value);
-                            }
-                        }
-                    }
-                }
-            }
-            perturb >>= 5;
-            slot = (slot * 5 + 1 + perturb as usize) & mask;
+    }
+
+    /// replaces the value of entry `ix` when its key is `key` itself,
+    /// giving back the old value; else gives `v` back
+    #[inline(always)]
+    pub fn set_entry_if(&mut self, ix: u32, key: &Rc<PyStr>, v: Value) -> Result<Value, Value> {
+        match self.entries.get_mut(ix as usize) {
+            Some(Some(e)) => match &e.key {
+                Value::Str(k) if Rc::ptr_eq(k, key) => Ok(std::mem::replace(&mut e.value, v)),
+                _ => Err(v),
+            },
+            _ => Err(v),
         }
+    }
+
+    /// the entry whose key is `key` itself, for entry_is
+    pub fn entry_of(&self, key: &Rc<PyStr>) -> Option<u32> {
+        let ix = self.find_str(key)?;
+        self.entry_is(ix as u32, key).map(|_| ix as u32)
     }
 
     pub fn get_str_mut(&mut self, key: &PyStr) -> Option<&mut Value> {
@@ -984,23 +1026,26 @@ impl Dict {
     /// find_str in a combined table
     #[inline]
     fn find_combined(&self, key: &PyStr) -> Option<usize> {
-        if self.index.is_empty() {
+        let index = &self.index[..];
+        if index.is_empty() {
             return None;
         }
+        let entries = &self.entries[..];
         let hash = key.hash();
-        let mask = self.index.len() - 1;
+        let mask = index.len() - 1;
         let mut slot = (hash as usize) & mask;
         let mut perturb = hash;
         loop {
-            let ix = self.index[slot];
+            // the index's length is the mask's plus one
+            let ix = unsafe { *index.get_unchecked(slot) };
             if ix == -1 {
                 return None;
             }
             if ix >= 0 {
-                if let Some(e) = &self.entries[ix as usize] {
+                if let Some(Some(e)) = entries.get(ix as usize) {
                     if e.hash == hash {
                         if let Value::Str(s) = &e.key {
-                            if std::ptr::eq(&**s, key) || s.same(key) {
+                            if std::ptr::eq(&**s, key) || str_eq_slow(s, key) {
                                 return Some(ix as usize);
                             }
                         }
@@ -1053,6 +1098,7 @@ impl Dict {
 
     /// insert a key not yet present
     pub fn push_new(&mut self, hash: u64, key: Value, value: Value) {
+        self.stamp = 0;
         if let Some(keys) = &self.shared {
             let slot = match &key {
                 Value::Str(s) => keys.slot_or_add(s),
@@ -1126,6 +1172,29 @@ impl Dict {
         } else {
             let h = key.hash();
             self.push_new(h, Value::Str(key), value);
+        }
+    }
+
+    /// set_s with the key interned, for the names of built-in classes
+    /// and modules, which lookups then find by identity
+    pub fn set_i(&mut self, key: &str, value: Value) {
+        self.set_str(intern(key), value);
+    }
+
+    /// makes the str keys the interned strs of their text
+    pub fn intern_keys(&mut self) {
+        if self.shared.is_some() {
+            return;
+        }
+        for e in self.entries.iter_mut().flatten() {
+            if let Value::Str(k) = &e.key {
+                if k.wtf.is_none() {
+                    let i = intern_str(k);
+                    if !Rc::ptr_eq(&i, k) {
+                        e.key = Value::Str(i);
+                    }
+                }
+            }
         }
     }
 
@@ -1500,6 +1569,33 @@ impl Value {
     }
     pub fn is_undef(&self) -> bool {
         matches!(self, Value::Undef)
+    }
+    /// clone() with the values that own nothing copied inline, without
+    /// the call to the derived clone
+    #[inline(always)]
+    pub fn fast_clone(&self) -> Value {
+        match self {
+            Value::Int(i) => Value::Int(*i),
+            Value::Float(x) => Value::Float(*x),
+            Value::Bool(b) => Value::Bool(*b),
+            Value::None => Value::None,
+            _ => self.clone(),
+        }
+    }
+    /// whether dropping this value does nothing
+    #[inline(always)]
+    pub fn is_plain(&self) -> bool {
+        matches!(self, Value::Undef | Value::None | Value::NotImplemented | Value::Ellipsis | Value::Bool(_) | Value::Int(_) | Value::Float(_))
+    }
+    /// drop() that skips the call to the drop glue for the values that own
+    /// nothing
+    #[inline(always)]
+    pub fn fast_drop(self) {
+        if self.is_plain() {
+            std::mem::forget(self);
+        } else {
+            drop(self);
+        }
     }
     pub fn as_str(&self) -> Option<&str> {
         match self {

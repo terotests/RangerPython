@@ -16,6 +16,9 @@
 
 use rpy::process::{Sandbox, SANDBOX_VAR};
 
+#[global_allocator]
+static ALLOC: rpy::poolalloc::PoolAlloc = rpy::poolalloc::PoolAlloc;
+
 fn mount(rt: &mut rpy::Runtime, host: &std::path::Path, vfs: &str) {
     let Ok(rd) = std::fs::read_dir(host) else { return };
     for e in rd.flatten() {

@@ -53,7 +53,8 @@ wide frames, and numpy's summation order.
 ## Speed
 
 Columns are Python lists, so everything runs at interpreter speed. On the
-native build a 50 000-row CSV with a date column takes about 0.4 s to read,
-and a groupby, a month aggregation, a pivot table and a sort over it take
-about 1 s together (pandas: 0.03 s each). That is enough for the data a
-slide shows; it is not meant for millions of rows.
+native build a 50 000-row CSV with a date column takes about 0.35 s to
+read, and a groupby, a month aggregation, a pivot table and a sort over it
+take about 0.8 s together. The same package run on CPython 3.13 takes
+0.09 s and 0.27 s, and real pandas 0.03 s for each part. That is enough
+for the data a slide shows; it is not meant for millions of rows.
